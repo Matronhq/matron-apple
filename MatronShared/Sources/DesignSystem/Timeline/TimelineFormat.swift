@@ -5,13 +5,18 @@ import MatronModels
 /// story or a list row. Sentences, not counts.
 public enum TimelineFormat {
     public static let worthALook = "WORTH A LOOK"
-    public static let earlierWeeks = "Earlier weeks ›"
+    public static let earlierWeeks = "Earlier weeks"
+    /// Drawn after a line that opens something ("Earlier weeks ›"); never
+    /// spoken, so labels leave it out and views add it to the text alone.
+    public static let opensMark = " ›"
     public static let wentQuiet = "Went quiet"
     public static let openLong = "Open a long time"
     public static let finished = "Finished"
     public static let quietLede = "These were moving, then stopped without being finished."
     public static let longLede = "These have been open for three weeks or more."
     public static let emptyLede = "Nothing moved this week."
+    /// The finished list, read and empty.
+    public static let nothingFinished = "Nothing finished yet."
     public static let askAction = "Ask the Coordinator what to do with it"
     /// Replaces `askAction` on a row once the Ask has gone.
     public static let askedAction = "Asked the Coordinator"
@@ -72,7 +77,7 @@ public enum TimelineFormat {
     }
 
     public static func alsoLine(_ count: Int) -> String {
-        "Also this week: \(count) smaller job\(count == 1 ? "" : "s") ›"
+        "Also this week: \(count) smaller job\(count == 1 ? "" : "s")"
     }
 
     // MARK: Stories
@@ -84,11 +89,15 @@ public enum TimelineFormat {
         return sentence
     }
 
-    /// What follows "Needs you: ": the first item waiting, and how many more.
+    /// What follows "Needs you: ": the first item waiting, and how many
+    /// more. A title that ends its own sentence ("…uploads?") is followed
+    /// by a new one ("And 1 more"), not a comma.
     public static func needsYou(_ story: TimelineStory) -> String? {
         guard let first = story.needsYou.first else { return nil }
         let more = story.needsYou.count - 1
-        return more > 0 ? "\(first.title), and \(more) more" : first.title
+        guard more > 0 else { return first.title }
+        if let last = first.title.last, "?!.".contains(last) { return "\(first.title) And \(more) more" }
+        return "\(first.title), and \(more) more"
     }
 
     // MARK: Lists
@@ -129,15 +138,54 @@ public enum TimelineFormat {
     public static let thisWeek = "This week"
     public static let lastWeek = "Last week"
 
-    /// The page's one sentence: the Coordinator's status, else the goal,
-    /// else the newest milestone's title; nil when there is none.
-    public static func storySentence(_ page: ProjectPageModel) -> String? {
+    /// The story page's sentence, and the lines it may take (nil: all).
+    public struct StorySentence: Equatable, Sendable {
+        public let text: String
+        public let lineLimit: Int?
+
+        public init(text: String, lineLimit: Int?) {
+            self.text = text; self.lineLimit = lineLimit
+        }
+    }
+
+    /// Lines a goal standing in for the status may take.
+    public static let goalLineLimit = 3
+
+    /// The page's one sentence: the Coordinator's status, else the goal's
+    /// first paragraph (a few lines at most), else the newest milestone's
+    /// title; nil when there is none.
+    public static func storySentence(_ page: ProjectPageModel) -> StorySentence? {
+        if let status = trimmed(page.project.status) { return StorySentence(text: status, lineLimit: nil) }
+        if let goal = firstParagraph(page.project.body) { return StorySentence(text: goal, lineLimit: goalLineLimit) }
         let newest = (page.recentMilestones + page.milestonesPage.rows.map(\.milestone))
             .max { $0.createdAt < $1.createdAt }?.title
-        for text in [page.project.status, page.project.body, newest] {
-            if let text = text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty { return text }
+        return trimmed(newest).map { StorySentence(text: $0, lineLimit: nil) }
+    }
+
+    /// A markdown text's first paragraph as one line, without the marks
+    /// that start a heading, a list item or a quote; inline marks stay
+    /// for the renderer. nil when it has no words.
+    static func firstParagraph(_ markdown: String) -> String? {
+        var lines: [String] = []
+        for raw in markdown.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if line.isEmpty {
+                if lines.isEmpty { continue } else { break }
+            }
+            let words = line.replacingOccurrences(of: blockMark, with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespaces)
+            if !words.isEmpty { lines.append(words) }
         }
-        return nil
+        return lines.isEmpty ? nil : lines.joined(separator: " ")
+    }
+
+    /// "# ", "- ", "* ", "+ ", "> ", "1. " at the start of a line (a lone
+    /// mark too). "#tag" and "-5" are words, so they stay.
+    private static let blockMark = #"^(#{1,6}|[-*+]|>|\d+[.)])(\s+|$)"#
+
+    private static func trimmed(_ text: String?) -> String? {
+        guard let text = text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+        return text
     }
 
     /// What follows "Coming up:": the first three open tasks as one
@@ -155,29 +203,21 @@ public enum TimelineFormat {
         return (head.isEmpty ? last : "\(head), then \(last)") + "."
     }
 
-    /// A title as part of a sentence: one line, no closing full stop, and a
-    /// capitalised first word in lower case ("Launch" → "launch"), leaving
-    /// "I" and words that are capitals throughout or mixed ("CDN", "iOS")
-    /// alone.
+    /// A title as part of a sentence: one line, no closing full stop, and
+    /// otherwise as written.
     static func phrase(_ title: String) -> String {
         var text = ProjectsFormat.oneLine(title).trimmingCharacters(in: .whitespaces)
         while text.hasSuffix(".") { text.removeLast() }
-        let word = text.prefix { !$0.isWhitespace }
-        guard let first = word.first, first.isUppercase, word != "I", !word.hasPrefix("I'"), !word.hasPrefix("I’"),
-              word.dropFirst().allSatisfy({ !$0.isLetter || $0.isLowercase }) else { return text }
-        return first.lowercased() + text.dropFirst()
+        return text
     }
 
-    /// A gallery tile's caption: the file's name without its extension,
-    /// else the title of the item it was posted on; nil when neither is
-    /// known.
+    /// A gallery tile's caption: the file's own caption, else the title of
+    /// the item it was posted on; nil when neither is known. Never the
+    /// file's name, which is rarely words.
     public static func galleryCaption(_ file: ProjectFile, items: [TrackerItem]) -> String? {
-        if let name = file.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
-            let bare = (name as NSString).deletingPathExtension
-            return bare.isEmpty ? name : bare
-        }
+        if let caption = trimmed(file.caption) { return ProjectsFormat.oneLine(caption) }
         guard case .item(let num) = file.source,
-              let title = items.first(where: { $0.num == num })?.title, !title.isEmpty else { return nil }
+              let title = trimmed(items.first(where: { $0.num == num })?.title) else { return nil }
         return ProjectsFormat.oneLine(title)
     }
 

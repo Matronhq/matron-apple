@@ -449,13 +449,33 @@ final class TimelineViewModelTests: XCTestCase {
         XCTAssertNil(vm.error, "a count is a hint: no alert")
     }
 
-    func testASuccessfulAskMarksTheRowUntilTheListsReload() async {
+    /// The Ask has gone whatever the lists say next: a refresh keeps the
+    /// row saying so (a new session drops the whole view model).
+    func testASuccessfulAskMarksTheRowAcrossARefresh() async {
         let (vm, _, _) = make()
         await vm.start()
         await vm.ask(about: StalledProject(project: project(3)))
         XCTAssertEqual(vm.askedProjectIDs, ["pj_3"])
         await vm.refresh()
-        XCTAssertEqual(vm.askedProjectIDs, [])
+        XCTAssertEqual(vm.askedProjectIDs, ["pj_3"])
+    }
+
+    /// Finished has no page until its first read lands: then its rows,
+    /// or none at all, which is a page too.
+    func testFinishedIsLoadedOnceItsFirstReadLands() async {
+        let (vm, fake, _) = make()
+        await vm.start()
+        XCTAssertFalse(vm.hasLoadedFinished)
+        XCTAssertEqual(vm.content(for: .finished), .loading)
+        fake.gate("finished:nil")
+        let visit = Task { await vm.select(.finished) }
+        await fake.waitUntilHeld("finished:nil")
+        XCTAssertEqual(vm.content(for: .finished), .loading, "still reading")
+        fake.release("finished:nil")
+        await visit.value
+        XCTAssertTrue(vm.hasLoadedFinished)
+        XCTAssertEqual(vm.content(for: .finished), .finished([], hasMore: false))
+        XCTAssertTrue(vm.hasContent(for: .finished), "an empty list is a page")
     }
 
     func testAFailedAskDoesNotMarkTheRow() async {

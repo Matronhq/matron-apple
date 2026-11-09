@@ -61,6 +61,19 @@ final class TimelineHostStateTests: XCTestCase {
         XCTAssertEqual(timeline.quietReads, 0)
     }
 
+    /// The journal lost the timeline routes since the last read: the
+    /// refresh that finds out asks for no counts.
+    func testARefreshThatFindsThe404AsksForNoCounts() async {
+        let state = TimelineHostState()
+        let timeline = StubTimeline()
+        await state.projectsShown(flagOn: true) { Self.viewModel(timeline) }?.value
+        XCTAssertEqual(timeline.quietReads, 1)
+        timeline.supported = false
+        await state.refresh()
+        XCTAssertEqual(state.viewModel?.isSupported, false)
+        XCTAssertEqual(timeline.quietReads, 1)
+    }
+
     func testRefreshReReadsThePageAndTheCounts() async {
         let state = TimelineHostState()
         let timeline = StubTimeline()
@@ -124,12 +137,15 @@ final class TimelineHostStateTests: XCTestCase {
         await vm.loadCounts()
         XCTAssertEqual(vm.content(for: .quiet), .quiet(StalledList(total: 3, rows: [])))
         XCTAssertEqual(vm.content(for: .long), .long(StalledList(total: 4, rows: [])))
-        XCTAssertEqual(vm.content(for: .finished), .finished([], hasMore: false))
+        XCTAssertEqual(vm.content(for: .finished), .loading, "not read yet")
         XCTAssertEqual(vm.content(for: nil), .loading, "weeks listed but none chosen")
         vm.error = "offline"
         XCTAssertEqual(vm.content(for: .week("2026-10-26")), .failed)
-        XCTAssertEqual(vm.content(for: .finished), .failed, "no rows to keep over the failure")
+        XCTAssertEqual(vm.content(for: .finished), .failed, "nothing read to keep over the failure")
         XCTAssertEqual(vm.content(for: .quiet), .quiet(StalledList(total: 3, rows: [])), "a loaded list stays")
+        vm.error = nil
+        await vm.select(.finished)
+        XCTAssertEqual(vm.content(for: .finished), .finished([], hasMore: false), "read, and empty")
     }
 
     func testContent_noWeeksIsNothingYet() async {
@@ -170,15 +186,21 @@ final class TimelineHostStateTests: XCTestCase {
 /// stalled lists, or (`supported: false`) one without the timeline routes.
 /// Counts its reads.
 private final class StubTimeline: TimelineProviding, @unchecked Sendable {
-    private let supported: Bool
     private let weekKeys: [String]
     private let lock = NSLock()
     private var weeks = 0
     private var quiet = 0
+    private var routes: Bool
 
     init(supported: Bool = true, weeks: [String] = ["2026-11-02", "2026-10-26"]) {
-        self.supported = supported
+        self.routes = supported
         self.weekKeys = weeks
+    }
+
+    /// Whether the journal answers the timeline routes (false: 404).
+    var supported: Bool {
+        get { lock.withLock { routes } }
+        set { lock.withLock { routes = newValue } }
     }
 
     var weeksReads: Int { lock.withLock { weeks } }

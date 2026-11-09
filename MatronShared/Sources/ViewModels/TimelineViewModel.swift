@@ -20,10 +20,13 @@ public final class TimelineViewModel {
     public private(set) var quiet: StalledList?
     public private(set) var long: StalledList?
     public private(set) var finished: [FinishedProject] = []
+    /// The finished list's first read has landed: until then it has no
+    /// page, after it an empty list is one.
+    public private(set) var hasLoadedFinished = false
     /// nil before the first weeks load; false once the journal answered 404.
     public private(set) var isSupported: Bool?
-    /// Projects the Coordinator was asked about since the lists last
-    /// reloaded: their rows say so instead of offering the Ask again.
+    /// Projects the Coordinator was asked about in this session: their
+    /// rows say so instead of offering the Ask again, across refreshes.
     public private(set) var askedProjectIDs: Set<String> = []
     public var error: String?
 
@@ -73,7 +76,6 @@ public final class TimelineViewModel {
     public func refresh() async {
         refreshEpoch += 1
         fresh.removeAll()
-        askedProjectIDs.removeAll()
         await start()
     }
 
@@ -188,6 +190,7 @@ public final class TimelineViewModel {
                 guard generation == finishedGeneration else { return }
                 finished = page.rows
                 finishedNextBefore = page.nextBefore
+                hasLoadedFinished = true
             }
             if case .week = target {} else { fresh.insert(target) }
         } catch {

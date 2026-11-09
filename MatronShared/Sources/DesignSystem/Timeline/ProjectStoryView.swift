@@ -84,9 +84,11 @@ public struct ProjectStoryView<MenuContent: View>: View {
         if sentence != nil || comingUp != nil {
             VStack(alignment: .leading, spacing: 14) {
                 if let sentence {
-                    Text(MissionsDashboardFormat.statusPreviewText(sentence))
+                    Text(MissionsDashboardFormat.statusPreviewText(sentence.text))
                         .font(M.sentenceFont).lineSpacing(5)
+                        .lineLimit(sentence.lineLimit)
                         .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("projects.story.sentence")
                 }
                 if let comingUp {
                     (Text(TimelineFormat.comingUpPrefix).bold() + Text(verbatim: " " + comingUp))

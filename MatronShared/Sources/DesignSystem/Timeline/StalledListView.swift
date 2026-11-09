@@ -59,24 +59,25 @@ public struct StalledListView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// Wide, the chart stands to the right of the row; narrow, it shares
-    /// the "Last moved" line so the words keep the width.
+    /// Wide, the chart stands to the right of the row with its caption;
+    /// narrow, a smaller one without it sits beside the title, so it adds
+    /// no line of its own and the words keep the width.
     private func rowView(_ row: StalledProject, wide: Bool) -> some View {
         HStack(alignment: .top, spacing: 24) {
             VStack(alignment: .leading, spacing: 8) {
-                Text(row.project.title).font(Self.rowTitleFont)
+                HStack(alignment: .top, spacing: 12) {
+                    Text(row.project.title).font(Self.rowTitleFont)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if !wide {
+                        TimelineActivityChart(weekly: row.weekly, compact: true).padding(.top, 2)
+                    }
+                }
                 if let note = row.note, !note.isEmpty {
                     Text(MissionsDashboardFormat.statusPreviewText(note)).font(Self.noteFont).lineSpacing(3)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                HStack(alignment: .bottom, spacing: 12) {
-                    if let lastMoved = TimelineFormat.lastMoved(row.lastMovedAt, now: now) {
-                        Text(lastMoved).font(Self.metaFont).foregroundStyle(.secondary)
-                    }
-                    if !wide {
-                        Spacer(minLength: 0)
-                        TimelineActivityChart(weekly: row.weekly)
-                    }
+                if let lastMoved = TimelineFormat.lastMoved(row.lastMovedAt, now: now) {
+                    Text(lastMoved).font(Self.metaFont).foregroundStyle(.secondary)
                 }
                 if asked.contains(row.project.id) {
                     Text(TimelineFormat.askedAction).font(Self.actionFont).foregroundStyle(.secondary)
@@ -84,9 +85,11 @@ public struct StalledListView: View {
                         .accessibilityIdentifier("timeline.stalled.asked.\(row.project.num)")
                 } else {
                     Button { onAsk(row) } label: {
-                        Text(TimelineFormat.askAction + " ›").font(Self.actionFont).foregroundStyle(Color.accentColor)
+                        Text(TimelineFormat.askAction + TimelineFormat.opensMark).font(Self.actionFont)
+                            .foregroundStyle(Color.accentColor)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(TimelineFormat.askAction)
                     .padding(.top, 2)
                     .accessibilityIdentifier("timeline.stalled.ask.\(row.project.num)")
                 }
@@ -123,30 +126,35 @@ struct TimelineListHeader: View {
 
 /// Seven weeks of moves as small bars, newest on the right; a week
 /// without any is a short grey dash. Pale, so it reads as a hint.
+/// `compact` (beside a narrow row's title) is smaller and drops the
+/// "last 7 weeks" caption, which its spoken label still says.
 struct TimelineActivityChart: View {
     let weekly: [Int]
+    var compact = false
 
-    private static let barWidth: CGFloat = 9
-    private static let maxHeight: CGFloat = 22
+    private var barWidth: CGFloat { compact ? 6 : 9 }
+    private var maxHeight: CGFloat { compact ? 16 : 22 }
 
     var body: some View {
         let bars = TimelineFormat.chartBars(weekly)
         let peak = max(bars.max() ?? 0, 1)
         VStack(alignment: .trailing, spacing: 5) {
-            HStack(alignment: .bottom, spacing: 3) {
+            HStack(alignment: .bottom, spacing: compact ? 2 : 3) {
                 ForEach(bars.indices, id: \.self) { index in
                     if bars[index] > 0 {
                         RoundedRectangle(cornerRadius: 2, style: .continuous)
                             .fill(Color.blue.opacity(0.28))
-                            .frame(width: Self.barWidth,
-                                   height: max(5, Self.maxHeight * CGFloat(bars[index]) / CGFloat(peak)))
+                            .frame(width: barWidth,
+                                   height: max(4, maxHeight * CGFloat(bars[index]) / CGFloat(peak)))
                     } else {
-                        Capsule().fill(Color.primary.opacity(0.10)).frame(width: Self.barWidth, height: 2.5)
+                        Capsule().fill(Color.primary.opacity(0.10)).frame(width: barWidth, height: 2.5)
                     }
                 }
             }
-            .frame(height: Self.maxHeight, alignment: .bottom)
-            Text(TimelineFormat.chartCaption).font(StalledListView.chartCaptionFont).foregroundStyle(.secondary)
+            .frame(height: maxHeight, alignment: .bottom)
+            if !compact {
+                Text(TimelineFormat.chartCaption).font(StalledListView.chartCaptionFont).foregroundStyle(.secondary)
+            }
         }
         .fixedSize()
         .accessibilityElement(children: .ignore)

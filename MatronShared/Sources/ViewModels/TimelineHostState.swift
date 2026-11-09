@@ -60,10 +60,13 @@ public final class TimelineHostState {
         }
     }
 
-    /// Re-reads the place on screen and the counts (pull to refresh, a later visit).
+    /// Re-reads the place on screen and the counts (pull to refresh, a
+    /// later visit). A refresh that finds the journal has no timeline
+    /// asks for no counts: their 404 would only come again.
     public func refresh() async {
         guard let viewModel, viewModel.isSupported != false else { return }
         await viewModel.refresh()
+        guard viewModel.isSupported != false else { return }
         await viewModel.loadCounts()
     }
 

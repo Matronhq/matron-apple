@@ -22,20 +22,19 @@ extension TimelineViewModel {
         case .long:
             return long.map { .long($0) } ?? unloaded
         case .finished:
-            if finished.isEmpty, error != nil { return .failed }
-            return .finished(finished, hasMore: hasMoreFinished)
+            return hasLoadedFinished ? .finished(finished, hasMore: hasMoreFinished) : unloaded
         case nil:
             return weeks.isEmpty && error == nil ? .nothingYet : unloaded
         }
     }
 
-    /// Whether `place` has a page on screen (an empty finished list is not one).
+    /// Whether `place` has a page on screen (a finished list once read, even empty).
     public func hasContent(for place: TimelinePlace?) -> Bool {
         switch place {
         case .week: return Self.shownWeek(week, for: place) != nil
         case .quiet: return quiet != nil
         case .long: return long != nil
-        case .finished: return !finished.isEmpty
+        case .finished: return hasLoadedFinished
         case nil: return false
         }
     }

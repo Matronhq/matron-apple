@@ -2,8 +2,9 @@ import SwiftUI
 import MatronModels
 
 /// "Finished": projects with nothing left open, newest first, each with
-/// when it finished. A row opens the project; reaching the end loads the
-/// next page (`onLoadMore` nil when there is none).
+/// when it finished, or one calm line when there are none. A row opens the
+/// project; reaching the end loads the next page (`onLoadMore` nil when
+/// there is none).
 public struct FinishedListView: View {
     let rows: [FinishedProject]
     let now: Date
@@ -28,6 +29,10 @@ public struct FinishedListView: View {
             LazyVStack(alignment: .leading, spacing: 0) {
                 TimelineListHeader(title: TimelineFormat.finished, lede: nil)
                     .padding(.bottom, 14)
+                if rows.isEmpty {
+                    Text(TimelineFormat.nothingFinished).font(TimelinePage.ledeFont).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("timeline.finished.empty")
+                }
                 ForEach(rows, id: \.project.id) { row in
                     Divider()
                     Button { onOpenProject(row.project.id) } label: { rowView(row) }
@@ -35,8 +40,10 @@ public struct FinishedListView: View {
                         .accessibilityIdentifier("timeline.finished.\(row.project.num)")
                 }
                 if let onLoadMore {
-                    // Reaching the end asks for the next page.
-                    Color.clear.frame(height: 1).onAppear(perform: onLoadMore)
+                    // Reaching the end asks for the next page. Keyed by the
+                    // row count, so a page too short to scroll still asks
+                    // for the one after it.
+                    Color.clear.frame(height: 1).id(rows.count).onAppear(perform: onLoadMore)
                 }
             }
             .padding(TimelinePage.padding)

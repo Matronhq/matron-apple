@@ -114,13 +114,13 @@ public enum TimelineDemoData {
         let palette = task(35, "Pick the docs colour palette", kind: .decision)
         let waiting = [task(11, "Approve the getting-started copy", kind: .question)]
         let files = [
-            file("docs", "Search page live on staging.png", day(11, 3, 11)),
-            file("chart", "Pages load in 0.8 s, down from 2.1 s.png", day(11, 2, 16)),
-            file("handbook", "Launch checklist.pdf", day(11, 2, 10), type: "application/pdf"),
-            file("docs", "Getting-started guide drafted.png", day(10, 30, 12)),
-            file("themes-video", "Docs pages in every theme.mp4", day(10, 29, 14), type: "video/mp4"),
-            file("themes", nil, day(10, 21, 9), source: .item(num: palette.num)),
-            file("not-loaded-yet", "Design signed off.png", day(10, 20, 17)),
+            file("docs", "docs-search.png", day(11, 3, 11), caption: "Search page live on staging"),
+            file("chart", "load-times.png", day(11, 2, 16), caption: "Pages load in 0.8 s, down from 2.1 s"),
+            file("handbook", "launch-checklist.pdf", day(11, 2, 10), type: "application/pdf"),
+            file("docs", "docs-guide.png", day(10, 30, 12), caption: "Getting-started guide drafted"),
+            file("themes-video", "docs-themes.mp4", day(10, 29, 14), type: "video/mp4"),
+            file("themes", "palette.png", day(10, 21, 9), source: .item(num: palette.num)),
+            file("not-loaded-yet", "IMG_0412.png", day(10, 20, 17)),
         ]
         return ProjectPageModel(
             project: Project(id: docs.id, num: docs.num, title: docs.title,
@@ -146,7 +146,7 @@ public enum TimelineDemoData {
             project: Project(id: audit.id, num: audit.num, title: audit.title),
             openItems: [task(41, "Should we cover the web app too?", kind: .question)],
             recentMilestones: milestones,
-            files: ProjectFeedPage(total: 1, rows: [file("report", "Audit report.pdf", day(10, 22, 9),
+            files: ProjectFeedPage(total: 1, rows: [file("report", "audit-report.pdf", day(10, 22, 9),
                                                          type: "application/pdf")]),
             hasFeed: true)
     }()
@@ -157,8 +157,8 @@ public enum TimelineDemoData {
     }
 
     private static func file(_ blobID: String, _ name: String?, _ postedAt: Date, type: String = "image/png",
-                             source: ProjectFileSource? = nil) -> ProjectFile {
-        ProjectFile(blobID: blobID, name: name, contentType: type,
+                             caption: String? = nil, source: ProjectFileSource? = nil) -> ProjectFile {
+        ProjectFile(blobID: blobID, name: name, contentType: type, caption: caption,
                     source: source ?? .chat(convoID: "c_demo_1", seq: Int64(postedAt.timeIntervalSince1970)),
                     postedAt: postedAt)
     }

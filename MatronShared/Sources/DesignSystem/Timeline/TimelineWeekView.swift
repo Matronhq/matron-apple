@@ -95,10 +95,11 @@ public struct TimelineWeekView<Footer: View>: View {
         if !week.also.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
                 Button { showsAlso.toggle() } label: {
-                    Text(TimelineFormat.alsoLine(week.also.count)).font(TimelinePage.lineFont)
+                    Text(TimelineFormat.alsoLine(week.also.count) + TimelineFormat.opensMark).font(TimelinePage.lineFont)
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(TimelineFormat.alsoLine(week.also.count))
                 .accessibilityIdentifier("timeline.week.also")
                 if showsAlso {
                     VStack(alignment: .leading, spacing: 8) {

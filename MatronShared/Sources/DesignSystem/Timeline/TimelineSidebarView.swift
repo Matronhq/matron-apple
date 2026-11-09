@@ -43,11 +43,13 @@ public struct TimelineSidebarView: View {
                 }
                 if let onLoadEarlier {
                     Button(action: onLoadEarlier) {
-                        Text(TimelineFormat.earlierWeeks).font(Self.smallFont.weight(.medium)).foregroundStyle(.secondary)
+                        Text(TimelineFormat.earlierWeeks + TimelineFormat.opensMark)
+                            .font(Self.smallFont.weight(.medium)).foregroundStyle(.secondary)
                             .padding(Self.rowInsets)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(TimelineFormat.earlierWeeks)
                     .accessibilityIdentifier("timeline.sidebar.earlier")
                 }
                 Text(TimelineFormat.worthALook)
@@ -84,6 +86,7 @@ public struct TimelineSidebarView: View {
         row(place, id: "\(place)") {
             HStack(spacing: 8) {
                 Image(systemName: symbol).frame(width: 16).foregroundStyle(Color.primary)
+                    .accessibilityHidden(true)
                 Text(title).foregroundStyle(Color.primary)
                 Spacer(minLength: 8)
                 if let count {
