@@ -1,0 +1,176 @@
+import Foundation
+import Observation
+import MatronModels
+import MatronJournal
+
+/// Where the Projects timeline is looking: one week's stories, or one of the
+/// three lists below the weeks.
+public enum TimelinePlace: Hashable, Sendable {
+    case week(String)
+    /// Projects that went quiet.
+    case quiet
+    /// Projects open a long time.
+    case long
+    case finished
+}
+
+/// Backs the Projects weekly timeline. Weeks load newest first; the quiet and
+/// long lists load once per visit-until-refresh, the finished list pages.
+/// A journal without the timeline routes (404 on the weeks list) leaves
+/// `isSupported` false so the host falls back to the plain Projects list.
+@MainActor @Observable
+public final class TimelineViewModel {
+    /// The remote flag that turns the timeline on.
+    public static let flagKey = "projects.timeline"
+
+    public private(set) var weeks: [TimelineWeekSummary] = []
+    /// nil until the first load, then the newest week.
+    public private(set) var place: TimelinePlace?
+    /// The last week that loaded: a failed load keeps it on screen.
+    public private(set) var week: TimelineWeek?
+    public private(set) var quiet: StalledList?
+    public private(set) var long: StalledList?
+    public private(set) var finished: [FinishedProject] = []
+    /// nil before the first weeks load; false once the journal answered 404.
+    public private(set) var isSupported: Bool?
+    public var error: String?
+
+    public var hasEarlierWeeks: Bool { weeksNextBefore != nil }
+    public var hasMoreFinished: Bool { finishedNextBefore != nil }
+
+    @ObservationIgnored private let timeline: TimelineProviding
+    @ObservationIgnored private let askCoordinator: (String) async throws -> Void
+    @ObservationIgnored private let now: () -> Date
+    @ObservationIgnored private var weeksNextBefore: String?
+    @ObservationIgnored private var finishedNextBefore: String?
+    /// Lists loaded since the last refresh; weeks always re-read.
+    @ObservationIgnored private var fresh: Set<TimelinePlace> = []
+    /// Bumped when a reload replaces a paged list: a page fetched before is dropped.
+    @ObservationIgnored private var weeksGeneration = 0
+    @ObservationIgnored private var finishedGeneration = 0
+    @ObservationIgnored private var isLoadingEarlier = false
+    @ObservationIgnored private var isLoadingFinished = false
+
+    public init(timeline: TimelineProviding, askCoordinator: @escaping (String) async throws -> Void,
+                now: @escaping () -> Date = Date.init) {
+        self.timeline = timeline; self.askCoordinator = askCoordinator; self.now = now
+    }
+
+    /// Loads the weeks list and the current place (the newest week on the first call).
+    public func start() async {
+        error = nil
+        guard await loadWeeks() else { return }
+        if place == nil, let first = weeks.first { place = .week(first.week) }
+        await loadCurrent()
+    }
+
+    public func select(_ next: TimelinePlace) async {
+        place = next
+        error = nil
+        await loadCurrent()
+    }
+
+    /// Re-reads the weeks and the place on screen; the lists off screen
+    /// reload on their next visit.
+    public func refresh() async {
+        fresh.removeAll()
+        await start()
+    }
+
+    public func loadEarlierWeeks() async {
+        guard let before = weeksNextBefore, !isLoadingEarlier else { return }
+        isLoadingEarlier = true
+        defer { isLoadingEarlier = false }
+        let generation = weeksGeneration
+        do {
+            let page = try await timeline.timelineWeeks(before: before, limit: nil)
+            guard generation == weeksGeneration else { return }
+            weeks += page.weeks
+            weeksNextBefore = page.nextBefore
+        } catch {
+            if generation == weeksGeneration { self.error = error.localizedDescription }
+        }
+    }
+
+    public func loadMoreFinished() async {
+        guard let before = finishedNextBefore, !isLoadingFinished else { return }
+        isLoadingFinished = true
+        defer { isLoadingFinished = false }
+        let generation = finishedGeneration
+        do {
+            let page = try await timeline.finishedProjects(before: before, limit: nil)
+            guard generation == finishedGeneration else { return }
+            finished += page.rows
+            finishedNextBefore = page.nextBefore
+        } catch {
+            if generation == finishedGeneration { self.error = error.localizedDescription }
+        }
+    }
+
+    /// Hands a stalled project to the Coordinator as a question.
+    public func ask(about stalled: StalledProject) async {
+        let title = stalled.project.title
+        let moved = stalled.lastMovedAt.map { "It last moved \(Self.relative($0, to: now()))." } ?? "It hasn't moved yet."
+        do { try await askCoordinator("What should we do with the project “\(title)”? \(moved)") }
+        catch { self.error = error.localizedDescription }
+    }
+
+    // MARK: - Loading
+
+    /// Reads the first page of weeks. False when there is nothing to build on
+    /// (unsupported journal, or a failed read, which sets `error`).
+    private func loadWeeks() async -> Bool {
+        weeksGeneration += 1
+        let generation = weeksGeneration
+        do {
+            let page = try await timeline.timelineWeeks(before: nil, limit: nil)
+            guard generation == weeksGeneration else { return false }
+            weeks = page.weeks
+            weeksNextBefore = page.nextBefore
+            isSupported = true
+            return true
+        } catch JournalAPIError.notFound {
+            if generation == weeksGeneration { isSupported = false }
+            return false
+        } catch {
+            if generation == weeksGeneration { self.error = error.localizedDescription }
+            return false
+        }
+    }
+
+    private func loadCurrent() async {
+        guard let target = place else { return }
+        if case .week = target {} else if fresh.contains(target) { return }
+        do {
+            switch target {
+            case .week(let key):
+                let loaded = try await timeline.timelineWeek(key)
+                // A later select moved on while this was in flight.
+                if place == target { week = loaded }
+            case .quiet:
+                let loaded = try await timeline.wentQuiet()
+                quiet = loaded
+            case .long:
+                let loaded = try await timeline.openLong()
+                long = loaded
+            case .finished:
+                finishedGeneration += 1
+                let generation = finishedGeneration
+                let page = try await timeline.finishedProjects(before: nil, limit: nil)
+                guard generation == finishedGeneration else { return }
+                finished = page.rows
+                finishedNextBefore = page.nextBefore
+            }
+            if case .week = target {} else { fresh.insert(target) }
+        } catch {
+            if place == target { self.error = error.localizedDescription }
+        }
+    }
+
+    private static func relative(_ date: Date, to now: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        formatter.locale = Locale(identifier: "en_GB")
+        return formatter.localizedString(for: date, relativeTo: now)
+    }
+}
