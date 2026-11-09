@@ -69,17 +69,29 @@ final class MacTimelineState {
     }
 
     /// Projects came on screen: the first time (flag on; nil reads it)
-    /// builds and starts the view model; later visits re-read what is on
-    /// screen.
-    func projectsShown(flagOn: Bool? = nil, build: () -> TimelineViewModel) {
+    /// builds and starts the view model, then reads the sidebar's counts;
+    /// later visits re-read what is on screen, unless the journal has no
+    /// timeline (its 404 would only come again). Returns the reads' task.
+    @discardableResult
+    func projectsShown(flagOn: Bool? = nil, build: () -> TimelineViewModel) -> Task<Void, Never>? {
         if let viewModel {
-            Task { await viewModel.refresh() }
-            return
+            guard viewModel.isSupported != false else { return nil }
+            return Task {
+                await viewModel.refresh()
+                await viewModel.loadCounts()
+            }
         }
-        guard flagOn ?? MacTimelineNav.flagOn() else { return }
+        guard flagOn ?? MacTimelineNav.flagOn() else { return nil }
         let viewModel = build()
         self.viewModel = viewModel
-        Task { await viewModel.start() }
+        return Task {
+            await viewModel.start()
+            // A place picked before the view model existed (Back onto a
+            // timeline place after an account switch) wins over the
+            // newest week `start()` opened on.
+            if let selection = self.selection, viewModel.place != selection { await viewModel.select(selection) }
+            await viewModel.loadCounts()
+        }
     }
 
     func select(_ place: TimelinePlace?) {
@@ -171,7 +183,7 @@ struct MacTimelinePlaceView: View {
         let now = Date()
         switch place {
         case .week:
-            if let week = viewModel.week {
+            if let week = Self.shownWeek(viewModel.week, for: place) {
                 TimelineWeekView(week: week, sentence: viewModel.weeks.first { $0.week == week.week }?.sentence,
                                  now: now, images: images.images,
                                  onOpenProject: onOpenProject, onOpenItem: onOpenItem)
@@ -181,20 +193,24 @@ struct MacTimelinePlaceView: View {
         case .quiet:
             if let list = viewModel.quiet {
                 StalledListView(title: TimelineFormat.wentQuiet, lede: TimelineFormat.quietLede, list: list, now: now,
-                                onOpenProject: onOpenProject, onAsk: ask)
+                                onOpenProject: onOpenProject, onAsk: ask, asked: viewModel.askedProjectIDs)
             } else {
                 unloaded
             }
         case .long:
             if let list = viewModel.long {
                 StalledListView(title: TimelineFormat.openLong, lede: TimelineFormat.longLede, list: list, now: now,
-                                onOpenProject: onOpenProject, onAsk: ask)
+                                onOpenProject: onOpenProject, onAsk: ask, asked: viewModel.askedProjectIDs)
             } else {
                 unloaded
             }
         case .finished:
-            FinishedListView(rows: viewModel.finished, now: now, onOpenProject: onOpenProject,
-                             onLoadMore: viewModel.hasMoreFinished ? { Task { await viewModel.loadMoreFinished() } } : nil)
+            if viewModel.finished.isEmpty, viewModel.error != nil {
+                unloaded
+            } else {
+                FinishedListView(rows: viewModel.finished, now: now, onOpenProject: onOpenProject,
+                                 onLoadMore: viewModel.hasMoreFinished ? { Task { await viewModel.loadMoreFinished() } } : nil)
+            }
         case nil:
             if viewModel.weeks.isEmpty, viewModel.error == nil {
                 ContentUnavailableView("Nothing has moved yet", systemImage: ProjectGlyph.symbol)
@@ -223,12 +239,20 @@ struct MacTimelinePlaceView: View {
 
     private var hasContent: Bool {
         switch place {
-        case .week: return viewModel.week != nil
+        case .week: return Self.shownWeek(viewModel.week, for: place) != nil
         case .quiet: return viewModel.quiet != nil
         case .long: return viewModel.long != nil
-        case .finished: return true
+        case .finished: return !viewModel.finished.isEmpty
         case nil: return false
         }
+    }
+
+    /// The loaded week when it is the one selected: a click on another
+    /// week shows progress (or the retry) until that week arrives, never
+    /// the last week's cards under the new highlight.
+    static func shownWeek(_ week: TimelineWeek?, for place: TimelinePlace?) -> TimelineWeek? {
+        guard case .week(let key) = place, let week, week.week == key else { return nil }
+        return week
     }
 
     private func ask(_ stalled: StalledProject) {
@@ -237,8 +261,7 @@ struct MacTimelinePlaceView: View {
 
     /// The week's pictures (videos draw their own panel).
     private var imageBlobIDs: [String] {
-        guard case .week = place else { return [] }
-        return viewModel.week?.stories.compactMap { $0.media }.filter { !$0.isVideo }.map(\.blobID) ?? []
+        return Self.shownWeek(viewModel.week, for: place)?.stories.compactMap { $0.media }.filter { !$0.isVideo }.map(\.blobID) ?? []
     }
 
     /// A failed read over a page already on screen, or a failed Ask.
@@ -263,6 +286,9 @@ struct MacTimelineProjectHost: View {
 
     @Environment(\.appDependencies) private var deps
     @State private var images = MacTimelineImages()
+    /// This host's claim on `slot`: only the page that last showed the view
+    /// model stops it on leaving.
+    @State private var pageToken = UUID()
 
     var body: some View {
         Group {
@@ -275,11 +301,11 @@ struct MacTimelineProjectHost: View {
         }
         .task(id: projectID) {
             guard let deps else { return }
-            slot.show(projectID: projectID, owner: owner) {
+            slot.show(projectID: projectID, owner: owner, page: pageToken) {
                 deps.makeProjectDetailViewModel(for: session, projectID: projectID)
             }
         }
-        .onDisappear { slot.pageDidDisappear(owner: owner) }
+        .onDisappear { slot.pageDidDisappear(owner: owner, page: pageToken) }
     }
 
     private var owner: ObjectIdentifier { ObjectIdentifier(missionsViewModel) }
@@ -317,6 +343,10 @@ struct MacTimelineProjectHost: View {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        // Counted like "All details" (which counts itself): the dashboard
+        // keeps the project list fresh while a project page is open.
+        .onAppear { missionsViewModel.projectPageDidAppear() }
+        .onDisappear { missionsViewModel.projectPageDidDisappear() }
         // A merge moved the project: the story follows it, as the page does.
         .onChange(of: slot.model?.projectID) { _, id in
             if let target = slot.redirect(to: id, pageProjectID: projectID) { onRedirectStory(target) }

@@ -22,6 +22,9 @@ public final class TimelineViewModel {
     public private(set) var finished: [FinishedProject] = []
     /// nil before the first weeks load; false once the journal answered 404.
     public private(set) var isSupported: Bool?
+    /// Projects the Coordinator was asked about since the lists last
+    /// reloaded: their rows say so instead of offering the Ask again.
+    public private(set) var askedProjectIDs: Set<String> = []
     public var error: String?
 
     public var hasEarlierWeeks: Bool { weeksNextBefore != nil }
@@ -70,7 +73,25 @@ public final class TimelineViewModel {
     public func refresh() async {
         refreshEpoch += 1
         fresh.removeAll()
+        askedProjectIDs.removeAll()
         await start()
+    }
+
+    /// Reads the went-quiet and open-a-long-time lists not read since the
+    /// last refresh, so the sidebar has their counts before either is
+    /// visited; a visit then shows the list without reading it again. A
+    /// failure stays quiet: the count is a hint, and the visit retries.
+    public func loadCounts() async {
+        let epoch = refreshEpoch
+        let timeline = self.timeline
+        let needsQuiet = !fresh.contains(.quiet), needsLong = !fresh.contains(.long)
+        async let quietRead = Self.read(needsQuiet) { try await timeline.wentQuiet() }
+        async let longRead = Self.read(needsLong) { try await timeline.openLong() }
+        let (quietList, longList) = await (quietRead, longRead)
+        guard epoch == refreshEpoch else { return }
+        // A visit that read the list meanwhile is as fresh: keep it.
+        if let quietList, !fresh.contains(.quiet) { quiet = quietList; fresh.insert(.quiet) }
+        if let longList, !fresh.contains(.long) { long = longList; fresh.insert(.long) }
     }
 
     public func loadEarlierWeeks() async {
@@ -107,8 +128,12 @@ public final class TimelineViewModel {
     public func ask(about stalled: StalledProject) async {
         let title = stalled.project.title
         let moved = stalled.lastMovedAt.map { "It last moved \(Self.relative($0, to: now()))." } ?? "It hasn't moved yet."
-        do { try await askCoordinator("What should we do with the project “\(title)”? \(moved)") }
-        catch { self.error = error.localizedDescription }
+        do {
+            try await askCoordinator("What should we do with the project “\(title)”? \(moved)")
+            askedProjectIDs.insert(stalled.project.id)
+        } catch {
+            self.error = error.localizedDescription
+        }
     }
 
     // MARK: - Loading
@@ -168,6 +193,13 @@ public final class TimelineViewModel {
         } catch {
             if place == target { self.error = error.localizedDescription }
         }
+    }
+
+    /// `read()` when `needed`, nil when not or when it fails.
+    private nonisolated static func read(_ needed: Bool,
+                                         _ read: @Sendable () async throws -> StalledList) async -> StalledList? {
+        guard needed else { return nil }
+        return try? await read()
     }
 
     private static func relative(_ date: Date, to now: Date) -> String {

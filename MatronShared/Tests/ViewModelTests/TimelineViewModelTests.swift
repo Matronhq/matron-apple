@@ -16,6 +16,7 @@ private final class FakeTimeline: TimelineProviding, @unchecked Sendable {
         var finishedPages: [String?: (rows: [FinishedProject], nextBefore: String?)] = [:]
         var weeksError: Error?
         var weekError: Error?
+        var failsLists = false
         var weeksCalls: [String?] = []
         var weekCalls: [String] = []
         var quietCalls = 0
@@ -42,6 +43,8 @@ private final class FakeTimeline: TimelineProviding, @unchecked Sendable {
     }
     var weeksError: Error? { get { read(\.weeksError) } set { write { $0.weeksError = newValue } } }
     var weekError: Error? { get { read(\.weekError) } set { write { $0.weekError = newValue } } }
+    /// The went-quiet and open-a-long-time reads throw.
+    var failsLists: Bool { get { read(\.failsLists) } set { write { $0.failsLists = newValue } } }
     var weeksCalls: [String?] { read(\.weeksCalls) }
     var weekCalls: [String] { read(\.weekCalls) }
     var quietCalls: Int { read(\.quietCalls) }
@@ -94,14 +97,16 @@ private final class FakeTimeline: TimelineProviding, @unchecked Sendable {
     }
 
     func wentQuiet() async throws -> StalledList {
-        let list = lock.withLock { () -> StalledList in state.quietCalls += 1; return state.quiet }
+        let (list, fails) = lock.withLock { () -> (StalledList, Bool) in state.quietCalls += 1; return (state.quiet, state.failsLists) }
         await holdIfGated("quiet")
+        if fails { throw JournalAPIError.forbidden }
         return list
     }
 
     func openLong() async throws -> StalledList {
-        let list = lock.withLock { () -> StalledList in state.longCalls += 1; return state.long }
+        let (list, fails) = lock.withLock { () -> (StalledList, Bool) in state.longCalls += 1; return (state.long, state.failsLists) }
         await holdIfGated("long")
+        if fails { throw JournalAPIError.forbidden }
         return list
     }
 
@@ -398,6 +403,65 @@ final class TimelineViewModelTests: XCTestCase {
         let vm = TimelineViewModel(timeline: fake, askCoordinator: { _ in throw JournalAPIError.forbidden })
         await vm.ask(about: StalledProject(project: project(1)))
         XCTAssertEqual(vm.error, JournalAPIError.forbidden.localizedDescription)
+    }
+
+    func testLoadCountsReadsBothListsSoTheSidebarHasTheirTotals() async {
+        let (vm, fake, _) = make()
+        fake.quiet = StalledList(total: 5, rows: [StalledProject(project: project(1))])
+        fake.long = StalledList(total: 7, rows: [StalledProject(project: project(2))])
+        await vm.start()
+        XCTAssertNil(vm.quiet)
+        await vm.loadCounts()
+        XCTAssertEqual(vm.quiet?.total, 5)
+        XCTAssertEqual(vm.long?.total, 7)
+        await vm.select(.quiet)
+        await vm.select(.long)
+        XCTAssertEqual(fake.quietCalls, 1, "a visit after the counts reads nothing again")
+        XCTAssertEqual(fake.longCalls, 1)
+        await vm.loadCounts()
+        XCTAssertEqual(fake.quietCalls, 1, "fresh lists are not re-read")
+        await vm.refresh()
+        await vm.loadCounts()
+        XCTAssertEqual(fake.quietCalls, 2, "after a refresh the counts re-read")
+        XCTAssertEqual(fake.longCalls, 2)
+    }
+
+    func testCountsFromBeforeARefreshAreDropped() async {
+        let (vm, fake, _) = make()
+        fake.quiet = StalledList(total: 1, rows: [])
+        await vm.start()
+        fake.gate("quiet")
+        let counts = Task { await vm.loadCounts() }
+        await fake.waitUntilHeld("quiet")
+        await vm.refresh()
+        fake.release("quiet")
+        await counts.value
+        XCTAssertNil(vm.quiet, "the pre-refresh counts are dropped")
+        XCTAssertNil(vm.long)
+    }
+
+    func testAFailedCountReadStaysQuiet() async {
+        let fake = FakeTimeline()
+        let vm = TimelineViewModel(timeline: fake, askCoordinator: { _ in })
+        fake.failsLists = true
+        await vm.loadCounts()
+        XCTAssertNil(vm.quiet)
+        XCTAssertNil(vm.error, "a count is a hint: no alert")
+    }
+
+    func testASuccessfulAskMarksTheRowUntilTheListsReload() async {
+        let (vm, _, _) = make()
+        await vm.start()
+        await vm.ask(about: StalledProject(project: project(3)))
+        XCTAssertEqual(vm.askedProjectIDs, ["pj_3"])
+        await vm.refresh()
+        XCTAssertEqual(vm.askedProjectIDs, [])
+    }
+
+    func testAFailedAskDoesNotMarkTheRow() async {
+        let vm = TimelineViewModel(timeline: FakeTimeline(), askCoordinator: { _ in throw JournalAPIError.forbidden })
+        await vm.ask(about: StalledProject(project: project(3)))
+        XCTAssertEqual(vm.askedProjectIDs, [])
     }
 
     func testFlagKey() {

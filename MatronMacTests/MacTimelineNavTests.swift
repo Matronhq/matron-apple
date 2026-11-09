@@ -62,27 +62,64 @@ final class MacTimelineNavTests: XCTestCase {
     func testFlagOff_buildsNoViewModel() {
         let state = MacTimelineState()
         var built = 0
-        state.projectsShown(flagOn: false) {
+        let task = state.projectsShown(flagOn: false) {
             built += 1
-            return TimelineViewModel(timeline: NeverTimeline(), askCoordinator: { _ in })
+            return TimelineViewModel(timeline: StubTimeline(), askCoordinator: { _ in })
         }
+        XCTAssertNil(task)
         XCTAssertEqual(built, 0)
         XCTAssertNil(state.viewModel)
         XCTAssertFalse(state.isShown)
     }
 
-    func testFlagOn_buildsTheViewModelOnce() {
+    func testFlagOn_buildsTheViewModelOnce_andShowsOnceTheJournalAnswers() async {
         let state = MacTimelineState()
+        let timeline = StubTimeline()
         var built = 0
         let build = {
             built += 1
-            return TimelineViewModel(timeline: NeverTimeline(), askCoordinator: { _ in })
+            return TimelineViewModel(timeline: timeline, askCoordinator: { _ in })
         }
-        state.projectsShown(flagOn: true, build: build)
-        state.projectsShown(flagOn: true, build: build)
-        XCTAssertEqual(built, 1)
-        XCTAssertNotNil(state.viewModel)
+        let first = state.projectsShown(flagOn: true, build: build)
         XCTAssertFalse(state.isShown, "not shown until the journal answers")
+        await first?.value
+        XCTAssertTrue(state.isShown)
+        XCTAssertEqual(state.place, .week("2026-11-02"))
+        XCTAssertEqual(state.viewModel?.quiet?.total, 3, "the sidebar's counts load with the timeline")
+        XCTAssertEqual(state.viewModel?.long?.total, 4)
+        await state.projectsShown(flagOn: true, build: build)?.value
+        XCTAssertEqual(built, 1)
+        XCTAssertEqual(timeline.weeksReads, 2, "a later visit re-reads")
+    }
+
+    /// An old journal's 404 is not asked again on every visit.
+    func testALaterVisitToAnUnsupportedJournalReadsNothing() async {
+        let state = MacTimelineState()
+        let timeline = StubTimeline(supported: false)
+        await state.projectsShown(flagOn: true) { TimelineViewModel(timeline: timeline, askCoordinator: { _ in }) }?.value
+        XCTAssertEqual(state.viewModel?.isSupported, false)
+        XCTAssertNil(state.projectsShown(flagOn: true) { XCTFail("built twice"); return state.viewModel! })
+        XCTAssertEqual(timeline.weeksReads, 1)
+    }
+
+    /// Back onto an older week before the view model existed (after an
+    /// account switch): that week, not the newest, is read and shown.
+    func testAPlacePickedBeforeTheViewModelExistsIsTheOneLoaded() async {
+        let state = MacTimelineState()
+        state.select(.week("2026-10-26"))
+        await state.projectsShown(flagOn: true) { TimelineViewModel(timeline: StubTimeline(), askCoordinator: { _ in }) }?.value
+        XCTAssertEqual(state.viewModel?.place, .week("2026-10-26"))
+        XCTAssertEqual(state.viewModel?.week?.week, "2026-10-26")
+    }
+
+    /// The week page shows the loaded week only when it is the selected
+    /// one: a click on another week shows progress until that week arrives.
+    func testTheWeekPageNeverShowsAnotherWeeksCards() {
+        let loaded = StubTimeline.week("2026-11-02")
+        XCTAssertEqual(MacTimelinePlaceView.shownWeek(loaded, for: .week("2026-11-02")), loaded)
+        XCTAssertNil(MacTimelinePlaceView.shownWeek(loaded, for: .week("2026-10-26")))
+        XCTAssertNil(MacTimelinePlaceView.shownWeek(loaded, for: .quiet))
+        XCTAssertNil(MacTimelinePlaceView.shownWeek(nil, for: .week("2026-11-02")))
     }
 
     // MARK: Places
@@ -145,15 +182,32 @@ final class MacTimelineNavTests: XCTestCase {
     }
 }
 
-/// A timeline that is never asked: building the view model makes no read.
-private struct NeverTimeline: TimelineProviding {
-    func timelineWeeks(before: String?, limit: Int?) async throws -> (weeks: [TimelineWeekSummary], nextBefore: String?) {
-        throw CancellationError()
+/// A journal with two weeks and both stalled lists, or (`supported: false`)
+/// one without the timeline routes. Counts its weeks-list reads.
+private final class StubTimeline: TimelineProviding, @unchecked Sendable {
+    private let supported: Bool
+    private let lock = NSLock()
+    private var reads = 0
+
+    init(supported: Bool = true) { self.supported = supported }
+
+    var weeksReads: Int { lock.withLock { reads } }
+
+    static func week(_ key: String) -> TimelineWeek {
+        TimelineWeek(week: key, start: Date(timeIntervalSince1970: 0), end: Date(timeIntervalSince1970: 0), final: true)
     }
-    func timelineWeek(_ week: String) async throws -> TimelineWeek { throw CancellationError() }
-    func wentQuiet() async throws -> StalledList { throw CancellationError() }
-    func openLong() async throws -> StalledList { throw CancellationError() }
+
+    func timelineWeeks(before: String?, limit: Int?) async throws -> (weeks: [TimelineWeekSummary], nextBefore: String?) {
+        lock.withLock { reads += 1 }
+        guard supported else { throw JournalAPIError.notFound }
+        let date = Date(timeIntervalSince1970: 0)
+        return (["2026-11-02", "2026-10-26"].map { TimelineWeekSummary(week: $0, start: date, end: date, sentence: "", moved: 1) },
+                nil)
+    }
+    func timelineWeek(_ week: String) async throws -> TimelineWeek { Self.week(week) }
+    func wentQuiet() async throws -> StalledList { StalledList(total: 3, rows: []) }
+    func openLong() async throws -> StalledList { StalledList(total: 4, rows: []) }
     func finishedProjects(before: String?, limit: Int?) async throws -> (rows: [FinishedProject], nextBefore: String?) {
-        throw CancellationError()
+        ([], nil)
     }
 }

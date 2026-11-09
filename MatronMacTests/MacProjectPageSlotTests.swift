@@ -36,6 +36,21 @@ final class MacProjectPageSlotTests: XCTestCase {
         XCTAssertEqual(slot.model?.stops, 1)
     }
 
+    /// Two pages over one view model (the timeline's project host taking
+    /// over from the project page): the old page leaving after the new one
+    /// showed the model must not stop it; the page showing it does.
+    func testOnlyThePageThatLastShowedTheModelStopsIt() {
+        var slot = MacProjectPageSlot<FakeModel>()
+        slot.show(projectID: "pj_1", owner: a, page: "old") { FakeModel("pj_1") }
+        slot.show(projectID: "pj_1", owner: a, page: "new") { XCTFail("reused"); return FakeModel("x") }
+        slot.pageDidDisappear(owner: a, page: "old")
+        XCTAssertEqual(slot.model?.stops, 0)
+        XCTAssertTrue(slot.isRunning)
+        slot.pageDidDisappear(owner: a, page: "new")
+        XCTAssertEqual(slot.model?.stops, 1)
+        XCTAssertFalse(slot.isRunning)
+    }
+
     func testARunningViewModelIsNotRestarted() {
         var slot = MacProjectPageSlot<FakeModel>()
         let model = FakeModel("pj_a")

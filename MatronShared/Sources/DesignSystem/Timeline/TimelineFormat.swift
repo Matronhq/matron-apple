@@ -13,6 +13,8 @@ public enum TimelineFormat {
     public static let longLede = "These have been open for three weeks or more."
     public static let emptyLede = "Nothing moved this week."
     public static let askAction = "Ask the Coordinator what to do with it"
+    /// Replaces `askAction` on a row once the Ask has gone.
+    public static let askedAction = "Asked the Coordinator"
     public static let needsYouPrefix = "Needs you: "
     /// A story the journal gave no sentence (the project moved without a milestone).
     public static let movedSentence = "Moved this week."

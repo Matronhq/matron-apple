@@ -12,11 +12,13 @@ public struct StalledListView: View {
     let now: Date
     let onOpenProject: (String) -> Void
     let onAsk: (StalledProject) -> Void
+    /// Projects already asked about: their row says so, quietly, instead.
+    let asked: Set<String>
 
     public init(title: String, lede: String, list: StalledList, now: Date, onOpenProject: @escaping (String) -> Void,
-                onAsk: @escaping (StalledProject) -> Void) {
+                onAsk: @escaping (StalledProject) -> Void, asked: Set<String> = []) {
         self.title = title; self.lede = lede; self.list = list; self.now = now
-        self.onOpenProject = onOpenProject; self.onAsk = onAsk
+        self.onOpenProject = onOpenProject; self.onAsk = onAsk; self.asked = asked
     }
 
     #if os(macOS)
@@ -76,12 +78,18 @@ public struct StalledListView: View {
                         TimelineActivityChart(weekly: row.weekly)
                     }
                 }
-                Button { onAsk(row) } label: {
-                    Text(TimelineFormat.askAction + " ›").font(Self.actionFont).foregroundStyle(Color.accentColor)
+                if asked.contains(row.project.id) {
+                    Text(TimelineFormat.askedAction).font(Self.actionFont).foregroundStyle(.secondary)
+                        .padding(.top, 2)
+                        .accessibilityIdentifier("timeline.stalled.asked.\(row.project.num)")
+                } else {
+                    Button { onAsk(row) } label: {
+                        Text(TimelineFormat.askAction + " ›").font(Self.actionFont).foregroundStyle(Color.accentColor)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 2)
+                    .accessibilityIdentifier("timeline.stalled.ask.\(row.project.num)")
                 }
-                .buttonStyle(.plain)
-                .padding(.top, 2)
-                .accessibilityIdentifier("timeline.stalled.ask.\(row.project.num)")
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             if wide {

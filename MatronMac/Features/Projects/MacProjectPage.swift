@@ -41,6 +41,10 @@ extension ProjectDetailViewModel: MacProjectPageModel {}
 /// (`owner`); any other project or owner builds a fresh one.
 @MainActor struct MacProjectPageSlot<Model: MacProjectPageModel> {
     private(set) var model: Model?
+    /// The page that last showed `model`: a page leaving after another
+    /// has shown it (the two `onDisappear` / `.task` can run in either
+    /// order) must not stop it. nil from callers that pass no page.
+    private(set) var shownBy: AnyHashable?
     /// The project the page asked for when `model` was built, or when it
     /// last accepted `model` as its own (PR4 review M2). A redirect is the
     /// page's only when this is the page's project — recorded, not inferred
@@ -64,7 +68,7 @@ extension ProjectDetailViewModel: MacProjectPageModel {}
     /// `projectID` (a redirected one too), else build one; then start it
     /// unless it is already running — a reused one was stopped when the
     /// page last left the screen.
-    mutating func show(projectID: String, owner: ObjectIdentifier, build: () -> Model) {
+    mutating func show(projectID: String, owner: ObjectIdentifier, page: AnyHashable? = nil, build: () -> Model) {
         let model: Model
         if let reused = current(projectID: projectID, owner: owner) {
             model = reused
@@ -76,6 +80,7 @@ extension ProjectDetailViewModel: MacProjectPageModel {}
             isRunning = false
         }
         builtFor = projectID
+        shownBy = page
         if !isRunning {
             model.start()
             isRunning = true
@@ -84,9 +89,11 @@ extension ProjectDetailViewModel: MacProjectPageModel {}
 
     /// The page left the screen. Only `owner`'s page may stop the model: on
     /// an account switch the new session's page can appear before the old
-    /// one's `onDisappear` runs.
-    mutating func pageDidDisappear(owner: ObjectIdentifier) {
+    /// one's `onDisappear` runs. Likewise only the `page` that last showed
+    /// it, when pages say which they are.
+    mutating func pageDidDisappear(owner: ObjectIdentifier, page: AnyHashable? = nil) {
         guard self.owner == owner else { return }
+        if let page, page != shownBy { return }
         model?.stop()
         isRunning = false
     }
@@ -123,6 +130,8 @@ struct MacProjectPage: View {
     var ownsSlot = true
 
     @Environment(\.appDependencies) private var deps
+    /// This page's claim on `slot` (see `MacProjectPageSlot.shownBy`).
+    @State private var pageToken = UUID()
     /// The roll-up's image thumbnails, by blob id: loaded once each through
     /// the session's authenticated media service, as item attachments are.
     @State private var images: [String: Image] = [:]
@@ -138,7 +147,7 @@ struct MacProjectPage: View {
         }
         .task(id: projectID) {
             guard ownsSlot, let deps else { return }
-            slot.show(projectID: projectID, owner: owner) {
+            slot.show(projectID: projectID, owner: owner, page: pageToken) {
                 deps.makeProjectDetailViewModel(for: session, projectID: projectID)
             }
         }
@@ -148,7 +157,7 @@ struct MacProjectPage: View {
         .task(id: imageBlobIDs) { await loadImages(imageBlobIDs) }
         .onAppear { missionsViewModel.projectPageDidAppear() }
         .onDisappear {
-            if ownsSlot { slot.pageDidDisappear(owner: owner) }
+            if ownsSlot { slot.pageDidDisappear(owner: owner, page: pageToken) }
             missionsViewModel.projectPageDidDisappear()
         }
         .alert("Projects", isPresented: errorShown) {
