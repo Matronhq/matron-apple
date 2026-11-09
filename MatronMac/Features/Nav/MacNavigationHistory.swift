@@ -105,6 +105,9 @@ struct MacPlace: Equatable {
         case mission(id: String?)
         /// A project page (spec 2026-09-30 §2), under the Projects entry.
         case project(id: String)
+        /// The Projects timeline (behind its flag): the week or list the
+        /// list column has selected, and the project story open over it.
+        case timeline(place: TimelinePlace?, story: String?)
         case decision(id: String?)
         case memory(MacMemorySelection?)
     }
@@ -116,7 +119,7 @@ struct MacPlace: Equatable {
         case .coordinator: return .coordinator
         case .desk(let id, _): return .desk(id)
         case .conversation: return .conversations
-        case .mission, .project: return .missions
+        case .mission, .project, .timeline: return .missions
         case .decision: return .decisions
         case .memory: return .memories
         }
@@ -127,7 +130,7 @@ struct MacPlace: Equatable {
         case .coordinator(_, let pane): return pane
         case .desk(_, let pane): return pane
         case .conversation(_, let pane): return pane
-        case .mission, .project, .decision, .memory: return nil
+        case .mission, .project, .timeline, .decision, .memory: return nil
         }
     }
 
@@ -151,7 +154,7 @@ struct MacPlace: Equatable {
         case .coordinator(let id, _): return id
         case .desk(let id, _): return id
         case .conversation(let id, _): return id
-        case .mission, .project, .decision, .memory: return nil
+        case .mission, .project, .timeline, .decision, .memory: return nil
         }
     }
 }

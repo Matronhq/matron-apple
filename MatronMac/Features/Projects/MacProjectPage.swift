@@ -117,6 +117,10 @@ struct MacProjectPage: View {
     @Binding var slot: MacProjectPageSlot<ProjectDetailViewModel>
     let actions: MacProjectPageActions
     let onRedirect: (String) -> Void
+    /// False when a host starts and stops `slot` itself: the timeline's
+    /// project host keeps one view model across its story and this page,
+    /// and two pages' `onDisappear` / `.task` could run in either order.
+    var ownsSlot = true
 
     @Environment(\.appDependencies) private var deps
     /// The roll-up's image thumbnails, by blob id: loaded once each through
@@ -133,7 +137,7 @@ struct MacProjectPage: View {
             content
         }
         .task(id: projectID) {
-            guard let deps else { return }
+            guard ownsSlot, let deps else { return }
             slot.show(projectID: projectID, owner: owner) {
                 deps.makeProjectDetailViewModel(for: session, projectID: projectID)
             }
@@ -144,7 +148,7 @@ struct MacProjectPage: View {
         .task(id: imageBlobIDs) { await loadImages(imageBlobIDs) }
         .onAppear { missionsViewModel.projectPageDidAppear() }
         .onDisappear {
-            slot.pageDidDisappear(owner: owner)
+            if ownsSlot { slot.pageDidDisappear(owner: owner) }
             missionsViewModel.projectPageDidDisappear()
         }
         .alert("Projects", isPresented: errorShown) {
@@ -221,24 +225,29 @@ struct MacProjectPage: View {
         wired.onMerge = { target in Task { _ = await vm?.merge(into: target) } }
         wired.onLoadMore = { kind in Task { await vm?.loadMore(kind: kind) } }
         wired.onLoadMoreActivity = { Task { await vm?.loadMoreActivity() } }
-        wired.onOpenFile = { file in
-            switch file.source {
-            case .chat(let convoID, let seq): actions.onOpenConversationAt(convoID, seq)
-            case .item(let num): Task { await openItem(num: num, vm: vm) }
-            }
+        wired.onOpenFile = { [deps, session, actions] file in
+            Self.openFile(file, deps: deps, session: session, actions: actions, vm: vm)
         }
         return wired
     }
 
-    /// An item file names its item by number: resolve it the way a tapped
+    /// A roll-up file: a chat file opens its conversation at the event. An
+    /// item file names its item by number: resolve it the way a tapped
     /// `matron://item/<n>` link is (one refresh on a miss), then open it, or
     /// say why not in the page's alert.
-    private func openItem(num: Int, vm: ProjectDetailViewModel?) async {
-        guard let deps else { return }
-        switch await deps.trackerItemLinkOutcome(num: num, session: session) {
-        case .open(let itemID): actions.onOpenItem(itemID)
-        case .explain(let message): vm?.error = message
-        case .ignore: break
+    static func openFile(_ file: ProjectFile, deps: AppDependencies?, session: UserSession,
+                         actions: MacProjectPageActions, vm: ProjectDetailViewModel?) {
+        switch file.source {
+        case .chat(let convoID, let seq): actions.onOpenConversationAt(convoID, seq)
+        case .item(let num):
+            guard let deps else { return }
+            Task {
+                switch await deps.trackerItemLinkOutcome(num: num, session: session) {
+                case .open(let itemID): actions.onOpenItem(itemID)
+                case .explain(let message): vm?.error = message
+                case .ignore: break
+                }
+            }
         }
     }
 
