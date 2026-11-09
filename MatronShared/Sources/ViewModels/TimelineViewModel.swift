@@ -48,8 +48,14 @@ public final class TimelineViewModel {
     /// Bumped when a reload replaces a paged list: a page fetched before is dropped.
     @ObservationIgnored private var weeksGeneration = 0
     @ObservationIgnored private var finishedGeneration = 0
+    /// Bumped by `refresh()`: a quiet/long result fetched before it is dropped.
+    @ObservationIgnored private var refreshEpoch = 0
     @ObservationIgnored private var isLoadingEarlier = false
     @ObservationIgnored private var isLoadingFinished = false
+    /// A first-page reload is in flight: paging off the old cursor would mix
+    /// two lists, so paging waits for it.
+    @ObservationIgnored private var isReloadingWeeks = false
+    @ObservationIgnored private var isReloadingFinished = false
 
     public init(timeline: TimelineProviding, askCoordinator: @escaping (String) async throws -> Void,
                 now: @escaping () -> Date = Date.init) {
@@ -73,12 +79,13 @@ public final class TimelineViewModel {
     /// Re-reads the weeks and the place on screen; the lists off screen
     /// reload on their next visit.
     public func refresh() async {
+        refreshEpoch += 1
         fresh.removeAll()
         await start()
     }
 
     public func loadEarlierWeeks() async {
-        guard let before = weeksNextBefore, !isLoadingEarlier else { return }
+        guard let before = weeksNextBefore, !isLoadingEarlier, !isReloadingWeeks else { return }
         isLoadingEarlier = true
         defer { isLoadingEarlier = false }
         let generation = weeksGeneration
@@ -93,7 +100,7 @@ public final class TimelineViewModel {
     }
 
     public func loadMoreFinished() async {
-        guard let before = finishedNextBefore, !isLoadingFinished else { return }
+        guard let before = finishedNextBefore, !isLoadingFinished, !isReloadingFinished else { return }
         isLoadingFinished = true
         defer { isLoadingFinished = false }
         let generation = finishedGeneration
@@ -122,6 +129,8 @@ public final class TimelineViewModel {
     private func loadWeeks() async -> Bool {
         weeksGeneration += 1
         let generation = weeksGeneration
+        isReloadingWeeks = true
+        defer { if generation == weeksGeneration { isReloadingWeeks = false } }
         do {
             let page = try await timeline.timelineWeeks(before: nil, limit: nil)
             guard generation == weeksGeneration else { return false }
@@ -141,6 +150,7 @@ public final class TimelineViewModel {
     private func loadCurrent() async {
         guard let target = place else { return }
         if case .week = target {} else if fresh.contains(target) { return }
+        let epoch = refreshEpoch
         do {
             switch target {
             case .week(let key):
@@ -149,13 +159,17 @@ public final class TimelineViewModel {
                 if place == target { week = loaded }
             case .quiet:
                 let loaded = try await timeline.wentQuiet()
+                guard epoch == refreshEpoch else { return }
                 quiet = loaded
             case .long:
                 let loaded = try await timeline.openLong()
+                guard epoch == refreshEpoch else { return }
                 long = loaded
             case .finished:
                 finishedGeneration += 1
                 let generation = finishedGeneration
+                isReloadingFinished = true
+                defer { if generation == finishedGeneration { isReloadingFinished = false } }
                 let page = try await timeline.finishedProjects(before: nil, limit: nil)
                 guard generation == finishedGeneration else { return }
                 finished = page.rows

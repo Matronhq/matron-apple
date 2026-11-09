@@ -4,53 +4,114 @@ import MatronJournal
 @testable import MatronViewModels
 
 /// A scripted `TimelineProviding`: pages keyed by `before`, per-call counters,
-/// and a switch to fail the next call of a route.
+/// and gates that hold a call (by key) until the test releases it. A gate
+/// holds the first call that arrives at its key; the result is read before
+/// the hold, so a held call returns what was scripted when it started.
 private final class FakeTimeline: TimelineProviding, @unchecked Sendable {
+    private struct State {
+        var weekPages: [String?: (weeks: [TimelineWeekSummary], nextBefore: String?)] = [:]
+        var weekDetails: [String: TimelineWeek] = [:]
+        var quiet = StalledList(total: 0, rows: [])
+        var long = StalledList(total: 0, rows: [])
+        var finishedPages: [String?: (rows: [FinishedProject], nextBefore: String?)] = [:]
+        var weeksError: Error?
+        var weekError: Error?
+        var weeksCalls: [String?] = []
+        var weekCalls: [String] = []
+        var quietCalls = 0
+        var longCalls = 0
+        var finishedCalls: [String?] = []
+        var gated: Set<String> = []
+        var held: [String: CheckedContinuation<Void, Never>] = [:]
+    }
+
     private let lock = NSLock()
-    var weekPages: [String?: (weeks: [TimelineWeekSummary], nextBefore: String?)] = [:]
-    var weekDetails: [String: TimelineWeek] = [:]
-    var quiet = StalledList(total: 0, rows: [])
-    var long = StalledList(total: 0, rows: [])
-    var finishedPages: [String?: (rows: [FinishedProject], nextBefore: String?)] = [:]
-    var weeksError: Error?
-    var weekError: Error?
-    private(set) var weeksCalls: [String?] = []
-    private(set) var weekCalls: [String] = []
-    private(set) var quietCalls = 0
-    private(set) var longCalls = 0
-    private(set) var finishedCalls: [String?] = []
+    private var state = State()
+
+    private func read<T>(_ body: (State) -> T) -> T { lock.withLock { body(state) } }
+    private func write(_ body: (inout State) -> Void) { lock.withLock { body(&state) } }
+
+    var weekPages: [String?: (weeks: [TimelineWeekSummary], nextBefore: String?)] {
+        get { read(\.weekPages) } set { write { $0.weekPages = newValue } }
+    }
+    var weekDetails: [String: TimelineWeek] { get { read(\.weekDetails) } set { write { $0.weekDetails = newValue } } }
+    var quiet: StalledList { get { read(\.quiet) } set { write { $0.quiet = newValue } } }
+    var long: StalledList { get { read(\.long) } set { write { $0.long = newValue } } }
+    var finishedPages: [String?: (rows: [FinishedProject], nextBefore: String?)] {
+        get { read(\.finishedPages) } set { write { $0.finishedPages = newValue } }
+    }
+    var weeksError: Error? { get { read(\.weeksError) } set { write { $0.weeksError = newValue } } }
+    var weekError: Error? { get { read(\.weekError) } set { write { $0.weekError = newValue } } }
+    var weeksCalls: [String?] { read(\.weeksCalls) }
+    var weekCalls: [String] { read(\.weekCalls) }
+    var quietCalls: Int { read(\.quietCalls) }
+    var longCalls: Int { read(\.longCalls) }
+    var finishedCalls: [String?] { read(\.finishedCalls) }
+
+    // MARK: Gates
+
+    /// Hold the next call at `key` ("weeks:<before>", "week:<key>", "quiet", "long", "finished:<before>").
+    func gate(_ key: String) { write { $0.gated.insert(key) } }
+
+    func waitUntilHeld(_ key: String) async {
+        while read({ $0.held[key] == nil }) { await Task.yield() }
+    }
+
+    func release(_ key: String) {
+        let continuation = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+            state.gated.remove(key)
+            return state.held.removeValue(forKey: key)
+        }
+        continuation?.resume()
+    }
+
+    private func holdIfGated(_ key: String) async {
+        guard lock.withLock({ state.gated.remove(key) != nil }) else { return }
+        await withCheckedContinuation { continuation in write { $0.held[key] = continuation } }
+    }
+
+    // MARK: TimelineProviding
 
     func timelineWeeks(before: String?, limit: Int?) async throws -> (weeks: [TimelineWeekSummary], nextBefore: String?) {
-        lock.lock(); defer { lock.unlock() }
-        weeksCalls.append(before)
-        if let weeksError { throw weeksError }
-        return weekPages[before] ?? ([], nil)
+        let (page, failure) = lock.withLock { () -> ((weeks: [TimelineWeekSummary], nextBefore: String?), Error?) in
+            state.weeksCalls.append(before)
+            return (state.weekPages[before] ?? ([], nil), state.weeksError)
+        }
+        await holdIfGated("weeks:\(before ?? "nil")")
+        if let failure { throw failure }
+        return page
     }
 
     func timelineWeek(_ week: String) async throws -> TimelineWeek {
-        lock.lock(); defer { lock.unlock() }
-        weekCalls.append(week)
-        if let weekError { throw weekError }
-        guard let detail = weekDetails[week] else { throw JournalAPIError.notFound }
+        let (detail, failure) = lock.withLock { () -> (TimelineWeek?, Error?) in
+            state.weekCalls.append(week)
+            return (state.weekDetails[week], state.weekError)
+        }
+        await holdIfGated("week:\(week)")
+        if let failure { throw failure }
+        guard let detail else { throw JournalAPIError.notFound }
         return detail
     }
 
     func wentQuiet() async throws -> StalledList {
-        lock.lock(); defer { lock.unlock() }
-        quietCalls += 1
-        return quiet
+        let list = lock.withLock { () -> StalledList in state.quietCalls += 1; return state.quiet }
+        await holdIfGated("quiet")
+        return list
     }
 
     func openLong() async throws -> StalledList {
-        lock.lock(); defer { lock.unlock() }
-        longCalls += 1
-        return long
+        let list = lock.withLock { () -> StalledList in state.longCalls += 1; return state.long }
+        await holdIfGated("long")
+        return list
     }
 
     func finishedProjects(before: String?, limit: Int?) async throws -> (rows: [FinishedProject], nextBefore: String?) {
-        lock.lock(); defer { lock.unlock() }
-        finishedCalls.append(before)
-        return finishedPages[before] ?? ([], nil)
+        let page = lock.withLock { () -> (rows: [FinishedProject], nextBefore: String?) in
+            state.finishedCalls.append(before)
+            return state.finishedPages[before] ?? ([], nil)
+        }
+        await holdIfGated("finished:\(before ?? "nil")")
+        return page
     }
 }
 
@@ -191,6 +252,128 @@ final class TimelineViewModelTests: XCTestCase {
         await vm.select(.week("2026-11-02"))
         await vm.select(.finished)
         XCTAssertEqual(fake.finishedCalls, [nil, "cursor"], "cached; no extra requests")
+    }
+
+    // MARK: - Race guards
+
+    /// Lets queued main-actor work run (a task that would reach a gate or return).
+    private func settle() async { for _ in 0..<50 { await Task.yield() } }
+
+    func testALateWeekResultDoesNotReplaceTheWeekSelectedSince() async {
+        let (vm, fake, _) = make()
+        await vm.start()
+        fake.gate("week:2026-10-26")
+        let slow = Task { await vm.select(.week("2026-10-26")) }
+        await fake.waitUntilHeld("week:2026-10-26")
+        await vm.select(.week("2026-10-19"))
+        fake.release("week:2026-10-26")
+        await slow.value
+        XCTAssertEqual(vm.place, .week("2026-10-19"))
+        XCTAssertEqual(vm.week?.week, "2026-10-19", "the earlier request finishing last must not win")
+    }
+
+    func testPagingDuringAFirstPageReloadIsRefused() async {
+        let (vm, fake, _) = make()
+        await vm.start()
+        // The reload brings a shifted first page; the stale cursor's page would duplicate its tail.
+        fake.weekPages[nil] = ([summary("2026-11-09"), summary("2026-11-02"), summary("2026-10-26"), summary("2026-10-19")], nil)
+        fake.gate("weeks:nil")
+        fake.gate("weeks:2026-10-26")
+        let reload = Task { await vm.refresh() }
+        await fake.waitUntilHeld("weeks:nil")
+        let paging = Task { await vm.loadEarlierWeeks() }
+        await settle()
+        fake.release("weeks:nil")
+        await reload.value
+        fake.release("weeks:2026-10-26")
+        await paging.value
+        XCTAssertEqual(vm.weeks.map(\.week), ["2026-11-09", "2026-11-02", "2026-10-26", "2026-10-19"])
+        XCTAssertEqual(fake.weeksCalls, [nil, nil], "no page was requested off the old cursor")
+    }
+
+    func testAPageFetchedBeforeARefreshIsDropped() async {
+        let (vm, fake, _) = make()
+        await vm.start()
+        fake.gate("weeks:2026-10-26")
+        let paging = Task { await vm.loadEarlierWeeks() }
+        await fake.waitUntilHeld("weeks:2026-10-26")
+        fake.weekPages[nil] = ([summary("2026-11-09"), summary("2026-11-02"), summary("2026-10-26"), summary("2026-10-19")], nil)
+        await vm.refresh()
+        fake.release("weeks:2026-10-26")
+        await paging.value
+        XCTAssertEqual(vm.weeks.map(\.week), ["2026-11-09", "2026-11-02", "2026-10-26", "2026-10-19"], "no duplicate tail")
+    }
+
+    func testPagingFinishedDuringAReloadIsRefused() async {
+        let (vm, fake, _) = make()
+        let finish = { (n: Int) in FinishedProject(project: self.project(n), finishedAt: self.now) }
+        fake.finishedPages[nil] = ([finish(1), finish(2)], "cursor")
+        fake.finishedPages["cursor"] = ([finish(3)], nil)
+        await vm.start()
+        await vm.select(.finished)
+        fake.finishedPages[nil] = ([finish(1), finish(2), finish(3)], nil)
+        fake.gate("finished:nil")
+        fake.gate("finished:cursor")
+        let reload = Task { await vm.refresh() }
+        await fake.waitUntilHeld("finished:nil")
+        let paging = Task { await vm.loadMoreFinished() }
+        await settle()
+        fake.release("finished:nil")
+        await reload.value
+        fake.release("finished:cursor")
+        await paging.value
+        XCTAssertEqual(vm.finished.map(\.project.num), [1, 2, 3])
+        XCTAssertEqual(fake.finishedCalls, [nil, nil])
+    }
+
+    func testAFinishedPageFetchedBeforeARefreshIsDropped() async {
+        let (vm, fake, _) = make()
+        let finish = { (n: Int) in FinishedProject(project: self.project(n), finishedAt: self.now) }
+        fake.finishedPages[nil] = ([finish(1), finish(2)], "cursor")
+        fake.finishedPages["cursor"] = ([finish(3)], nil)
+        await vm.start()
+        await vm.select(.finished)
+        fake.gate("finished:cursor")
+        let paging = Task { await vm.loadMoreFinished() }
+        await fake.waitUntilHeld("finished:cursor")
+        fake.finishedPages[nil] = ([finish(1), finish(2), finish(3)], nil)
+        await vm.refresh()
+        fake.release("finished:cursor")
+        await paging.value
+        XCTAssertEqual(vm.finished.map(\.project.num), [1, 2, 3])
+    }
+
+    func testAQuietResultFromBeforeARefreshIsNeitherShownNorCached() async {
+        let (vm, fake, _) = make()
+        fake.quiet = StalledList(total: 1, rows: [StalledProject(project: project(1))])
+        await vm.start()
+        fake.gate("quiet")
+        let slow = Task { await vm.select(.quiet) }
+        await fake.waitUntilHeld("quiet")
+        await vm.select(.week("2026-11-02"))
+        fake.quiet = StalledList(total: 2, rows: [])
+        await vm.refresh()
+        fake.release("quiet")
+        await slow.value
+        XCTAssertNil(vm.quiet, "the pre-refresh result is dropped")
+        await vm.select(.quiet)
+        XCTAssertEqual(fake.quietCalls, 2, "and not marked fresh, so the next visit re-reads")
+        XCTAssertEqual(vm.quiet?.total, 2)
+    }
+
+    func testALongResultFromBeforeARefreshDoesNotOverwriteTheReload() async {
+        let (vm, fake, _) = make()
+        fake.long = StalledList(total: 1, rows: [StalledProject(project: project(1))])
+        await vm.start()
+        fake.gate("long")
+        let slow = Task { await vm.select(.long) }
+        await fake.waitUntilHeld("long")
+        fake.long = StalledList(total: 2, rows: [])
+        await vm.refresh()
+        XCTAssertEqual(vm.long?.total, 2)
+        fake.release("long")
+        await slow.value
+        XCTAssertEqual(vm.long?.total, 2, "the late pre-refresh result must not win")
     }
 
     func testAskAboutSendsTheExactMessage() async {
