@@ -147,6 +147,25 @@ final class AnimatedImagePlayerTests: XCTestCase {
         playback.tearDown()
     }
 
+
+    /// A finished animation rests on its last frame, in or out of sight.
+    func test_aFinishedAnimation_keepsItsLastFrame_outOfSight() async throws {
+        let playback = AnimatedPlayback(source: source([Self.red, Self.blue], loopCount: 1), fullResolution: false)
+        var onScreen = true
+        var contents: CGImage?
+        playback.isOnScreen = { onScreen }
+        playback.hasContents = { contents != nil }
+        playback.setContents = { contents = $0 }
+        playback.setDrawnSize(40)
+        playback.wantsPlayback = true
+        try await waitUntil { playback.player.isFinished }
+        onScreen = false
+        playback.update()
+        onScreen = true
+        playback.update()
+        XCTAssertEqual(contents.map(Self.centrePixel), Self.blue)
+    }
+
     /// Two players of one source (a chat row and the viewer over it) read
     /// through readers of their own.
     func test_eachPlayerHasItsOwnReader() throws {

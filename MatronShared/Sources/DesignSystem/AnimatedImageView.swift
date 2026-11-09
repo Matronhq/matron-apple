@@ -174,18 +174,19 @@ final class AnimatedPlayback {
 
     /// Plays when wanted and in sight; otherwise stops. An image that would
     /// play but can't be seen gives back its frames and shows the still; a
-    /// paused one (Reduce Motion) keeps the frame it stopped on.
+    /// paused one (Reduce Motion) and a finished one keep the frame they
+    /// stopped on — there is nothing to resume to.
     func update() {
         if wantsPlayback, player.maxPixel > 0, isOnScreen() {
             player.start()
-        } else if wantsPlayback {
+        } else if wantsPlayback, !player.isFinished {
             player.stop(releasingFrames: true)
             if hasContents() {
                 setContents(nil)
                 report(false)
             }
         } else {
-            player.stop(releasingFrames: false)
+            player.stop(releasingFrames: player.isFinished)
         }
     }
 
