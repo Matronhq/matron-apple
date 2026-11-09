@@ -484,6 +484,41 @@ final class TimelineViewModelTests: XCTestCase {
         XCTAssertEqual(vm.askedProjectIDs, [])
     }
 
+    /// Two refreshes read the same week at once and the older answers
+    /// last: the newer read stays on screen.
+    func testAnOlderReadOfTheSameWeekDoesNotReplaceANewerOne() async {
+        let (vm, fake, _) = make()
+        await vm.start()
+        fake.weekDetails["2026-11-02"] = TimelineWeek(week: "2026-11-02", start: now, end: now, final: true, lede: "Older")
+        fake.gate("week:2026-11-02")
+        let older = Task { await vm.refresh() }
+        await fake.waitUntilHeld("week:2026-11-02")
+        fake.weekDetails["2026-11-02"] = TimelineWeek(week: "2026-11-02", start: now, end: now, final: true, lede: "Newer")
+        await vm.refresh()
+        XCTAssertEqual(vm.week?.lede, "Newer")
+        fake.release("week:2026-11-02")
+        await older.value
+        XCTAssertEqual(vm.week?.lede, "Newer")
+        XCTAssertNil(vm.error)
+    }
+
+    /// An older read of the same week that fails after a newer one landed
+    /// says nothing: the page has the newer week.
+    func testAnOlderFailedReadOfTheSameWeekSetsNoError() async {
+        let (vm, fake, _) = make()
+        await vm.start()
+        fake.weekError = JournalAPIError.forbidden
+        fake.gate("week:2026-11-02")
+        let older = Task { await vm.refresh() }
+        await fake.waitUntilHeld("week:2026-11-02")
+        fake.weekError = nil
+        await vm.refresh()
+        fake.release("week:2026-11-02")
+        await older.value
+        XCTAssertNil(vm.error)
+        XCTAssertEqual(vm.week?.week, "2026-11-02")
+    }
+
     func testFlagKey() {
         XCTAssertEqual(TimelineViewModel.flagKey, "projects.timeline")
     }

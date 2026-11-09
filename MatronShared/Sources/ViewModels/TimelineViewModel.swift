@@ -43,6 +43,10 @@ public final class TimelineViewModel {
     /// Bumped when a reload replaces a paged list: a page fetched before is dropped.
     @ObservationIgnored private var weeksGeneration = 0
     @ObservationIgnored private var finishedGeneration = 0
+    /// Bumped by each week read: only the newest read's answer (or
+    /// failure) lands, so a slower, older read of the same week never
+    /// replaces a newer one or says an error over it.
+    @ObservationIgnored private var weekGeneration = 0
     /// Bumped by `refresh()`: a quiet/long result fetched before it is dropped.
     @ObservationIgnored private var refreshEpoch = 0
     @ObservationIgnored private var isLoadingEarlier = false
@@ -167,12 +171,14 @@ public final class TimelineViewModel {
         guard let target = place else { return }
         if case .week = target {} else if fresh.contains(target) { return }
         let epoch = refreshEpoch
+        if case .week = target { weekGeneration += 1 }
+        let generation = weekGeneration
         do {
             switch target {
             case .week(let key):
                 let loaded = try await timeline.timelineWeek(key)
-                // A later select moved on while this was in flight.
-                if place == target { week = loaded }
+                // A later select moved on, or a newer read started, while this was in flight.
+                if place == target, generation == weekGeneration { week = loaded }
             case .quiet:
                 let loaded = try await timeline.wentQuiet()
                 guard epoch == refreshEpoch else { return }
@@ -194,6 +200,7 @@ public final class TimelineViewModel {
             }
             if case .week = target {} else { fresh.insert(target) }
         } catch {
+            if case .week = target, generation != weekGeneration { return }
             if place == target { self.error = error.localizedDescription }
         }
     }

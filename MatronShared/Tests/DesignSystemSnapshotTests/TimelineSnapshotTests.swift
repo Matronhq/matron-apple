@@ -207,6 +207,20 @@ final class TimelineSnapshotTests: XCTestCase {
         XCTAssertEqual(TimelineFormat.weekday(at(11, 3, 9), calendar: calendar), "Tuesday")
     }
 
+    /// The dates are the Gregorian ones whatever the device's calendar;
+    /// only the weeks are grouped in it.
+    func testGalleryWeekTitleOnANonGregorianCalendar() {
+        for identifier in [Calendar.Identifier.buddhist, .islamicUmmAlQura] {
+            var calendar = Calendar(identifier: identifier)
+            calendar.timeZone = TimeZone(identifier: "Europe/London")!
+            calendar.firstWeekday = 2
+            let thisWeek = calendar.dateInterval(of: .weekOfYear, for: D.now)!.start
+            let older = calendar.date(byAdding: .day, value: -14, to: thisWeek)!
+            XCTAssertEqual(TimelineFormat.galleryWeekTitle(weekStart: older, thisWeekStart: thisWeek, calendar: calendar),
+                           "19 – 25 Oct", "\(identifier)")
+        }
+    }
+
     // MARK: Snapshots
 
     private static let images = D.images

@@ -222,13 +222,16 @@ public enum TimelineFormat {
     }
 
     /// "This week", "Last week", else "19 – 25 Oct", for the week starting
-    /// `weekStart` in `calendar`'s zone.
+    /// `weekStart` in `calendar`'s zone. The weeks are `calendar`'s; the
+    /// dates are always Gregorian, whatever the device's calendar.
     public static func galleryWeekTitle(weekStart: Date, thisWeekStart: Date, calendar: Calendar) -> String {
         if weekStart == thisWeekStart { return thisWeek }
         if let previous = calendar.date(byAdding: .day, value: -7, to: thisWeekStart), weekStart == previous {
             return lastWeek
         }
-        let day = calendar.dateComponents([.year, .month, .day], from: weekStart)
+        var gregorian = Calendar(identifier: .gregorian)
+        gregorian.timeZone = calendar.timeZone
+        let day = gregorian.dateComponents([.year, .month, .day], from: weekStart)
         let key = String(format: "%04d-%02d-%02d", day.year ?? 0, day.month ?? 0, day.day ?? 0)
         return shortRange(key) ?? key
     }
