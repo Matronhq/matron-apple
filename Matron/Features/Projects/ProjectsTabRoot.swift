@@ -13,7 +13,7 @@ struct ProjectsTabRoot: View {
     let onAction: (ProjectsHomeAction) -> Void
     let onLegacyAction: (MissionsDashboardAction) -> Void
     var onOpenMemories: (() -> Void)? = nil
-    var timeline: TimelineShellState? = nil
+    var timeline: TimelineHostState? = nil
     var timelineActions: TimelineActions? = nil
     @Environment(\.currentSession) private var session
     /// One `.sheet` for both: a second `.sheet` modifier on this root left
@@ -51,30 +51,43 @@ struct ProjectsTabRoot: View {
     var body: some View {
         page
             .toolbar { toolbarContent }
-            .onAppear { viewModel.pageDidAppear() }
-            .onDisappear { viewModel.pageDidDisappear() }
             .sheet(item: $sheet) { sheet in
                 switch sheet {
                 case .newProject: newProjectSheet
                 case .briefing: briefingSheet
                 }
             }
+            // The one alert: the dashboard's (New project, Ask), else the
+            // timeline's week page's.
             .alert("Projects", isPresented: errorShown) {
-                Button("OK") { viewModel.error = nil }
+                Button("OK", role: .cancel) {}
             } message: {
-                Text(viewModel.error ?? "")
+                Text(alertMessage ?? "")
             }
     }
 
+    /// The dashboard's cards and their feeds run only while its page
+    /// shows: the timeline's toolbar needs none of them.
+    private func dashboardPage(_ page: some View) -> some View {
+        page
+            .onAppear { viewModel.pageDidAppear() }
+            .onDisappear { viewModel.pageDidDisappear() }
+    }
+
+    private var shownContent: Content {
+        Self.content(projectsSupported: viewModel.projectsSupported, timelineShown: timeline?.isShown == true)
+    }
+
     @ViewBuilder private var page: some View {
-        switch Self.content(projectsSupported: viewModel.projectsSupported, timelineShown: timeline?.isShown == true) {
+        switch shownContent {
         case .legacy:
-            MissionsDashboardView(model: legacyModel, onAction: onLegacyAction, onRefresh: { await viewModel.refresh() })
-                .navigationTitle("Projects")
+            dashboardPage(MissionsDashboardView(model: legacyModel, onAction: onLegacyAction,
+                                                onRefresh: { await viewModel.refresh() })
+                .navigationTitle("Projects"))
         case .home:
             home
         case .timeline:
-            if let timeline, let timelineViewModel = timeline.viewModel, let timelineActions, let session {
+            if let timeline, let timelineViewModel = phoneTimeline, let timelineActions, let session {
                 TimelinePhoneRoot(state: timeline, viewModel: timelineViewModel, session: session,
                                   onOpenStory: timelineActions.onOpenStory, onOpenList: timelineActions.onOpenList,
                                   onOpenItem: timelineActions.onOpenItem)
@@ -85,10 +98,16 @@ struct ProjectsTabRoot: View {
     }
 
     private var home: some View {
-        ProjectsHomeView(model: homeModel, onAction: handle, onRefresh: { await viewModel.refresh() },
-                         onOpenBriefing: { sheet = .briefing },
-                         onRefreshBriefing: { Task { await viewModel.briefing?.requestRefresh() } })
-            .navigationTitle("Projects")
+        dashboardPage(ProjectsHomeView(model: homeModel, onAction: handle, onRefresh: { await viewModel.refresh() },
+                                       onOpenBriefing: { sheet = .briefing },
+                                       onRefreshBriefing: { Task { await viewModel.briefing?.requestRefresh() } })
+            .navigationTitle("Projects"))
+    }
+
+    /// The timeline's view model when the root is its week page.
+    private var phoneTimeline: TimelineViewModel? {
+        guard shownContent == .timeline, timelineActions != nil, session != nil else { return nil }
+        return timeline?.viewModel
     }
 
     private var homeModel: ProjectsHomeView.Model {
@@ -137,8 +156,23 @@ struct ProjectsTabRoot: View {
         .presentationDetents([.medium])
     }
 
+    /// The dashboard's error; the New project sheet shows its own.
+    private var dashboardError: String? { sheet == .newProject ? nil : viewModel.error }
+
+    /// The week page's error, when it says one (`TimelineViewModel.showsError`).
+    private var timelineError: String? {
+        guard let timeline, let timelineViewModel = phoneTimeline,
+              timelineViewModel.showsError(on: TimelinePhoneRoot.place(timeline)) else { return nil }
+        return timelineViewModel.error
+    }
+
+    private var alertMessage: String? { dashboardError ?? timelineError }
+
     private var errorShown: Binding<Bool> {
-        Binding(get: { viewModel.error != nil && sheet != .newProject }, set: { if !$0 { viewModel.error = nil } })
+        Binding(get: { alertMessage != nil }, set: { shown in
+            guard !shown else { return }
+            if dashboardError != nil { viewModel.error = nil } else { timeline?.viewModel?.error = nil }
+        })
     }
 
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {

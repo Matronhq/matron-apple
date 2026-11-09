@@ -54,8 +54,8 @@ struct AppShellView: View {
     @State var decisionsVM: ItemsPanelViewModel
     @State var missionsVM: MissionsDashboardViewModel
     /// The Projects timeline, behind its flag: built on the first visit
-    /// to Projects (`TimelineShellState.projectsShown`).
-    @State var timeline = TimelineShellState()
+    /// to Projects (`TimelineHostState.projectsShown`).
+    @State var timeline = TimelineHostState()
     /// The Memories screen's view model. Built with the shell, but it loads
     /// nothing until the screen appears (`MemoriesScreen`), and the shell
     /// stops its live refetch once the screen leaves the Missions stack.
@@ -131,9 +131,8 @@ struct AppShellView: View {
             }
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { windowWidth = $0 }
-        // Each visit to Projects (Memories rides its stack, but is not one)
-        // reads the timeline, with the flag on.
-        .onChange(of: nav.tab == .missions && nav.missionsPath.first != MemoriesRoute.list, initial: true) { _, shown in
+        // Each visit to Projects reads the timeline, with the flag on.
+        .onChange(of: nav.projectsPageShown, initial: true) { _, shown in
             guard shown else { return }
             timeline.projectsShown { [deps, session, nav] in
                 deps.makeTimelineViewModel(for: session, coordinatorConvoID: { nav.coordinatorConvoID })
@@ -644,9 +643,9 @@ struct AppShellView: View {
     /// two stalled lists).
     @ViewBuilder private func timelineListDestination(_ route: TimelineListRoute) -> some View {
         if let place = route.place, let viewModel = timeline.viewModel {
-            TimelinePlacePage(viewModel: viewModel, place: place, session: session,
-                              onOpenProject: timelineActions.onOpenStory, onOpenItem: timelineActions.onOpenItem,
-                              onRefresh: { await timeline.refresh() })
+            TimelinePlacePage(host: timeline, viewModel: viewModel, place: place, session: session,
+                              onOpenProject: timelineActions.onOpenStory, onOpenItem: timelineActions.onOpenItem)
+                .timelineErrorAlert(viewModel, place: place)
                 .navigationTitle(Self.timelineListTitle(place))
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .principal) { Text(verbatim: " ").accessibilityHidden(true) } }

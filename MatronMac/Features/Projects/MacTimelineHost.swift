@@ -14,16 +14,6 @@ import MatronViewModels
         var story: String?
     }
 
-    static func flagOn(_ defaults: UserDefaults = .standard) -> Bool {
-        defaults.bool(forKey: TimelineViewModel.flagKey)
-    }
-
-    /// The timeline replaces the home only once the journal has answered
-    /// the weeks list: until then (nil) there is no empty column to flash.
-    static func isShown(flagOn: Bool, isSupported: Bool?) -> Bool {
-        flagOn && isSupported == true
-    }
-
     /// The Projects place: a mission page, then a project page ("All
     /// details"), then the timeline's place and open story, else the home.
     static func projectsDetail(selectedMissionID: String?, selectedProjectID: String?,
@@ -46,64 +36,36 @@ import MatronViewModels
     }
 }
 
-/// The shell's timeline state, one per window: the view model (built on
-/// the first visit to Projects, and only with the flag on), the list
-/// column's selection and the project story open over it.
+/// The shell's timeline state, one per window: the shared state (the view
+/// model, built on the first visit to Projects and only with the flag on,
+/// and the list column's pick) and the project story open over it, which
+/// is the Mac's own (iOS pushes it).
 @MainActor @Observable
 final class MacTimelineState {
-    private(set) var viewModel: TimelineViewModel?
-    /// The list column's pick, set at once so the shell's place follows the
-    /// click in the same frame; the view model's own `place` (the newest
-    /// week before any pick) follows when its read starts.
-    private(set) var selection: TimelinePlace?
+    let host = TimelineHostState()
     /// A project opened from the timeline, shown as its story.
     var storyProjectID: String?
 
-    var isShown: Bool { MacTimelineNav.isShown(flagOn: viewModel != nil, isSupported: viewModel?.isSupported) }
-
-    var place: TimelinePlace? { selection ?? viewModel?.place }
+    var viewModel: TimelineViewModel? { host.viewModel }
+    var isShown: Bool { host.isShown }
+    var place: TimelinePlace? { host.place }
 
     /// What the shell's place carries, or nil when the timeline is not shown.
     var placeInput: MacTimelineNav.PlaceInput? {
         isShown ? .init(place: place, story: storyProjectID) : nil
     }
 
-    /// Projects came on screen: the first time (flag on; nil reads it)
-    /// builds and starts the view model, then reads the sidebar's counts;
-    /// later visits re-read what is on screen, unless the journal has no
-    /// timeline (its 404 would only come again). Returns the reads' task.
+    /// Projects came on screen (`TimelineHostState.projectsShown`).
     @discardableResult
     func projectsShown(flagOn: Bool? = nil, build: () -> TimelineViewModel) -> Task<Void, Never>? {
-        if let viewModel {
-            guard viewModel.isSupported != false else { return nil }
-            return Task {
-                await viewModel.refresh()
-                await viewModel.loadCounts()
-            }
-        }
-        guard flagOn ?? MacTimelineNav.flagOn() else { return nil }
-        let viewModel = build()
-        self.viewModel = viewModel
-        return Task {
-            await viewModel.start()
-            // A place picked before the view model existed (Back onto a
-            // timeline place after an account switch) wins over the
-            // newest week `start()` opened on.
-            if let selection = self.selection, viewModel.place != selection { await viewModel.select(selection) }
-            await viewModel.loadCounts()
-        }
+        host.projectsShown(flagOn: flagOn, build: build)
     }
 
-    func select(_ place: TimelinePlace?) {
-        selection = place
-        guard let place, let viewModel, viewModel.place != place else { return }
-        Task { await viewModel.select(place) }
-    }
+    func select(_ place: TimelinePlace?) { host.select(place) }
 
     /// A new session: nothing of the old one's timeline carries over.
     func reset() {
-        viewModel = nil
-        selection = nil
+        host.reset()
         storyProjectID = nil
     }
 }
@@ -150,27 +112,36 @@ struct MacTimelineDetail: View {
                                    onAllDetails: onAllDetails, onRedirect: onRedirect, onRedirectStory: onRedirectStory)
         } else if let viewModel = state.viewModel {
             MacTimelinePlaceView(viewModel: viewModel, place: state.place, session: session,
+                                 onRefresh: { await state.host.refresh() },
                                  onOpenProject: onOpenStory, onOpenItem: actions.onOpenItem)
         }
     }
 }
 
-/// One week, or one of the three lists.
+/// One week, or one of the three lists (`TimelinePlaceView`), with its
+/// pictures and its alert.
 struct MacTimelinePlaceView: View {
     let viewModel: TimelineViewModel
     let place: TimelinePlace?
     let session: UserSession
+    /// "Try again": the place and the counts again.
+    let onRefresh: () async -> Void
     let onOpenProject: (String) -> Void
     let onOpenItem: (String) -> Void
 
     @Environment(\.appDependencies) private var deps
-    @State private var images = MacTimelineImages()
+    @State private var images = TimelineImages()
 
     var body: some View {
-        content
-            .task(id: imageBlobIDs) {
+        TimelinePlaceView(content: viewModel.content(for: place), now: Date(), images: images.images,
+                          asked: viewModel.askedProjectIDs, onOpenProject: onOpenProject, onOpenItem: onOpenItem,
+                          onAsk: { stalled in Task { await viewModel.ask(about: stalled) } },
+                          onLoadMoreFinished: { Task { await viewModel.loadMoreFinished() } },
+                          onRetry: { Task { await onRefresh() } })
+            .task(id: viewModel.imageBlobIDs(for: place)) {
                 guard let deps else { return }
-                await images.load(imageBlobIDs, media: deps.mediaService(for: session), base: session.homeserverURL)
+                await images.load(viewModel.imageBlobIDs(for: place), media: deps.mediaService(for: session),
+                                  base: session.homeserverURL)
             }
             .alert("Projects", isPresented: errorShown) {
                 Button("OK") { viewModel.error = nil }
@@ -179,94 +150,8 @@ struct MacTimelinePlaceView: View {
             }
     }
 
-    @ViewBuilder private var content: some View {
-        let now = Date()
-        switch place {
-        case .week:
-            if let week = Self.shownWeek(viewModel.week, for: place) {
-                TimelineWeekView(week: week, sentence: viewModel.weeks.first { $0.week == week.week }?.sentence,
-                                 now: now, images: images.images,
-                                 onOpenProject: onOpenProject, onOpenItem: onOpenItem)
-            } else {
-                unloaded
-            }
-        case .quiet:
-            if let list = viewModel.quiet {
-                StalledListView(title: TimelineFormat.wentQuiet, lede: TimelineFormat.quietLede, list: list, now: now,
-                                onOpenProject: onOpenProject, onAsk: ask, asked: viewModel.askedProjectIDs)
-            } else {
-                unloaded
-            }
-        case .long:
-            if let list = viewModel.long {
-                StalledListView(title: TimelineFormat.openLong, lede: TimelineFormat.longLede, list: list, now: now,
-                                onOpenProject: onOpenProject, onAsk: ask, asked: viewModel.askedProjectIDs)
-            } else {
-                unloaded
-            }
-        case .finished:
-            if viewModel.finished.isEmpty, viewModel.error != nil {
-                unloaded
-            } else {
-                FinishedListView(rows: viewModel.finished, now: now, onOpenProject: onOpenProject,
-                                 onLoadMore: viewModel.hasMoreFinished ? { Task { await viewModel.loadMoreFinished() } } : nil)
-            }
-        case nil:
-            if viewModel.weeks.isEmpty, viewModel.error == nil {
-                ContentUnavailableView("Nothing has moved yet", systemImage: ProjectGlyph.symbol)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                unloaded
-            }
-        }
-    }
-
-    /// The place's read is in flight, or failed with nothing to show.
-    @ViewBuilder private var unloaded: some View {
-        if viewModel.error != nil {
-            ContentUnavailableView {
-                Label("Couldn't load this", systemImage: ProjectGlyph.symbol)
-            } description: {
-                Text("The journal didn't answer. Check the connection and try again.")
-            } actions: {
-                Button("Try again") { Task { await viewModel.refresh() } }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-    }
-
-    private var hasContent: Bool {
-        switch place {
-        case .week: return Self.shownWeek(viewModel.week, for: place) != nil
-        case .quiet: return viewModel.quiet != nil
-        case .long: return viewModel.long != nil
-        case .finished: return !viewModel.finished.isEmpty
-        case nil: return false
-        }
-    }
-
-    /// The loaded week when it is the one selected: a click on another
-    /// week shows progress (or the retry) until that week arrives, never
-    /// the last week's cards under the new highlight.
-    static func shownWeek(_ week: TimelineWeek?, for place: TimelinePlace?) -> TimelineWeek? {
-        guard case .week(let key) = place, let week, week.week == key else { return nil }
-        return week
-    }
-
-    private func ask(_ stalled: StalledProject) {
-        Task { await viewModel.ask(about: stalled) }
-    }
-
-    /// The week's pictures (videos draw their own panel).
-    private var imageBlobIDs: [String] {
-        return Self.shownWeek(viewModel.week, for: place)?.stories.compactMap { $0.media }.filter { !$0.isVideo }.map(\.blobID) ?? []
-    }
-
-    /// A failed read over a page already on screen, or a failed Ask.
     private var errorShown: Binding<Bool> {
-        Binding(get: { hasContent && viewModel.error != nil }, set: { if !$0 { viewModel.error = nil } })
+        Binding(get: { viewModel.showsError(on: place) }, set: { if !$0 { viewModel.error = nil } })
     }
 }
 
@@ -285,7 +170,7 @@ struct MacTimelineProjectHost: View {
     let onRedirectStory: (String) -> Void
 
     @Environment(\.appDependencies) private var deps
-    @State private var images = MacTimelineImages()
+    @State private var images = TimelineImages()
     /// This host's claim on `slot`: only the page that last showed the view
     /// model stops it on leaving.
     @State private var pageToken = UUID()
@@ -368,25 +253,5 @@ struct MacTimelineProjectHost: View {
 
     private var errorShown: Binding<Bool> {
         Binding(get: { viewModel?.error != nil }, set: { if !$0 { viewModel?.error = nil } })
-    }
-}
-
-/// Pictures by blob id, loaded once each through the session's
-/// authenticated media service, as the project page loads its own. Only
-/// the current page's stay decoded.
-@MainActor @Observable
-final class MacTimelineImages {
-    private(set) var images: [String: Image] = [:]
-
-    func load(_ blobIDs: [String], media: any MediaService, base: URL) async {
-        let wanted = Set(blobIDs)
-        images = images.filter { wanted.contains($0.key) }
-        for blobID in blobIDs where images[blobID] == nil {
-            let url = base.appendingPathComponent("media").appendingPathComponent(blobID)
-            guard let image = await media.swiftUIImage(for: url) else { continue }
-            // A newer page restarted the load: keep the old page's bitmap out.
-            guard !Task.isCancelled else { return }
-            images[blobID] = image
-        }
     }
 }

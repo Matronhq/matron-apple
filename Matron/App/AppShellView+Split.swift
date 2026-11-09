@@ -308,9 +308,9 @@ extension AppShellView {
     /// replaces the stack. Otherwise today's Projects home.
     @ViewBuilder private var splitProjectsRoot: some View {
         if timeline.isShown, let viewModel = timeline.viewModel {
-            TimelinePlacePage(viewModel: viewModel, place: timeline.place, session: session,
-                              onOpenProject: timelineActions.onOpenStory, onOpenItem: timelineActions.onOpenItem,
-                              onRefresh: { await timeline.refresh() })
+            TimelinePlacePage(host: timeline, viewModel: viewModel, place: timeline.place, session: session,
+                              onOpenProject: timelineActions.onOpenStory, onOpenItem: timelineActions.onOpenItem)
+                .timelineErrorAlert(viewModel, place: timeline.place)
                 .navigationTitle("Projects")
                 .navigationBarTitleDisplayMode(.inline)
         } else {

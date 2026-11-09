@@ -65,7 +65,8 @@ enum SplitShellRule {
         switch tab {
         case .decisions: return .decisions
         case .search: return .search
-        case .missions where timelineShown && missionsPath.first != MemoriesRoute.list: return .timeline
+        case .missions where timelineShown && AppShellNavigation.isProjectsPage(tab: tab, missionsPath: missionsPath):
+            return .timeline
         default: return .conversations
         }
     }

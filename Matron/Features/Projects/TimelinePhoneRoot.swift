@@ -5,9 +5,10 @@ import MatronViewModels
 
 /// The iPhone's Projects root with the timeline shown: the week picked in
 /// the title's menu, then "Worth a look", three rows that push their
-/// lists. A story pushes the project's story.
+/// lists. A story pushes the project's story. Its alert is
+/// `ProjectsTabRoot`'s one.
 struct TimelinePhoneRoot: View {
-    let state: TimelineShellState
+    let state: TimelineHostState
     let viewModel: TimelineViewModel
     let session: UserSession
     let onOpenStory: (String) -> Void
@@ -26,10 +27,14 @@ struct TimelinePhoneRoot: View {
         weeks.enumerated().map { WeekChoice(week: $1.week, title: TimelineFormat.sidebarTitle(index: $0, week: $1.week)) }
     }
 
+    /// The week page's place: the week the menu shows.
+    static func place(_ state: TimelineHostState) -> TimelinePlace? {
+        state.week.map { .week($0) }
+    }
+
     var body: some View {
-        TimelinePlacePage(viewModel: viewModel, place: state.week.map { .week($0) }, session: session,
-                          onOpenProject: onOpenStory, onOpenItem: onOpenItem,
-                          onRefresh: { await state.refresh() }) {
+        TimelinePlacePage(host: state, viewModel: viewModel, place: Self.place(state), session: session,
+                          onOpenProject: onOpenStory, onOpenItem: onOpenItem) {
             worthALook
         }
         .navigationTitle(title)
