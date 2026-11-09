@@ -17,7 +17,7 @@ final class AnimatedImagePlayerTests: XCTestCase {
         let player = AnimatedImagePlayer(source: source([Self.red, Self.green, Self.blue]), memoryBudget: .max)
         player.maxPixel = 40
         var shown: [[UInt8]] = []
-        player.display = { shown.append(Self.centrePixel($0)) }
+        player.display = { shown.append(Self.centrePixel($0)); return true }
         player.start()
         try await waitUntil { shown.count >= 5 }
         player.stop(releasingFrames: true)
@@ -28,7 +28,7 @@ final class AnimatedImagePlayerTests: XCTestCase {
         let player = AnimatedImagePlayer(source: source([Self.red, Self.blue], loopCount: 1), memoryBudget: .max)
         player.maxPixel = 40
         var shown: [[UInt8]] = []
-        player.display = { shown.append(Self.centrePixel($0)) }
+        player.display = { shown.append(Self.centrePixel($0)); return true }
         player.start()
         try await waitUntil { player.isFinished }
         XCTAssertEqual(shown, [Self.red, Self.blue])
@@ -52,7 +52,7 @@ final class AnimatedImagePlayerTests: XCTestCase {
                                          memoryBudget: .max)
         player.maxPixel = 40
         var shown: [[UInt8]] = []
-        player.display = { shown.append(Self.centrePixel($0)) }
+        player.display = { shown.append(Self.centrePixel($0)); return true }
         player.start()
         try await waitUntil { shown.count == 2 }
         player.stop(releasingFrames: false)
@@ -72,7 +72,7 @@ final class AnimatedImagePlayerTests: XCTestCase {
         let roomy = AnimatedImagePlayer(source: source(colors), memoryBudget: .max)
         roomy.maxPixel = 40
         var shown = 0
-        roomy.display = { _ in shown += 1 }
+        roomy.display = { _ in shown += 1; return true }
         roomy.start()
         try await waitUntil { shown >= 4 }
         roomy.stop(releasingFrames: false)
@@ -85,7 +85,7 @@ final class AnimatedImagePlayerTests: XCTestCase {
         let tight = AnimatedImagePlayer(source: source(colors), memoryBudget: 2 * 40 * 20 * 4)
         tight.maxPixel = 40
         shown = 0
-        tight.display = { _ in shown += 1 }
+        tight.display = { _ in shown += 1; return true }
         tight.start()
         try await waitUntil { shown >= 4 }
         tight.stop(releasingFrames: false)
@@ -103,12 +103,66 @@ final class AnimatedImagePlayerTests: XCTestCase {
         XCTAssertTrue(player.keepsFrames)
     }
 
+
+    /// A view that has gone (or moved to another player) says so, and the
+    /// player stops rather than decoding for nobody.
+    func test_playerStops_whenNothingTakesItsFrames() async throws {
+        let player = AnimatedImagePlayer(source: source([Self.red, Self.blue]), memoryBudget: .max)
+        player.maxPixel = 40
+        var offered = 0
+        player.display = { _ in offered += 1; return false }
+        player.start()
+        try await waitUntil { !player.isRunning }
+        XCTAssertEqual(offered, 1)
+    }
+
+    /// An image that would play but is out of sight gives its frame back
+    /// and shows the still; one paused by the user keeps its frame.
+    func test_outOfSight_showsTheStill_butAUserPauseKeepsTheFrame() async throws {
+        let playback = AnimatedPlayback(source: source([Self.red, Self.green, Self.blue]), fullResolution: false)
+        var onScreen = true
+        var contents: CGImage?
+        var reports: [Bool] = []
+        playback.isOnScreen = { onScreen }
+        playback.hasContents = { contents != nil }
+        playback.setContents = { contents = $0 }
+        playback.onFrame = { reports.append($0) }
+        playback.setDrawnSize(40)
+        playback.wantsPlayback = true
+        try await waitUntil { reports == [true] }
+        XCTAssertNotNil(contents)
+
+        onScreen = false
+        playback.update()
+        XCTAssertFalse(playback.player.isRunning)
+        XCTAssertNil(contents)
+        try await waitUntil { reports == [true, false] }
+
+        onScreen = true
+        playback.update()
+        try await waitUntil { reports == [true, false, true] }
+        playback.wantsPlayback = false
+        XCTAssertFalse(playback.player.isRunning)
+        XCTAssertNotNil(contents, "a paused image rests on its frame")
+        playback.tearDown()
+    }
+
+    /// Two players of one source (a chat row and the viewer over it) read
+    /// through readers of their own.
+    func test_eachPlayerHasItsOwnReader() throws {
+        let shared = source([Self.red, Self.green, Self.blue])
+        let a = try XCTUnwrap(shared.makeReader()), b = try XCTUnwrap(shared.makeReader())
+        XCTAssertFalse(a === b)
+        XCTAssertEqual(Self.centrePixel(try XCTUnwrap(a.frame(at: 2, maxPixel: 40))), Self.blue)
+        XCTAssertEqual(Self.centrePixel(try XCTUnwrap(b.frame(at: 0, maxPixel: 40))), Self.red)
+    }
+
     #if os(macOS)
     /// Off screen means not playing: a view in no window never starts.
     func test_aViewWithNoWindow_doesNotPlay() async throws {
         let view = AnimatedImageView(source: source([Self.red, Self.blue]), fullResolution: false)
         view.frame = CGRect(x: 0, y: 0, width: 40, height: 20)
-        view.wantsPlayback = true
+        view.playback.wantsPlayback = true
         view.layout()
         XCTAssertFalse(view.isOnScreen)
         XCTAssertFalse(view.isPlaying)

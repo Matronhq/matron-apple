@@ -16,8 +16,10 @@ import ImageIO
 /// returns the whole picture as it should look at that frame.
 ///
 /// One source can feed several players at once (a chat row and the
-/// full-screen viewer): decoding is serialised on a lock, because an
-/// `CGImageSource` is not documented as safe to read from two threads.
+/// full-screen viewer over it). Each player reads through its own
+/// `FrameReader`: building a GIF frame starts from the frames before it,
+/// and two players at different frames sharing one reader would make it
+/// start again every time.
 public final class AnimatedImageSource: @unchecked Sendable {
     /// Number of frames; always at least 2.
     public let frameCount: Int
@@ -30,8 +32,8 @@ public final class AnimatedImageSource: @unchecked Sendable {
     /// The file's bytes, kept so a copy or a share can use the original.
     public let data: Data
 
-    private let source: CGImageSource
-    private let lock = NSLock()
+    /// Reads frames for whoever only needs one (tests, a still).
+    private let sharedReader: FrameReader
 
     /// The shortest time a frame stays up. Browsers draw a GIF frame that
     /// asks for 10 ms or less for 100 ms instead (old encoders wrote 0 to
@@ -61,7 +63,7 @@ public final class AnimatedImageSource: @unchecked Sendable {
         let width = (first[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue ?? 0
         let height = (first[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue ?? 0
         guard width > 0, height > 0 else { return nil }
-        self.source = source
+        self.sharedReader = FrameReader(source: source)
         self.data = data
         self.frameCount = count
         self.pixelSize = CGSize(width: width, height: height)
@@ -77,13 +79,36 @@ public final class AnimatedImageSource: @unchecked Sendable {
     /// decoded before it is returned, so putting it on screen costs the
     /// main thread nothing.
     public func frame(at index: Int, maxPixel: CGFloat?) -> CGImage? {
-        guard (0..<frameCount).contains(index) else { return nil }
-        lock.lock()
-        let image = CGImageSourceCreateImageAtIndex(source, index, nil)
-        lock.unlock()
-        guard let image else { return nil }
-        let size = Self.decodedSize(native: CGSize(width: image.width, height: image.height), maxPixel: maxPixel)
-        return Self.render(image, size: size)
+        sharedReader.frame(at: index, maxPixel: maxPixel ?? max(pixelSize.width, pixelSize.height))
+    }
+
+    /// A reader of its own, for one player.
+    public func makeReader() -> FrameReader? {
+        CGImageSourceCreateWithData(data as CFData, nil).map(FrameReader.init)
+    }
+
+    /// Decodes frames from one `CGImageSource`. Its calls are serialised:
+    /// an image source is not documented as safe to read from two threads.
+    public final class FrameReader: @unchecked Sendable {
+        private let source: CGImageSource
+        private let lock = NSLock()
+
+        init(source: CGImageSource) { self.source = source }
+
+        /// Frame `index` decoded straight at no more than `maxPixel` on its
+        /// longer side — ImageIO scales while it decodes, so a large GIF
+        /// never costs a full-size bitmap.
+        public func frame(at index: Int, maxPixel: CGFloat) -> CGImage? {
+            guard index >= 0, index < CGImageSourceGetCount(source), maxPixel > 0 else { return nil }
+            let options: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceThumbnailMaxPixelSize: maxPixel,
+                kCGImageSourceShouldCacheImmediately: true,
+            ]
+            lock.lock()
+            defer { lock.unlock() }
+            return CGImageSourceCreateThumbnailAtIndex(source, index, options as CFDictionary)
+        }
     }
 
     /// The size a frame decodes at: `native`, scaled down to fit
@@ -109,18 +134,6 @@ public final class AnimatedImageSource: @unchecked Sendable {
         completedLoops += 1
         if loopCount > 0 && completedLoops >= loopCount { return nil }
         return 0
-    }
-
-    private static func render(_ image: CGImage, size: CGSize) -> CGImage? {
-        let width = Int(size.width), height = Int(size.height)
-        guard let context = CGContext(
-            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
-            space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
-        ) else { return image }
-        context.interpolationQuality = .high
-        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-        return context.makeImage() ?? image
     }
 
     private static func loopCount(in properties: [CFString: Any]) -> Int {

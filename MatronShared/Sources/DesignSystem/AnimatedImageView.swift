@@ -11,25 +11,20 @@ import AppKit
 /// Laid out exactly like `image.resizable().scaledToFit()` (the still is
 /// what sizes it), so swapping it in for a plain image changes nothing
 /// around it. With an `animation`, the frames play on a layer laid over
-/// the still, which is hidden once the first frame is up (a transparent
-/// GIF must not show its first frame through the later ones).
+/// the still, which is hidden while a frame is up (a transparent GIF must
+/// not show its first frame through the later ones).
 ///
 /// Playback pauses whenever the image can't be seen — scrolled out of its
 /// scroll view, in a hidden tab, a window that is covered or minimised, an
-/// app in the background — and releases its decoded frames while it is
-/// paused. With Reduce Motion on it rests on the first frame with a play
-/// button; a tap plays it until it goes off screen.
+/// app in the background — and gives back its decoded frames while it is
+/// paused, showing the still again. With Reduce Motion on it rests on the
+/// still with a play button; once tapped it plays whenever it is in sight,
+/// until it is tapped again.
 public struct PlayableImage: View {
     let image: Image
     let animation: AnimatedImageSource?
     let interpolation: Image.Interpolation?
     let fullResolution: Bool
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var frameShowing = false
-    /// The user's play/pause choice; `nil` until they make one, so the
-    /// system setting decides.
-    @State private var userWantsPlayback: Bool?
 
     /// `fullResolution` decodes frames at the file's own size (capped)
     /// rather than the size on screen — for the full-screen viewer, whose
@@ -42,34 +37,54 @@ public struct PlayableImage: View {
         self.fullResolution = fullResolution
     }
 
-    private var plays: Bool { userWantsPlayback ?? !reduceMotion }
-
     public var body: some View {
         let resizable = image.resizable()
         let still = (interpolation.map { resizable.interpolation($0) } ?? resizable).scaledToFit()
         if let animation {
-            still
-                .opacity(frameShowing ? 0 : 1)
-                .overlay {
-                    AnimatedImageRepresentable(
-                        source: animation, plays: plays, fullResolution: fullResolution,
-                        onFrame: { if !frameShowing { frameShowing = true } }
-                    )
-                }
-                // One element for still and frames: the still goes
-                // transparent once frames are up, and would drop out.
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(Text("Animated image"))
-                .accessibilityAddTraits(.isImage)
-                .overlay(alignment: .bottomLeading) {
-                    if reduceMotion {
-                        AnimationPlayButton(playing: plays) { userWantsPlayback = !plays }
-                            .padding(6)
-                    }
-                }
+            AnimatedStill(still: still, animation: animation, fullResolution: fullResolution)
+                // A reused row handed another animation starts afresh: its
+                // "frame showing" and the user's play choice belong to the
+                // old one.
+                .id(ObjectIdentifier(animation))
         } else {
             still
         }
+    }
+}
+
+private struct AnimatedStill<Still: View>: View {
+    let still: Still
+    let animation: AnimatedImageSource
+    let fullResolution: Bool
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var frameShowing = false
+    /// The user's play/pause choice; `nil` until they make one, so the
+    /// system setting decides.
+    @State private var userWantsPlayback: Bool?
+
+    private var plays: Bool { userWantsPlayback ?? !reduceMotion }
+
+    var body: some View {
+        still
+            .opacity(frameShowing ? 0 : 1)
+            .overlay {
+                AnimatedImageRepresentable(
+                    source: animation, plays: plays, fullResolution: fullResolution,
+                    onFrame: { showing in if frameShowing != showing { frameShowing = showing } }
+                )
+            }
+            // One element for still and frames: the still goes
+            // transparent while frames are up, and would drop out.
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(Text("Animated image"))
+            .accessibilityAddTraits(.isImage)
+            .overlay(alignment: .bottomLeading) {
+                if reduceMotion || userWantsPlayback != nil {
+                    AnimationPlayButton(playing: plays) { userWantsPlayback = !plays }
+                        .padding(6)
+                }
+            }
     }
 }
 
@@ -102,10 +117,90 @@ enum AnimatedImageLimits {
     static let inlineBudget = 16 * 1024 * 1024
     static let fullResolutionBudget = 48 * 1024 * 1024
     static let maxPixel: CGFloat = 2048
-    /// How often a paused image that is in a window but out of sight
-    /// checks whether it has come back into view. Scrolling moves the
-    /// image's ancestors, not the image, so there is no event to wait for.
-    static let visibilityProbe: TimeInterval = 0.5
+}
+
+
+/// What both platforms' frame views share: when to play, and what to show
+/// while not playing. The view supplies the platform answers.
+@MainActor
+final class AnimatedPlayback {
+    private(set) var player: AnimatedImagePlayer
+    private let fullResolution: Bool
+    /// Whether frames should play when the image is in sight (autoplay, or
+    /// the user's tap under Reduce Motion).
+    var wantsPlayback = false {
+        didSet {
+            guard wantsPlayback != oldValue else { return }
+            if wantsPlayback, player.isFinished { player.restart() }
+            update()
+        }
+    }
+    /// Tells SwiftUI whether a frame is up (so the still can hide).
+    var onFrame: (Bool) -> Void = { _ in }
+
+    /// Platform hooks.
+    var isOnScreen: () -> Bool = { false }
+    var setContents: (CGImage?) -> Void = { _ in }
+    var hasContents: () -> Bool = { false }
+
+    private var reportedFrame = false
+
+    init(source: AnimatedImageSource, fullResolution: Bool) {
+        self.fullResolution = fullResolution
+        self.player = AnimatedImagePlayer(source: source, memoryBudget: fullResolution
+            ? AnimatedImageLimits.fullResolutionBudget : AnimatedImageLimits.inlineBudget)
+        attach()
+    }
+
+    private func attach() {
+        let player = self.player
+        player.display = { [weak self, weak player] frame in
+            guard let self, let player, player === self.player else { return false }
+            self.setContents(frame)
+            self.report(true)
+            // Each frame re-checks visibility, so a scroll that takes the
+            // image out of sight stops it within a frame.
+            if !self.isOnScreen() { self.update() }
+            return true
+        }
+    }
+
+    /// The decode size for an image drawn `drawnPixels` on its longer side.
+    func setDrawnSize(_ drawnPixels: CGFloat) {
+        let native = max(player.source.pixelSize.width, player.source.pixelSize.height)
+        let wanted = fullResolution ? native : min(native, drawnPixels.rounded(.up))
+        player.maxPixel = min(wanted, AnimatedImageLimits.maxPixel)
+    }
+
+    /// Plays when wanted and in sight; otherwise stops. An image that would
+    /// play but can't be seen gives back its frames and shows the still; a
+    /// paused one (Reduce Motion) keeps the frame it stopped on.
+    func update() {
+        if wantsPlayback, player.maxPixel > 0, isOnScreen() {
+            player.start()
+        } else if wantsPlayback {
+            player.stop(releasingFrames: true)
+            if hasContents() {
+                setContents(nil)
+                report(false)
+            }
+        } else {
+            player.stop(releasingFrames: false)
+        }
+    }
+
+    func tearDown() {
+        player.stop(releasingFrames: true)
+    }
+
+    /// SwiftUI state can't change while it is updating views, which is
+    /// when a frame view hears about layout and window moves.
+    private func report(_ showing: Bool) {
+        guard showing != reportedFrame else { return }
+        reportedFrame = showing
+        let onFrame = self.onFrame
+        DispatchQueue.main.async { onFrame(showing) }
+    }
 }
 
 #if canImport(UIKit) && !os(macOS)
@@ -114,55 +209,49 @@ private struct AnimatedImageRepresentable: UIViewRepresentable {
     let source: AnimatedImageSource
     let plays: Bool
     let fullResolution: Bool
-    let onFrame: () -> Void
+    let onFrame: (Bool) -> Void
 
     func makeUIView(context: Context) -> AnimatedImageView {
         AnimatedImageView(source: source, fullResolution: fullResolution)
     }
 
     func updateUIView(_ view: AnimatedImageView, context: Context) {
-        view.onFrame = onFrame
-        view.setSource(source, fullResolution: fullResolution)
-        view.wantsPlayback = plays
+        view.playback.onFrame = onFrame
+        view.playback.wantsPlayback = plays
     }
 
     static func dismantleUIView(_ view: AnimatedImageView, coordinator: ()) {
-        view.tearDown()
+        view.playback.tearDown()
     }
 }
 
 /// The layer the frames are drawn on. Touches pass through to the SwiftUI
 /// gestures around it (tap to open, long-press menus).
 final class AnimatedImageView: UIView {
-    private var player: AnimatedImagePlayer
-    private var fullResolution: Bool
-    private var probe: Timer?
-    /// A paused image's resting frame is on its way.
-    private var loadingStill = false
+    let playback: AnimatedPlayback
     private var observers: [NSObjectProtocol] = []
-    var onFrame: () -> Void = {}
-
-    var wantsPlayback = false {
-        didSet {
-            guard wantsPlayback != oldValue else { return }
-            if wantsPlayback, player.isFinished { player.restart() }
-            updatePlayback()
-        }
-    }
+    private var scrollObservations: [NSKeyValueObservation] = []
 
     init(source: AnimatedImageSource, fullResolution: Bool) {
-        self.fullResolution = fullResolution
-        self.player = AnimatedImagePlayer(source: source, memoryBudget: Self.budget(fullResolution))
+        playback = AnimatedPlayback(source: source, fullResolution: fullResolution)
         super.init(frame: .zero)
         isUserInteractionEnabled = false
         layer.contentsGravity = .resizeAspect
         backgroundColor = .clear
-        attach(player)
+        playback.isOnScreen = { [weak self] in self?.isOnScreen ?? false }
+        playback.hasContents = { [weak self] in self?.layer.contents != nil }
+        playback.setContents = { [weak self] frame in
+            // No implicit fade between frames.
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            self?.layer.contents = frame
+            CATransaction.commit()
+        }
         let center = NotificationCenter.default
         for name in [UIScene.didActivateNotification, UIScene.willDeactivateNotification,
                      UIScene.didEnterBackgroundNotification] {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.updatePlayback() }
+                MainActor.assumeIsolated { self?.playback.update() }
             })
         }
     }
@@ -173,63 +262,45 @@ final class AnimatedImageView: UIView {
         observers.forEach(NotificationCenter.default.removeObserver)
     }
 
-    private static func budget(_ fullResolution: Bool) -> Int {
-        fullResolution ? AnimatedImageLimits.fullResolutionBudget : AnimatedImageLimits.inlineBudget
-    }
-
-    private func attach(_ player: AnimatedImagePlayer) {
-        player.display = { [weak self] frame in
-            guard let self else { return }
-            // No implicit fade between frames.
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            self.layer.contents = frame
-            CATransaction.commit()
-            self.onFrame()
-            self.frameShown()
-        }
-    }
-
-    /// A reused cell can hand this view another image.
-    func setSource(_ source: AnimatedImageSource, fullResolution: Bool) {
-        guard source !== player.source || fullResolution != self.fullResolution else { return }
-        player.stop(releasingFrames: true)
-        self.fullResolution = fullResolution
-        player = AnimatedImagePlayer(source: source, memoryBudget: Self.budget(fullResolution))
-        attach(player)
-        layer.contents = nil
-        updateMaxPixel()
-        updatePlayback()
-    }
-
     /// For tests.
-    var isPlaying: Bool { player.isRunning }
-
-    func tearDown() {
-        probe?.invalidate()
-        probe = nil
-        player.stop(releasingFrames: true)
-    }
+    var isPlaying: Bool { playback.player.isRunning }
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        updateMaxPixel()
-        updatePlayback()
+        // Scrolling moves the image's ancestors, not the image: watch every
+        // scroll view it sits in, so a paused image starts again as it
+        // scrolls back into sight.
+        scrollObservations = []
+        if window != nil {
+            var view = superview
+            while let current = view {
+                if let scrollView = current as? UIScrollView {
+                    scrollObservations.append(scrollView.observe(\.contentOffset) { [weak self] _, _ in
+                        MainActor.assumeIsolated { self?.scrolled() }
+                    })
+                }
+                view = current.superview
+            }
+        }
+        updateDrawnSize()
+        playback.update()
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        updateMaxPixel()
-        updatePlayback()
+        updateDrawnSize()
+        playback.update()
     }
 
-    private func updateMaxPixel() {
-        let source = player.source
-        let native = max(source.pixelSize.width, source.pixelSize.height)
-        let scale = traitCollection.displayScale
-        let drawn = max(bounds.width, bounds.height) * max(scale, 1)
-        let wanted = fullResolution ? native : min(native, drawn.rounded(.up))
-        player.maxPixel = min(wanted, AnimatedImageLimits.maxPixel)
+    private func scrolled() {
+        // A playing image checks itself every frame; only a paused one
+        // needs telling.
+        guard playback.wantsPlayback, !playback.player.isRunning else { return }
+        if isOnScreen { playback.update() }
+    }
+
+    private func updateDrawnSize() {
+        playback.setDrawnSize(max(bounds.width, bounds.height) * max(traitCollection.displayScale, 1))
     }
 
     /// Whether any of the image can be seen right now.
@@ -247,49 +318,6 @@ final class AnimatedImageView: UIView {
         }
         return !visible.intersection(window.bounds).isEmpty
     }
-
-    private func updatePlayback() {
-        let canPlay = wantsPlayback && player.maxPixel > 0
-        if canPlay && isOnScreen {
-            stopProbe()
-            player.start()
-        } else {
-            player.stop(releasingFrames: true)
-            // Paused or Reduce Motion: rest on a real frame, not nothing.
-            if layer.contents == nil, !loadingStill, player.maxPixel > 0, window != nil {
-                loadingStill = true
-                Task {
-                    await player.showCurrentFrame()
-                    loadingStill = false
-                }
-            }
-            if canPlay, window != nil { startProbe() } else { stopProbe() }
-        }
-    }
-
-    /// Each frame re-checks visibility, so a scroll that takes the image
-    /// out of sight stops it within a frame.
-    private func frameShown() {
-        if player.isRunning, !isOnScreen { updatePlayback() }
-    }
-
-    private func startProbe() {
-        guard probe == nil else { return }
-        let timer = Timer(timeInterval: AnimatedImageLimits.visibilityProbe, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                if self.isOnScreen { self.updatePlayback() }
-            }
-        }
-        timer.tolerance = AnimatedImageLimits.visibilityProbe / 2
-        RunLoop.main.add(timer, forMode: .common)
-        probe = timer
-    }
-
-    private func stopProbe() {
-        probe?.invalidate()
-        probe = nil
-    }
 }
 
 #elseif os(macOS)
@@ -298,49 +326,41 @@ private struct AnimatedImageRepresentable: NSViewRepresentable {
     let source: AnimatedImageSource
     let plays: Bool
     let fullResolution: Bool
-    let onFrame: () -> Void
+    let onFrame: (Bool) -> Void
 
     func makeNSView(context: Context) -> AnimatedImageView {
         AnimatedImageView(source: source, fullResolution: fullResolution)
     }
 
     func updateNSView(_ view: AnimatedImageView, context: Context) {
-        view.onFrame = onFrame
-        view.setSource(source, fullResolution: fullResolution)
-        view.wantsPlayback = plays
+        view.playback.onFrame = onFrame
+        view.playback.wantsPlayback = plays
     }
 
     static func dismantleNSView(_ view: AnimatedImageView, coordinator: ()) {
-        view.tearDown()
+        view.playback.tearDown()
     }
 }
 
 /// The layer the frames are drawn on. Clicks pass through to the SwiftUI
 /// gestures around it (click to open, right-click menus).
 final class AnimatedImageView: NSView {
-    private var player: AnimatedImagePlayer
-    private var fullResolution: Bool
-    private var probe: Timer?
-    /// A paused image's resting frame is on its way.
-    private var loadingStill = false
+    let playback: AnimatedPlayback
     private var windowObservers: [NSObjectProtocol] = []
-    var onFrame: () -> Void = {}
-
-    var wantsPlayback = false {
-        didSet {
-            guard wantsPlayback != oldValue else { return }
-            if wantsPlayback, player.isFinished { player.restart() }
-            updatePlayback()
-        }
-    }
 
     init(source: AnimatedImageSource, fullResolution: Bool) {
-        self.fullResolution = fullResolution
-        self.player = AnimatedImagePlayer(source: source, memoryBudget: Self.budget(fullResolution))
+        playback = AnimatedPlayback(source: source, fullResolution: fullResolution)
         super.init(frame: .zero)
         wantsLayer = true
         layer?.contentsGravity = .resizeAspect
-        attach(player)
+        playback.isOnScreen = { [weak self] in self?.isOnScreen ?? false }
+        playback.hasContents = { [weak self] in self?.layer?.contents != nil }
+        playback.setContents = { [weak self] frame in
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            self?.layer?.contents = frame
+            CATransaction.commit()
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
@@ -352,42 +372,8 @@ final class AnimatedImageView: NSView {
     override var isFlipped: Bool { true }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
-    private static func budget(_ fullResolution: Bool) -> Int {
-        fullResolution ? AnimatedImageLimits.fullResolutionBudget : AnimatedImageLimits.inlineBudget
-    }
-
-    private func attach(_ player: AnimatedImagePlayer) {
-        player.display = { [weak self] frame in
-            guard let self else { return }
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            self.layer?.contents = frame
-            CATransaction.commit()
-            self.onFrame()
-            self.frameShown()
-        }
-    }
-
-    /// A reused row can hand this view another image.
-    func setSource(_ source: AnimatedImageSource, fullResolution: Bool) {
-        guard source !== player.source || fullResolution != self.fullResolution else { return }
-        player.stop(releasingFrames: true)
-        self.fullResolution = fullResolution
-        player = AnimatedImagePlayer(source: source, memoryBudget: Self.budget(fullResolution))
-        attach(player)
-        layer?.contents = nil
-        updateMaxPixel()
-        updatePlayback()
-    }
-
     /// For tests.
-    var isPlaying: Bool { player.isRunning }
-
-    func tearDown() {
-        probe?.invalidate()
-        probe = nil
-        player.stop(releasingFrames: true)
-    }
+    var isPlaying: Bool { playback.player.isRunning }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -395,35 +381,52 @@ final class AnimatedImageView: NSView {
         windowObservers = []
         if let window {
             let center = NotificationCenter.default
-            for name in [NSWindow.didChangeOcclusionStateNotification, NSWindow.didMiniaturizeNotification,
-                         NSWindow.didDeminiaturizeNotification] {
-                windowObservers.append(center.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
-                    MainActor.assumeIsolated { self?.updatePlayback() }
+            let observe = { [weak self] (name: Notification.Name, object: AnyObject) in
+                guard let self else { return }
+                self.windowObservers.append(center.addObserver(forName: name, object: object, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.changed() }
                 })
             }
+            for name in [NSWindow.didChangeOcclusionStateNotification, NSWindow.didMiniaturizeNotification,
+                         NSWindow.didDeminiaturizeNotification] {
+                observe(name, window)
+            }
+            // Scrolling moves the image's ancestors, not the image: watch
+            // every clip view it sits in, so a paused image starts again
+            // as it scrolls back into sight.
+            var view = superview
+            while let current = view {
+                if let clip = current as? NSClipView {
+                    clip.postsBoundsChangedNotifications = true
+                    observe(NSView.boundsDidChangeNotification, clip)
+                }
+                view = current.superview
+            }
         }
-        updateMaxPixel()
-        updatePlayback()
+        updateDrawnSize()
+        playback.update()
     }
 
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
-        updateMaxPixel()
+        updateDrawnSize()
     }
 
     override func layout() {
         super.layout()
-        updateMaxPixel()
-        updatePlayback()
+        updateDrawnSize()
+        playback.update()
     }
 
-    private func updateMaxPixel() {
-        let source = player.source
-        let native = max(source.pixelSize.width, source.pixelSize.height)
-        let scale = window?.backingScaleFactor ?? 2
-        let drawn = max(bounds.width, bounds.height) * scale
-        let wanted = fullResolution ? native : min(native, drawn.rounded(.up))
-        player.maxPixel = min(wanted, AnimatedImageLimits.maxPixel)
+    private func changed() {
+        // A playing image checks itself every frame; a paused one needs
+        // telling when it may have come back (a scroll, the window shown).
+        if playback.player.isRunning, isOnScreen { return }
+        playback.update()
+    }
+
+    private func updateDrawnSize() {
+        playback.setDrawnSize(max(bounds.width, bounds.height) * (window?.backingScaleFactor ?? 2))
     }
 
     /// Whether any of the image can be seen right now: in a window that
@@ -432,46 +435,6 @@ final class AnimatedImageView: NSView {
         guard let window, window.occlusionState.contains(.visible), !window.isMiniaturized,
               !isHiddenOrHasHiddenAncestor, alphaValue > 0.01 else { return false }
         return !visibleRect.isEmpty
-    }
-
-    private func updatePlayback() {
-        let canPlay = wantsPlayback && player.maxPixel > 0
-        if canPlay && isOnScreen {
-            stopProbe()
-            player.start()
-        } else {
-            player.stop(releasingFrames: true)
-            if layer?.contents == nil, !loadingStill, player.maxPixel > 0, window != nil {
-                loadingStill = true
-                Task {
-                    await player.showCurrentFrame()
-                    loadingStill = false
-                }
-            }
-            if canPlay, window != nil { startProbe() } else { stopProbe() }
-        }
-    }
-
-    private func frameShown() {
-        if player.isRunning, !isOnScreen { updatePlayback() }
-    }
-
-    private func startProbe() {
-        guard probe == nil else { return }
-        let timer = Timer(timeInterval: AnimatedImageLimits.visibilityProbe, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                if self.isOnScreen { self.updatePlayback() }
-            }
-        }
-        timer.tolerance = AnimatedImageLimits.visibilityProbe / 2
-        RunLoop.main.add(timer, forMode: .common)
-        probe = timer
-    }
-
-    private func stopProbe() {
-        probe?.invalidate()
-        probe = nil
     }
 }
 

@@ -7,18 +7,19 @@ import MatronModels
 /// starts and stops it as the image comes on and goes off screen.
 ///
 /// Each frame is decoded off the main thread while the one before it is
-/// showing, at `maxPixel` (the size it is drawn at, not the file's), so a
-/// large GIF costs one small bitmap at a time. Frames are kept for the
-/// next loop only while the whole animation fits in `memoryBudget`;
-/// anything larger is decoded afresh each time round, which bounds memory
-/// for a long, big animation at about two frames.
+/// showing, at `maxPixel` (the size it is drawn, not the file's), through
+/// a reader of the player's own. Frames are kept for the next loop only
+/// while the whole animation fits in `memoryBudget`; anything larger is
+/// decoded afresh each time round, which bounds memory for a long, big
+/// animation at about two frames.
 @MainActor
 final class AnimatedImagePlayer {
     let source: AnimatedImageSource
     /// Bytes this player may hold in decoded frames between loops.
     let memoryBudget: Int
-    /// Puts a frame on screen.
-    var display: (CGImage) -> Void = { _ in }
+    /// Puts a frame on screen. Returning `false` (the view that showed the
+    /// frames is gone, or has moved on to another player) stops playback.
+    var display: (CGImage) -> Bool = { _ in false }
 
     /// The longest side, in pixels, frames are decoded at. A change of
     /// more than a quarter drops the frames kept so far (they were made
@@ -26,7 +27,7 @@ final class AnimatedImagePlayer {
     var maxPixel: CGFloat = 0 {
         didSet {
             guard oldValue > 0, maxPixel > 0 else { return }
-            if abs(maxPixel - oldValue) / oldValue > 0.25 { cache.removeAll() }
+            if abs(maxPixel - oldValue) / oldValue > 0.25 { releaseFrames() }
         }
     }
 
@@ -37,13 +38,18 @@ final class AnimatedImagePlayer {
     private(set) var isFinished = false
     var isRunning: Bool { task != nil }
 
+    private let reader: AnimatedImageSource.FrameReader?
     private var completedLoops = 0
     private var task: Task<Void, Never>?
     private var cache: [Int: CGImage] = [:]
+    /// Bumped whenever kept frames are dropped, so a decode that was
+    /// already running when they were can't put one back.
+    private var cacheGeneration = 0
 
     init(source: AnimatedImageSource, memoryBudget: Int) {
         self.source = source
         self.memoryBudget = memoryBudget
+        self.reader = source.makeReader()
     }
 
     /// Whether every frame, at the current size, fits in the budget.
@@ -60,7 +66,7 @@ final class AnimatedImagePlayer {
     /// Starts (or resumes) playing from the frame last shown. Does nothing
     /// before a size is known or after a finite animation has ended.
     func start() {
-        guard task == nil, !isFinished, maxPixel > 0 else { return }
+        guard task == nil, !isFinished, maxPixel > 0, reader != nil else { return }
         task = Task { [weak self] in await self?.run() }
     }
 
@@ -70,7 +76,7 @@ final class AnimatedImagePlayer {
     func stop(releasingFrames: Bool) {
         task?.cancel()
         task = nil
-        if releasingFrames { cache.removeAll() }
+        if releasingFrames { releaseFrames() }
     }
 
     /// Back to the first frame and a fresh loop count.
@@ -82,11 +88,9 @@ final class AnimatedImagePlayer {
         start()
     }
 
-    /// Shows the frame at `index` once, without playing — the still a
-    /// paused image rests on.
-    func showCurrentFrame() async {
-        guard maxPixel > 0, let image = await frame(index) else { return }
-        display(image)
+    private func releaseFrames() {
+        cache.removeAll()
+        cacheGeneration += 1
     }
 
     private func run() async {
@@ -94,8 +98,7 @@ final class AnimatedImagePlayer {
         var loops = completedLoops
         var image = await frame(shown)
         while !Task.isCancelled {
-            guard let current = image else { break }
-            display(current)
+            guard let current = image, display(current) else { break }
             index = shown
             completedLoops = loops
             guard let next = source.nextFrame(after: shown, completedLoops: &loops) else {
@@ -115,11 +118,14 @@ final class AnimatedImagePlayer {
 
     private func frame(_ index: Int) async -> CGImage? {
         if let kept = cache[index] { return kept }
-        let source = self.source, maxPixel = self.maxPixel
+        guard let reader else { return nil }
+        let maxPixel = self.maxPixel, generation = cacheGeneration
         let image = await Task.detached(priority: .utility) {
-            source.frame(at: index, maxPixel: maxPixel)
+            reader.frame(at: index, maxPixel: maxPixel)
         }.value
-        if let image, keepsFrames, maxPixel == self.maxPixel { cache[index] = image }
+        if let image, keepsFrames, generation == cacheGeneration, maxPixel == self.maxPixel {
+            cache[index] = image
+        }
         return image
     }
 }
