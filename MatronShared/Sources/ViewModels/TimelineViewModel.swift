@@ -3,17 +3,6 @@ import Observation
 import MatronModels
 import MatronJournal
 
-/// Where the Projects timeline is looking: one week's stories, or one of the
-/// three lists below the weeks.
-public enum TimelinePlace: Hashable, Sendable {
-    case week(String)
-    /// Projects that went quiet.
-    case quiet
-    /// Projects open a long time.
-    case long
-    case finished
-}
-
 /// Backs the Projects weekly timeline. Weeks load newest first; the quiet and
 /// long lists load once per visit-until-refresh, the finished list pages.
 /// A journal without the timeline routes (404 on the weeks list) leaves

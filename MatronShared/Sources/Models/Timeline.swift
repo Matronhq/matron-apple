@@ -5,6 +5,17 @@ import Foundation
 // lists. Dates arrive as ms since epoch. Every `init?(json:)` returns nil for
 // a row missing a required field; the parents drop such rows and keep the rest.
 
+/// Where the Projects timeline is looking: one week's stories, or one of the
+/// three lists below the weeks.
+public enum TimelinePlace: Hashable, Sendable {
+    case week(String)
+    /// Projects that went quiet.
+    case quiet
+    /// Projects open a long time.
+    case long
+    case finished
+}
+
 /// The compact project reference every timeline read carries.
 public struct TimelineProjectRef: Equatable, Hashable, Sendable {
     public let id: String
