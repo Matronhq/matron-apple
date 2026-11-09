@@ -6,12 +6,15 @@ import MatronViewModels
 /// The Projects tab's root (spec 2026-09-30 §6). The view model is the
 /// shell's session-long `MissionsDashboardViewModel` (its badge shows while
 /// another tab does). A journal without `/projects` keeps today's missions
-/// dashboard here (spec §7).
+/// dashboard here (spec §7). With the timeline shown (`timeline`, behind
+/// its flag) the root is the week page instead of the home.
 struct ProjectsTabRoot: View {
     let viewModel: MissionsDashboardViewModel
     let onAction: (ProjectsHomeAction) -> Void
     let onLegacyAction: (MissionsDashboardAction) -> Void
     var onOpenMemories: (() -> Void)? = nil
+    var timeline: TimelineShellState? = nil
+    var timelineActions: TimelineActions? = nil
     @Environment(\.currentSession) private var session
     /// One `.sheet` for both: a second `.sheet` modifier on this root left
     /// a push on the Projects stack mid-transition for good (the Memories
@@ -23,9 +26,30 @@ struct ProjectsTabRoot: View {
         var id: String { rawValue }
     }
 
+    /// What a timeline page opens, on the Projects stack.
+    struct TimelineActions {
+        let onOpenStory: (String) -> Void
+        let onOpenList: (TimelinePlace) -> Void
+        let onOpenItem: (String) -> Void
+    }
+
+    /// Which page the root draws.
+    enum Content: Equatable {
+        /// Today's missions dashboard, on a journal without `/projects`.
+        case legacy
+        /// Today's Projects home.
+        case home
+        /// The timeline's week page.
+        case timeline
+    }
+
+    static func content(projectsSupported: Bool?, timelineShown: Bool) -> Content {
+        if projectsSupported == false { return .legacy }
+        return timelineShown ? .timeline : .home
+    }
+
     var body: some View {
-        content
-            .navigationTitle("Projects")
+        page
             .toolbar { toolbarContent }
             .onAppear { viewModel.pageDidAppear() }
             .onDisappear { viewModel.pageDidDisappear() }
@@ -42,14 +66,29 @@ struct ProjectsTabRoot: View {
             }
     }
 
-    @ViewBuilder private var content: some View {
-        if viewModel.projectsSupported == false {
+    @ViewBuilder private var page: some View {
+        switch Self.content(projectsSupported: viewModel.projectsSupported, timelineShown: timeline?.isShown == true) {
+        case .legacy:
             MissionsDashboardView(model: legacyModel, onAction: onLegacyAction, onRefresh: { await viewModel.refresh() })
-        } else {
-            ProjectsHomeView(model: homeModel, onAction: handle, onRefresh: { await viewModel.refresh() },
-                             onOpenBriefing: { sheet = .briefing },
-                             onRefreshBriefing: { Task { await viewModel.briefing?.requestRefresh() } })
+                .navigationTitle("Projects")
+        case .home:
+            home
+        case .timeline:
+            if let timeline, let timelineViewModel = timeline.viewModel, let timelineActions, let session {
+                TimelinePhoneRoot(state: timeline, viewModel: timelineViewModel, session: session,
+                                  onOpenStory: timelineActions.onOpenStory, onOpenList: timelineActions.onOpenList,
+                                  onOpenItem: timelineActions.onOpenItem)
+            } else {
+                home
+            }
         }
+    }
+
+    private var home: some View {
+        ProjectsHomeView(model: homeModel, onAction: handle, onRefresh: { await viewModel.refresh() },
+                         onOpenBriefing: { sheet = .briefing },
+                         onRefreshBriefing: { Task { await viewModel.briefing?.requestRefresh() } })
+            .navigationTitle("Projects")
     }
 
     private var homeModel: ProjectsHomeView.Model {

@@ -28,7 +28,7 @@ extension AppShellView {
                            badges: splitNavBadges, needsYou: splitNavNeedsYou,
                            onSelect: selectSplitNav)
             splitSidebarList
-                .frame(width: SplitShellRule.sidebarWidth(for: nav.tab) - SplitShellRule.navColumnWidth)
+                .frame(width: SplitShellRule.sidebarWidth(listing: splitSidebarKind) - SplitShellRule.navColumnWidth)
             Rectangle().fill(.separator).frame(width: 1 / 3).ignoresSafeArea()
             splitDetail
                 .voiceNoteIndicator(voiceNotes) { nav.openVoiceNoteTarget($0) }
@@ -84,15 +84,46 @@ extension AppShellView {
 
     // MARK: Sidebar list
 
-    /// For you and Search list beside the nav column what the detail
-    /// opens; every other page lists Conversations there, so a chat is
-    /// always one tap away, as in the Mac's sidebar.
+    private var splitSidebarKind: SplitShellRule.SidebarList {
+        SplitShellRule.sidebarList(for: nav.tab, missionsPath: nav.missionsPath, timelineShown: timeline.isShown)
+    }
+
+    /// For you, Search and the Projects timeline list beside the nav
+    /// column what the detail opens; every other page lists Conversations
+    /// there, so a chat is always one tap away, as in the Mac's sidebar.
     @ViewBuilder private var splitSidebarList: some View {
-        switch nav.tab {
+        switch splitSidebarKind {
         case .decisions: splitDecisionsList
         case .search: splitSearchList
-        default: splitConversationsList
+        case .timeline: splitTimelineList
+        case .conversations: splitConversationsList
         }
+    }
+
+    /// The timeline's weeks and "Worth a look". A pick replaces what the
+    /// detail shows, as a row chosen in any list does here.
+    private var splitTimelineList: some View {
+        NavigationStack {
+            Group {
+                if let viewModel = timeline.viewModel {
+                    TimelineSidebarView(weeks: viewModel.weeks, quietCount: viewModel.quiet?.total,
+                                        longCount: viewModel.long?.total,
+                                        // The journal sends no finished total; a
+                                        // count of the rows loaded so far would read as one.
+                                        finishedCount: nil,
+                                        selection: Binding(get: { timeline.place },
+                                                           set: { if let place = $0 { selectTimelinePlace(place) } }),
+                                        onLoadEarlier: viewModel.hasEarlierWeeks
+                                            ? { Task { await viewModel.loadEarlierWeeks() } } : nil)
+                }
+            }
+            .navigationTitle("Projects")
+        }
+    }
+
+    private func selectTimelinePlace(_ place: TimelinePlace) {
+        timeline.select(place)
+        nav.setPath([], on: .missions)
     }
 
     /// Opens a conversation chosen in the sidebar: the detail shows it at
@@ -263,15 +294,30 @@ extension AppShellView {
 
     private var splitProjects: some View {
         NavigationStack(path: missionsPath) {
-            ProjectsTabRoot(viewModel: missionsVM, onAction: handleProjectsHome,
-                            onLegacyAction: { nav.handleDashboard($0) },
-                            onOpenMemories: { nav.openMemories() })
+            splitProjectsRoot
                 .navigationDestination(for: String.self) {
                     projectsDestination($0).leadsBackToTheRoot(named: "Projects")
                 }
         }
         .environment(\.chatNavigationPath, missionsPath)
         .environment(\.openProject) { nav.pushProject($0) }
+    }
+
+    /// With the timeline shown, the place picked in the sidebar, rooted as
+    /// For you's selection is: what it opens pushes on top, and a new pick
+    /// replaces the stack. Otherwise today's Projects home.
+    @ViewBuilder private var splitProjectsRoot: some View {
+        if timeline.isShown, let viewModel = timeline.viewModel {
+            TimelinePlacePage(viewModel: viewModel, place: timeline.place, session: session,
+                              onOpenProject: timelineActions.onOpenStory, onOpenItem: timelineActions.onOpenItem,
+                              onRefresh: { await timeline.refresh() })
+                .navigationTitle("Projects")
+                .navigationBarTitleDisplayMode(.inline)
+        } else {
+            ProjectsTabRoot(viewModel: missionsVM, onAction: handleProjectsHome,
+                            onLegacyAction: { nav.handleDashboard($0) },
+                            onOpenMemories: { nav.openMemories() })
+        }
     }
 
     private var splitSettings: some View {

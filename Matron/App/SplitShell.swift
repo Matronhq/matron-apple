@@ -41,7 +41,33 @@ enum SplitShellRule {
     static let wideSidebarWidth: CGFloat = 472
 
     static func sidebarWidth(for tab: AppTab) -> CGFloat {
-        tab == .decisions || tab == .search ? wideSidebarWidth : sidebarWidth
+        sidebarWidth(listing: sidebarList(for: tab, missionsPath: [], timelineShown: false))
+    }
+
+    /// The sidebar for what it lists: the Projects timeline's weeks, with
+    /// their sentences, take For you's width.
+    static func sidebarWidth(listing list: SidebarList) -> CGFloat {
+        list == .conversations ? sidebarWidth : wideSidebarWidth
+    }
+
+    /// The list beside the nav column.
+    enum SidebarList: Equatable {
+        case conversations, decisions, search
+        /// The Projects timeline's weeks and "Worth a look".
+        case timeline
+    }
+
+    /// For you and Search list what the detail opens, and so does Projects
+    /// when the timeline is shown (Memories rides its stack but keeps the
+    /// Conversations list); every other page lists Conversations, so a
+    /// chat is always one tap away.
+    static func sidebarList(for tab: AppTab, missionsPath: [String], timelineShown: Bool) -> SidebarList {
+        switch tab {
+        case .decisions: return .decisions
+        case .search: return .search
+        case .missions where timelineShown && missionsPath.first != MemoriesRoute.list: return .timeline
+        default: return .conversations
+        }
     }
     /// Narrower than this the window keeps the tab bar, even at regular
     /// width (half of a smaller iPad in landscape).
