@@ -23,6 +23,12 @@ import MatronViewModels
         return .mission(id: selectedMissionID)
     }
 
+    /// Whether ⌘R and coming back to the app re-read the timeline: only
+    /// while Projects shows it (not a mission page over it, not the home).
+    static func refreshesTimeline(nav: MacNav, timelineShown: Bool, selectedMissionID: String?) -> Bool {
+        nav == .missions && timelineShown && selectedMissionID == nil
+    }
+
     /// Whether `next` is the Projects home becoming the timeline: the home
     /// shown before the journal answered, or the timeline before its first
     /// week loaded. That is the same place filling in, not a move, so

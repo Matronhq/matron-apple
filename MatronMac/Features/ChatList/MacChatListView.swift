@@ -1005,6 +1005,11 @@ struct MacChatListView: View {
             // to the menu bar for THIS window only, unlike the bus above;
             // history is per window (PR #233 review I1).
             .focusedSceneValue(\.macNavigation, navigationActions)
+            // Back in the app with the timeline on screen: what moved
+            // meanwhile shows without a click.
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                if refreshesTimeline { refreshTimeline() }
+            }
             // The same Back/Forward on the mouse's side buttons and on
             // trackpad page swipes, for this window only.
             .modifier(MacHistoryGestures(history: history, goBack: { goBack() }, goForward: { goForward() }))
@@ -1575,7 +1580,17 @@ struct MacChatListView: View {
                              pinnedDesks: pins.filter { !$0.missing }.map { ($0.convoID, $0.label) },
                              showPinnedDesk: { id in nav = .desk(id) },
                              goToNumber: showSearchAction,
-                             searchEverything: showSearchAction)
+                             searchEverything: showSearchAction,
+                             refresh: refreshesTimeline ? { refreshTimeline() } : nil)
+    }
+
+    /// The Projects timeline is on screen: ⌘R and coming back to the app read it again.
+    private var refreshesTimeline: Bool {
+        MacTimelineNav.refreshesTimeline(nav: nav, timelineShown: timeline.isShown, selectedMissionID: selectedMissionID)
+    }
+
+    private func refreshTimeline() {
+        Task { await timeline.host.refresh() }
     }
 
     /// Go ▸ Search… (⌘K), Go ▸ Go to Number… (⌘J) and the nav column's

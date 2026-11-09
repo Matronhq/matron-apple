@@ -52,7 +52,7 @@ public extension Notification.Name {
 /// Posted-but-unhandled (placeholder menu items, listeners land later):
 ///   - `.increase/decrease/resetFontSize` — Phase 5+ design-system font scaling.
 ///
-/// Find in Chat / Search All Chats / Go to Number are per window
+/// Find in Chat / Search All Chats / Go to Number / Refresh are per window
 /// (`MacNavigationActions`), not bus commands: a post would open the bar,
 /// or the field, in every window.
 ///
@@ -105,6 +105,12 @@ struct ChatCommands: Commands {
                 Button(shortcut.title) { post(shortcut.command) }
                     .keyboardShortcut(KeyEquivalent(shortcut.key), modifiers: .command)
             }
+            // The key window's page reads again (the Projects timeline),
+            // per window like Back/Forward; greyed out where there is
+            // nothing to refresh.
+            Button("Refresh") { navigation?.refresh?() }
+                .keyboardShortcut(Self.refreshShortcut)
+                .disabled(navigation?.refresh == nil)
             Divider()
             // TODO Phase 5: wire font-size commands to a design-system
             // scale environment; today the listeners are missing so the
@@ -151,6 +157,9 @@ struct ChatCommands: Commands {
     private func post(_ cmd: MatronCommand) {
         NotificationCenter.default.post(name: .matronCommand(cmd), object: nil)
     }
+
+    /// View ▸ Refresh: ⌘R.
+    static let refreshShortcut = KeyboardShortcut("r", modifiers: .command)
 
     /// Go ▸ Search…: ⌘K, the usual key for an app-wide search.
     static let searchEverythingShortcut = KeyboardShortcut("k", modifiers: .command)
@@ -208,6 +217,9 @@ struct MacNavigationActions {
     /// Go ▸ Search…: this window's Search page. `nil` while the window has
     /// no signed-in session.
     var searchEverything: (() -> Void)? = nil
+    /// View ▸ Refresh: this window's Projects timeline reads again. `nil`
+    /// while the window shows nothing it refreshes.
+    var refresh: (() -> Void)? = nil
 }
 
 extension FocusedValues {

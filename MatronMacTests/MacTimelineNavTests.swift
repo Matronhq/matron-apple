@@ -72,6 +72,15 @@ final class MacTimelineNavTests: XCTestCase {
         XCTAssertFalse(MacChatListView.showsNavColumnOnly(.decisions, timelineShown: true))
     }
 
+    /// ⌘R and coming back to the app re-read the timeline only while
+    /// Projects shows it: not a mission page over it, not today's home.
+    func testRefreshesTheTimelineOnlyWhileProjectsShowsIt() {
+        XCTAssertTrue(MacTimelineNav.refreshesTimeline(nav: .missions, timelineShown: true, selectedMissionID: nil))
+        XCTAssertFalse(MacTimelineNav.refreshesTimeline(nav: .missions, timelineShown: false, selectedMissionID: nil))
+        XCTAssertFalse(MacTimelineNav.refreshesTimeline(nav: .missions, timelineShown: true, selectedMissionID: "mi_1"))
+        XCTAssertFalse(MacTimelineNav.refreshesTimeline(nav: .decisions, timelineShown: true, selectedMissionID: nil))
+    }
+
     // MARK: Places
 
     func testTheTimelinePlaceIsAProjectsPlace() {
