@@ -198,21 +198,25 @@ struct BoxSessionsView: View {
     let onOpenChat: (String) -> Void
 
     var body: some View {
-        List(row.sessions) { session in
-            Button { onOpenChat(session.id) } label: {
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(session.isRunning ? Color.green : Color.gray)
-                        .frame(width: 7, height: 7)
-                    Text(session.title.isEmpty ? "Untitled session" : session.title)
-                        .lineLimit(2)
-                    Spacer(minLength: 4)
-                    Text(session.isRunning ? "Running" : "Waiting")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+        List {
+            MatronGroupedRows {
+                ForEach(row.sessions) { session in
+                    Button { onOpenChat(session.id) } label: {
+                        HStack(spacing: 8) {
+                            Circle()
+                                .fill(session.isRunning ? Color.green : Color.gray)
+                                .frame(width: 7, height: 7)
+                            Text(session.title.isEmpty ? "Untitled session" : session.title)
+                                .lineLimit(2)
+                            Spacer(minLength: 4)
+                            Text(session.isRunning ? "Running" : "Waiting")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .tint(.primary)
                 }
             }
-            .tint(.primary)
         }
         .navigationTitle(row.device.name)
         .navigationBarTitleDisplayMode(.inline)
