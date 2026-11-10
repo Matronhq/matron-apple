@@ -4,7 +4,7 @@ import MatronModels
 /// "This week and before": a project week by week, newest first. Each week
 /// has its heading ("This week", "Last week", then dates), that week's
 /// sentence and picture when the project had a card, and its milestones,
-/// one line each with the day, then "4 more" for those not listed. A
+/// a line or two each with the day, then "4 more" for those not listed. A
 /// milestone opens through `onOpenMilestone`; reaching the end asks for
 /// older weeks while `hasMore`.
 public struct ProjectHistoryView: View {
@@ -83,7 +83,7 @@ public struct ProjectHistoryView: View {
     private func row(_ milestone: ProjectMilestone) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             Text(ProjectsFormat.oneLine(milestone.milestone.title)).font(M.rowFont).foregroundStyle(Color.primary)
-                .lineLimit(1)
+                .lineLimit(2).multilineTextAlignment(.leading)
             Spacer(minLength: 12)
             Text(TimelineFormat.weekday(milestone.milestone.createdAt)).font(M.detailFont).foregroundStyle(.secondary)
                 .lineLimit(1).fixedSize()

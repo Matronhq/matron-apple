@@ -256,6 +256,14 @@ final class TimelineSnapshotTests: XCTestCase {
         assertCard(D.allMarksStory, named: "timeline-card-marks")
     }
 
+    /// Where the three marks do not fit on a line (large text, a narrow
+    /// card) they stack, none cut short.
+    func testMarksStackWhereTheLineDoesNotFit() {
+        assertVariants(of: TimelineMarksLine(marks: D.allMarksStory.marks).padding(12)
+                        .frame(width: 150, alignment: .leading),
+                       named: "timeline-marks-narrow")
+    }
+
     /// Nothing to mark: the card ends at its sentence, with no empty line.
     func testCardNoMarks() {
         assertCard(D.noMarksStory, named: "timeline-card-nomarks")
