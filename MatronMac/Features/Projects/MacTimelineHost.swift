@@ -181,7 +181,8 @@ struct MacTimelineDetail: View {
         if let projectID = selectedProjectID ?? state.storyProjectID {
             MacTimelineProjectHost(projectID: projectID, section: state.storySection, session: session,
                                    missionsViewModel: missionsViewModel, slot: $slot, actions: actions,
-                                   onOpenSection: onOpenSection, onRedirectStory: onRedirectStory)
+                                   onOpenSection: onOpenSection, onRedirectStory: onRedirectStory,
+                                   onChanged: { await state.host.projectChanged() })
                 // Another project is another page: its reads, its pictures
                 // and anything it was asking start over.
                 .id(projectID)
@@ -247,6 +248,8 @@ struct MacTimelineProjectHost: View {
     let actions: MacProjectPageActions
     let onOpenSection: (ProjectSection?) -> Void
     let onRedirectStory: (String) -> Void
+    /// A "···" write landed: the timeline's lists name the project too.
+    let onChanged: () async -> Void
 
     @Environment(\.appDependencies) private var deps
     @State private var summary: ProjectSummaryViewModel?
@@ -503,13 +506,15 @@ struct MacTimelineProjectHost: View {
 
     // MARK: Actions
 
-    /// One of the "···" writes, then the page again: a rename, a close or
-    /// a mission added shows in what the page says.
+    /// One of the "···" writes, then the page again, and the timeline's
+    /// lists: a rename, a close or a mission added shows in what the page
+    /// says and in every list that names the project.
     private func act(_ work: @escaping @MainActor (ProjectDetailViewModel) async -> Void) {
         guard let detail else { return }
         Task {
             await work(detail)
             await summary?.refresh()
+            await onChanged()
         }
     }
 

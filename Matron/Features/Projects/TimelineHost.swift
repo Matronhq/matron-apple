@@ -88,6 +88,9 @@ struct TimelineStoryHost: View {
     let onOpenMilestone: (String, Int64) -> Void
 
     @Environment(\.appDependencies) private var deps
+    /// The shell's timeline: its lists name the project too, so a "···"
+    /// write reads them again.
+    @Environment(TimelineHostState.self) private var timeline: TimelineHostState?
     @State private var summary: ProjectSummaryViewModel?
     @State private var detail: ProjectDetailViewModel?
     /// The route id the view models were built for (a merge changes the
@@ -438,13 +441,15 @@ struct TimelineStoryHost: View {
 
     // MARK: Actions
 
-    /// One of the "···" writes, then the page again: a rename, a close or
-    /// a mission added shows in what the page says.
+    /// One of the "···" writes, then the page again, and the timeline's
+    /// lists: a rename, a close or a mission added shows in what the page
+    /// says and in every list that names the project.
     private func act(_ work: @escaping @MainActor (ProjectDetailViewModel) async -> Void) {
         guard let detail else { return }
         Task {
             await work(detail)
             await summary?.refresh()
+            await timeline?.projectChanged()
         }
     }
 

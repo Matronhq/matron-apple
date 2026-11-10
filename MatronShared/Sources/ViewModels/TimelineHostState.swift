@@ -70,6 +70,14 @@ public final class TimelineHostState {
         await viewModel.loadCounts()
     }
 
+    /// A project was changed from its own page (renamed, closed, merged,
+    /// given a mission): every list that names it is read again, the one
+    /// under the page now and the others on their next visit, so none
+    /// goes on showing it as it was.
+    public func projectChanged() async {
+        await refresh()
+    }
+
     public func select(_ place: TimelinePlace?) {
         selection = place
         if case .week(let key) = place { pickedWeek = key }
