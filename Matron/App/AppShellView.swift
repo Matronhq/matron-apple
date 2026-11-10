@@ -60,6 +60,8 @@ struct AppShellView: View {
     /// nothing until the screen appears (`MemoriesScreen`), and the shell
     /// stops its live refetch once the screen leaves the Missions stack.
     @State var memoriesVM: MemoriesViewModel
+    /// The Boxes page's view model. Reads nothing until the page shows.
+    @State var boxesVM: BoxesViewModel
     /// The Memories screen's "On your boxes" section. Asks no box until
     /// the screen appears, and is stopped with it.
     @State var localMemoriesVM: LocalMemoriesViewModel
@@ -84,11 +86,16 @@ struct AppShellView: View {
         self.session = session
         self.deps = deps
         self.onSignOut = onSignOut
-        _nav = State(initialValue: navigation ?? AppShellNavigation())
+        let shellNav = navigation ?? AppShellNavigation()
+        #if DEBUG
+        if BoxesDemoData.isRequested { shellNav.tab = .boxes }
+        #endif
+        _nav = State(initialValue: shellNav)
         _chatListVM = State(initialValue: ChatListViewModel(chat: deps.chatService(for: session)))
         _decisionsVM = State(initialValue: deps.makeDecisionsViewModel(for: session))
         _missionsVM = State(initialValue: deps.makeMissionsDashboardViewModel(for: session))
         _memoriesVM = State(initialValue: deps.makeMemoriesViewModel(for: session))
+        _boxesVM = State(initialValue: deps.makeBoxesViewModel(for: session))
         _localMemoriesVM = State(initialValue: deps.makeLocalMemoriesViewModel(for: session))
         _coordinatorConvoID = AppStorage(CoordinatorSetting.defaultsKey(for: session.userID))
     }
@@ -418,6 +425,7 @@ struct AppShellView: View {
         switch nav.morePage {
         case .missions: missionsTab
         case .settings: settingsTab
+        case .boxes: boxesStack(showsBackToMore: true)
         default: moreList
         }
     }
@@ -437,12 +445,14 @@ struct AppShellView: View {
 
     private func moreRow(_ entry: AppTab) -> some View {
         let isProjects = entry == .missions
+        let title = isProjects ? "Projects" : entry == .boxes ? "Boxes" : "Settings"
+        let symbol = isProjects ? ProjectGlyph.symbol : entry == .boxes ? "server.rack" : "gear"
         return Button { nav.tab = entry } label: {
             HStack {
                 Label {
-                    Text(isProjects ? "Projects" : "Settings")
+                    Text(title)
                 } icon: {
-                    Image(systemName: isProjects ? ProjectGlyph.symbol : "gear")
+                    Image(systemName: symbol)
                         .foregroundStyle(Color.accentColor)
                 }
                 Spacer()
@@ -456,7 +466,7 @@ struct AppShellView: View {
         }
         // A row that reads as a list entry, not a blue button.
         .tint(.primary)
-        .accessibilityIdentifier(isProjects ? "more.projects" : "more.settings")
+        .accessibilityIdentifier(isProjects ? "more.projects" : entry == .boxes ? "more.boxes" : "more.settings")
     }
 
     /// A More page's way back to the list, at its root.
@@ -464,6 +474,30 @@ struct AppShellView: View {
         ToolbarItem(placement: .topBarLeading) {
             Button { nav.tab = .more } label: { Label("More", systemImage: "chevron.left") }
                 .accessibilityIdentifier("more.back")
+        }
+    }
+
+    var boxesPath: Binding<[String]> {
+        Binding(get: { nav.boxesPath }, set: { nav.setPath($0, on: .boxes) })
+    }
+
+    /// Boxes and the per-box session lists pushed from it. The iPad's nav
+    /// column is always there, so only the tab bar's version needs a way
+    /// back to More.
+    func boxesStack(showsBackToMore: Bool) -> some View {
+        NavigationStack(path: boxesPath) {
+            BoxesScreen(viewModel: boxesVM, deps: deps, session: session, isActive: nav.tab == .boxes,
+                        onOpenChat: { nav.openChat($0) })
+                .toolbar { if showsBackToMore { backToMore } }
+                .navigationDestination(for: String.self) {
+                    boxesDestination($0).leadsBackToTheRoot(named: "Boxes")
+                }
+        }
+    }
+
+    @ViewBuilder private func boxesDestination(_ value: String) -> some View {
+        if let id = BoxRoute.id(from: value), let row = boxesVM.rows().first(where: { $0.id == id }) {
+            BoxSessionsView(row: row, onOpenChat: { nav.openChat($0) })
         }
     }
 

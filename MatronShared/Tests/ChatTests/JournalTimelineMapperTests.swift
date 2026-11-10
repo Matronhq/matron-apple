@@ -349,6 +349,51 @@ final class JournalTimelineMapperTests: XCTestCase {
                      "missing prompt_id must drop the row, not render a blank bubble")
     }
 
+    func testQueuedReleaseCardOffersAnInPlaceEdit() throws {
+        let item = try XCTUnwrap(map(event(24, type: "prompt", payload: [
+            "kind": "queued_release", "prompt_id": "pr_e",
+            "question": "Send this queued message now, or cancel it?",
+            "items": [["id": "pr_e::0", "text": "fix the tests"]],
+            "options": [["id": "send", "label": "⚡ Send now", "value": "send"]],
+            "mode": "pick_one",
+            "edit": ["mode": "replace", "hold_seconds": 300],
+        ])))
+        guard case .askUser(_, let ask) = item.kind else { return XCTFail() }
+        XCTAssertEqual(ask.queuedEdit, AskUserEvent.QueuedEdit(text: "fix the tests", holdSeconds: 300))
+    }
+
+    /// A tracker reply's card is edited from the item thread, and a card
+    /// without `edit` (an older bridge, a /compact) offers no edit.
+    func testQueuedReleaseCardWithoutAnInPlaceEditOffersNone() throws {
+        func ask(_ extra: [String: Any]) throws -> AskUserEvent {
+            var payload: [String: Any] = [
+                "kind": "queued_release", "prompt_id": "pr_e", "question": "q",
+                "items": [["id": "pr_e::0", "text": "t"]],
+                "options": [["id": "send", "label": "⚡ Send now", "value": "send"]], "mode": "pick_one",
+            ]
+            payload.merge(extra) { _, new in new }
+            let item = try XCTUnwrap(map(event(25, type: "prompt", payload: payload)))
+            guard case .askUser(_, let ask) = item.kind else { throw NSError(domain: "test", code: 1) }
+            return ask
+        }
+        XCTAssertNil(try ask([:]).queuedEdit)
+        XCTAssertNil(try ask(["edit": ["mode": "resend"], "item": ["item_id": "it_1", "comment_id": "ic_1"]]).queuedEdit)
+        XCTAssertNil(try ask(["edit": ["mode": "replace"], "item": ["item_id": "it_1", "comment_id": "ic_1"]]).queuedEdit)
+    }
+
+    /// An Edit tap (or a cancelled edit) doesn't answer the card: the
+    /// message is still queued and its buttons must stay.
+    func testEditTapOnAQueueCardIsNotAnAnswer() throws {
+        for choice in ["edit", "edit_cancel"] {
+            let item = try XCTUnwrap(map(event(26, type: "prompt_reply", sender: "user:alice",
+                                               payload: ["target_seq": 24, "choice": choice])))
+            guard case .askUserAnswer(let promptID, let values) = item.kind else { return XCTFail() }
+            XCTAssertEqual(promptID, "qe:24")
+            XCTAssertEqual(values, [choice])
+            XCTAssertNil(item.inReplyToEventID)
+        }
+    }
+
     func testImageBuildsMediaURL() throws {
         let item = try XCTUnwrap(map(event(8, type: "image",
                                            payload: ["blob_ref": "b123", "content_type": "image/png"])))

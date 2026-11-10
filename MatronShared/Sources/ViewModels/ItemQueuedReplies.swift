@@ -47,6 +47,36 @@ public enum ItemQueuedReplies {
         return out
     }
 
+    /// The replies (by comment id) whose live card can be edited from the
+    /// thread: the bridge holds the reply (`edit`) while its text is edited
+    /// in the reply box, and sending the edit cancels the original (which
+    /// withdraws it) before the edited reply goes as a new comment. The
+    /// card says so with `edit: {mode: "resend"}`.
+    public static func editable(rows: [JournalEvent], itemID: String) -> Set<String> {
+        var cards: [String: String] = [:] // prompt_id → comment id
+        var released: Set<String> = []
+        for row in rows where row.sender.hasPrefix("agent:") {
+            let p = row.payload
+            guard (p["kind"] as? String) == "queued_release", let promptID = p["prompt_id"] as? String else { continue }
+            switch row.type {
+            case JournalEventType.prompt:
+                guard let item = p["item"] as? [String: Any], (item["item_id"] as? String) == itemID,
+                      let commentID = item["comment_id"] as? String, !commentID.isEmpty,
+                      ((p["edit"] as? [String: Any])?["mode"] as? String) == "resend" else { continue }
+                cards[promptID] = commentID
+            case JournalEventType.promptReply:
+                released.insert(promptID)
+            default:
+                continue
+            }
+        }
+        return Set(cards.filter { !released.contains($0.key) }.values)
+    }
+
+    /// The card choices an edit from the thread sends.
+    public static let editChoice = "edit"
+    public static let editCancelChoice = "edit_cancel"
+
     /// The card choice a Send now taps: just this reply when the card can,
     /// otherwise the whole queue (which includes this reply).
     public static func sendNowChoice(offersSendOne: Bool) -> String { offersSendOne ? "send_one" : "send" }

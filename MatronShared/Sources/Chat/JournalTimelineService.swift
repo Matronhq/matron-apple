@@ -846,6 +846,13 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                                              choice: selectedValues.joined(separator: ", "), text: nil))
     }
 
+    public func sendQueuedEdit(choice: String, text: String?, inReplyTo promptEventID: String) async throws {
+        guard let targetSeq = Int64(promptEventID) else {
+            throw JournalChatError.invalidPromptReference(promptEventID)
+        }
+        try await engine.sendOp(.promptReply(convoID: convoID, targetSeq: targetSeq, choice: choice, text: text))
+    }
+
     public func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {
         try await sendMedia(data, filename: filename, mimeType: mimeType, type: "image", caption: caption, progress: nil)
     }

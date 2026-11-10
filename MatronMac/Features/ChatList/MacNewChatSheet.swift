@@ -15,6 +15,8 @@ struct MacNewChatSheet: View {
     let deps: AppDependencies
     let session: UserSession
     let onCreated: (String) -> Void
+    /// Skips the box list and opens on this box's folders (the Boxes page).
+    var startOn: DeviceDTO?
 
     @Environment(\.dismiss) private var dismiss
     @State private var viewModel: NewChatViewModel
@@ -65,9 +67,10 @@ struct MacNewChatSheet: View {
     @State private var layout: Layout
 
     init(deps: AppDependencies, session: UserSession, windowSize: CGSize? = nil,
-         pinnedModel: String? = nil, onCreated: @escaping (String) -> Void) {
+         pinnedModel: String? = nil, startOn: DeviceDTO? = nil, onCreated: @escaping (String) -> Void) {
         self.deps = deps
         self.session = session
+        self.startOn = startOn
         self.onCreated = onCreated
         _layout = State(initialValue: Self.layout(for: windowSize))
         _viewModel = State(initialValue: NewChatViewModel(
@@ -103,7 +106,13 @@ struct MacNewChatSheet: View {
         }
         .padding(20)
         .frame(width: layout.width)
-        .task { await viewModel.load() }
+        .task {
+            if let startOn {
+                await viewModel.select(agent: startOn)
+            } else {
+                await viewModel.load()
+            }
+        }
         // Live `box_status` frames repaint rows while the sheet is up; the
         // task (and its subscription) ends when the sheet goes away.
         .task { await viewModel.watchBoxStatus() }

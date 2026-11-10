@@ -110,6 +110,7 @@ struct MacPlace: Equatable {
         case timeline(place: TimelinePlace?, story: String?)
         case decision(id: String?)
         case memory(MacMemorySelection?)
+        case boxes
     }
 
     var detail: Detail
@@ -122,6 +123,7 @@ struct MacPlace: Equatable {
         case .mission, .project, .timeline: return .missions
         case .decision: return .decisions
         case .memory: return .memories
+        case .boxes: return .boxes
         }
     }
 
@@ -130,7 +132,7 @@ struct MacPlace: Equatable {
         case .coordinator(_, let pane): return pane
         case .desk(_, let pane): return pane
         case .conversation(_, let pane): return pane
-        case .mission, .project, .timeline, .decision, .memory: return nil
+        case .mission, .project, .timeline, .decision, .memory, .boxes: return nil
         }
     }
 
@@ -154,7 +156,7 @@ struct MacPlace: Equatable {
         case .coordinator(let id, _): return id
         case .desk(let id, _): return id
         case .conversation(let id, _): return id
-        case .mission, .project, .timeline, .decision, .memory: return nil
+        case .mission, .project, .timeline, .decision, .memory, .boxes: return nil
         }
     }
 }

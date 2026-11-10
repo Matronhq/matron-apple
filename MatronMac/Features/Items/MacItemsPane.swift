@@ -568,7 +568,9 @@ struct MacItemDetailHost: View {
                             queuedReplies: viewModel.queuedReplies,
                             selectedCommentActions: viewModel.selectedCommentActions,
                             openableConvoIDs: viewModel.openableCommentConvoIDs,
-                            working: viewModel.workingIndicator),
+                            working: viewModel.workingIndicator,
+                            editableQueuedReplies: viewModel.editableQueuedReplies,
+                            editingQueuedReplyID: viewModel.editingQueuedReplyID),
                         draft: ItemReplyDraft(get: { viewModel.draft }, set: { viewModel.draft = $0 }),
                         image: { slot.images[$0.blobRef] },
                         animation: { slot.animations[$0.blobRef] },
@@ -801,7 +803,9 @@ struct MacItemDetailHost: View {
               cancelQueued: { id in Task { await vm.cancelQueuedReply(commentID: id) } },
               editAndResend: { vm.editAndResend(commentID: $0) },
               sendPendingNow: { Task { await vm.sendPendingNow() } },
-              cancelPending: { id in Task { await vm.cancelPendingReply(localID: id) } })
+              cancelPending: { id in Task { await vm.cancelPendingReply(localID: id) } },
+              editQueued: { id in Task { await vm.editQueuedReply(commentID: id) } },
+              cancelQueuedEdit: { Task { await vm.cancelQueuedReplyEdit() } })
     }
 
     /// Replies still settling (`sendingReplies`) as "Sending…" rows —
