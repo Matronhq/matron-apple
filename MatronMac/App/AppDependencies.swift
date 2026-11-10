@@ -606,12 +606,25 @@ final class AppDependencies {
     /// asked, the way the dashboard's Ask does.
     @MainActor func makeTimelineViewModel(for session: UserSession,
                                           coordinatorConvoID: @escaping @MainActor () -> String?) -> TimelineViewModel {
-        let c = core(for: session)
-        let engine = c.engine
-        return TimelineViewModel(timeline: c.api, askCoordinator: { body in
+        TimelineViewModel(timeline: core(for: session).api,
+                          askCoordinator: coordinatorAsk(for: session, coordinatorConvoID: coordinatorConvoID))
+    }
+
+    /// Sends a message to the Coordinator conversation `coordinatorConvoID`
+    /// names when asked: the timeline's and a project page's "Ask the
+    /// Coordinator". Throws when there is no Coordinator to ask.
+    @MainActor func coordinatorAsk(for session: UserSession,
+                                   coordinatorConvoID: @escaping @MainActor () -> String?) -> (String) async throws -> Void {
+        let engine = core(for: session).engine
+        return { body in
             guard let convoID = coordinatorConvoID(), !convoID.isEmpty else { throw BriefingsError.noCoordinator }
             try await engine.sendMessage(convoID: convoID, body: body, localID: UUID().uuidString)
-        })
+        }
+    }
+
+    /// One project's page on the timeline: where it stands, and its history.
+    @MainActor func makeProjectSummaryViewModel(for session: UserSession, projectID: String) -> ProjectSummaryViewModel {
+        ProjectSummaryViewModel(projectID: projectID, timeline: core(for: session).api)
     }
 
     /// One project page.
