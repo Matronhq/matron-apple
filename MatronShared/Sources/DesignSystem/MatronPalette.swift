@@ -10,15 +10,36 @@ import SwiftUI
 /// The web app is light-only; the dark variants here are warm-neutral
 /// equivalents chosen to keep the same figure/ground relationship
 /// (bubbles slightly lighter than the timeline behind them).
+/// The soft dark palette used on iPhone and iPad, in 0–255 sRGB. The Mac
+/// keeps its own dark colours.
+public enum MatronDarkSurface {
+    public static let page: (Double, Double, Double) = (44, 45, 51)         // #2c2d33
+    public static let card: (Double, Double, Double) = (55, 56, 64)         // #373840
+    public static let raised: (Double, Double, Double) = (66, 67, 76)       // #42434c
+    public static let ownBubble: (Double, Double, Double) = (52, 73, 92)    // #34495c
+    public static let accent: (Double, Double, Double) = (134, 189, 226)    // #86bde2
+    public static let label: (Double, Double, Double) = (227, 225, 224)     // #e3e1e0
+    public static let secondaryLabel: (Double, Double, Double) = (165, 163, 168) // #a5a3a8
+
+    static var cardCG: (CGFloat, CGFloat, CGFloat) { (CGFloat(card.0), CGFloat(card.1), CGFloat(card.2)) }
+    static var ownBubbleCG: (CGFloat, CGFloat, CGFloat) {
+        (CGFloat(ownBubble.0), CGFloat(ownBubble.1), CGFloat(ownBubble.2))
+    }
+}
+
 public extension Color {
     static let matronTimelineTop = adaptive(
-        light: (242, 240, 234), dark: (29, 27, 24))       // #f2f0ea
+        light: (242, 240, 234), dark: (29, 27, 24),
+        iPhoneDark: MatronDarkSurface.page)               // #f2f0ea
     static let matronTimelineBottom = adaptive(
-        light: (232, 229, 220), dark: (23, 21, 18))       // #e8e5dc
+        light: (232, 229, 220), dark: (23, 21, 18),
+        iPhoneDark: MatronDarkSurface.page)               // #e8e5dc
     static let matronBubbleBot = adaptive(
-        light: (255, 255, 255), dark: (38, 36, 33))       // canvas white
+        light: (255, 255, 255), dark: (38, 36, 33),
+        iPhoneDark: MatronDarkSurface.card)               // canvas white
     static let matronBubbleMe = adaptive(
-        light: (196, 245, 251), dark: (18, 58, 65))       // #c4f5fb
+        light: (196, 245, 251), dark: (18, 58, 65),
+        iPhoneDark: MatronDarkSurface.ownBubble)          // #c4f5fb
     /// `rgb(18,16,14 / 0.08)` — warm near-black at 8%.
     static let matronBubbleShadow = Color(
         red: 18 / 255, green: 16 / 255, blue: 14 / 255).opacity(0.08)
@@ -29,15 +50,19 @@ public extension Color {
     /// cream palette. Light: deep teal legible on the white card; dark:
     /// brightened cyan legible on the warm-dark surfaces.
     static let matronAccent = adaptive(
-        light: (11, 110, 125), dark: (110, 205, 220))
+        light: (11, 110, 125), dark: (110, 205, 220),
+        iPhoneDark: MatronDarkSurface.accent)
 
     /// Builds a light/dark adaptive color from 0–255 sRGB components.
+    /// `iPhoneDark` replaces `dark` on iPhone and iPad, whose dark mode uses
+    /// the softer palette (`MatronDarkSurface`).
     private static func adaptive(
-        light: (Double, Double, Double), dark: (Double, Double, Double)
+        light: (Double, Double, Double), dark: (Double, Double, Double),
+        iPhoneDark: (Double, Double, Double)
     ) -> Color {
         #if canImport(UIKit) && !os(macOS)
         return Color(UIColor { traits in
-            let c = traits.userInterfaceStyle == .dark ? dark : light
+            let c = traits.userInterfaceStyle == .dark ? iPhoneDark : light
             return UIColor(red: c.0 / 255, green: c.1 / 255, blue: c.2 / 255, alpha: 1)
         })
         #elseif os(macOS)
@@ -70,8 +95,8 @@ public struct MatronTimelineBackground: View {
 /// UIKit twins of the bubble palette for the UIKit chat timeline — the same
 /// components as the `Color` statics above (`TextMessageCellTests` pins it).
 public extension UIColor {
-    static let matronBubbleBot = matronAdaptive(light: (255, 255, 255), dark: (38, 36, 33))
-    static let matronBubbleMe = matronAdaptive(light: (196, 245, 251), dark: (18, 58, 65))
+    static let matronBubbleBot = matronAdaptive(light: (255, 255, 255), dark: MatronDarkSurface.cardCG)
+    static let matronBubbleMe = matronAdaptive(light: (196, 245, 251), dark: MatronDarkSurface.ownBubbleCG)
     /// `rgb(18,16,14 / 0.08)` — warm near-black at 8%.
     static let matronBubbleShadow = UIColor(red: 18 / 255, green: 16 / 255, blue: 14 / 255, alpha: 0.08)
 
