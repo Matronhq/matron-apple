@@ -170,11 +170,6 @@ struct MacBoxesPage: View {
             }
         }
         .background(Self.highlight(row)?.opacity(0.07))
-        .overlay(alignment: .leading) {
-            if let color = Self.highlight(row) {
-                Rectangle().fill(color).frame(width: 3)
-            }
-        }
     }
 
     private static func highlight(_ row: BoxRow) -> Color? {

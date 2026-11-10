@@ -98,7 +98,6 @@ struct BoxesScreen: View {
     }
 
     private func card(_ row: BoxRow) -> some View {
-        let highlight: Color? = row.isNearLimit ? .red : row.isMostSpare ? .green : nil
         let lines = row.capacity?.limitLines ?? []
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
@@ -149,12 +148,6 @@ struct BoxesScreen: View {
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
-        .overlay(alignment: .leading) {
-            if let highlight {
-                Rectangle().fill(highlight).frame(width: 3).clipShape(RoundedRectangle(cornerRadius: 1.5))
-            }
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
     private func footerText(_ row: BoxRow) -> String? {
