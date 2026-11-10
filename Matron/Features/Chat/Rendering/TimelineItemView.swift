@@ -679,6 +679,19 @@ private struct AskUserCardHost: View {
     /// `.task(id:)` calling `awaitExpiry`; the inline card does the same.
     @State private var expiryTick = false
 
+    /// Edit on a queued message, while the card offers it or its editor is
+    /// open (`AskUserSheetViewModel.beginEdit`).
+    private var editControls: AskUserCard.QueuedEditControls? {
+        guard viewModel.offersEdit || viewModel.isEditing else { return nil }
+        return AskUserCard.QueuedEditControls(
+            text: $viewModel.editText, isEditing: viewModel.isEditing, isBusy: viewModel.isSendingEdit,
+            canSave: viewModel.canSaveEdit, error: viewModel.editError,
+            holdMinutes: max(1, (viewModel.event.queuedEdit?.holdSeconds ?? 600) / 60),
+            onEdit: { Task { await viewModel.beginEdit() } },
+            onSave: { Task { await viewModel.saveEdit() } },
+            onCancel: { Task { await viewModel.cancelEdit() } })
+    }
+
     var body: some View {
         AskUserCard(
             event: viewModel.event,
@@ -692,7 +705,8 @@ private struct AskUserCardHost: View {
             error: viewModel.error,
             onSend: { Task { await viewModel.send() } },
             foldsReminder: true,
-            timestamp: timestamp
+            timestamp: timestamp,
+            edit: editControls
         )
         // Keyed on the prompt event ID so a recycled host (cells reuse)
         // restarts the timer for the new prompt.

@@ -246,4 +246,95 @@ final class AskUserSheetViewModelTests: XCTestCase {
         await vm.awaitExpiry(onExpire: { didExpire = true })
         XCTAssertFalse(didExpire)
     }
+
+    // MARK: - Editing a queued message
+
+    private func queuedCard() -> AskUserEvent {
+        AskUserEvent(prompt: "Send this queued message now, or cancel it?",
+                     kind: .choice(options: [AskUserEvent.Option(id: "send", label: "⚡ Send now", value: "send"),
+                                             AskUserEvent.Option(id: "cancel", label: "✕ Cancel", value: "cancel")],
+                                   allowOther: false),
+                     expiresAt: nil, replyChannel: .buttonResponse, queuedReleasePromptID: "pr_1",
+                     queuedEdit: AskUserEvent.QueuedEdit(text: "fix the tests", holdSeconds: 600))
+    }
+
+    func test_edit_holdsFirst_thenOpensTheEditorWithTheQueuedText() async {
+        let fake = FakeTimelineService()
+        let vm = makeVM(event: queuedCard(), timeline: fake)
+        XCTAssertTrue(vm.offersEdit)
+        await vm.beginEdit()
+        XCTAssertEqual(fake.sentQueuedEdits.map(\.choice), ["edit"])
+        XCTAssertEqual(fake.sentQueuedEdits.first?.inReplyTo, "$prompt-1")
+        XCTAssertTrue(vm.isEditing)
+        XCTAssertEqual(vm.editText, "fix the tests")
+    }
+
+    func test_edit_thatCantReachTheJournal_keepsTheEditorClosed() async {
+        let fake = FakeTimelineService()
+        fake.nextSendError = NSError(domain: "test", code: 1)
+        let vm = makeVM(event: queuedCard(), timeline: fake)
+        await vm.beginEdit()
+        XCTAssertFalse(vm.isEditing, "no editing while the message could still go out")
+        XCTAssertNotNil(vm.editError)
+    }
+
+    func test_save_sendsTheEditedText_andRetiresTheCard() async {
+        let fake = FakeTimelineService()
+        var closed = 0
+        let vm = makeVM(event: queuedCard(), timeline: fake, onClose: { closed += 1 })
+        await vm.beginEdit()
+        vm.editText = "  fix the flaky tests  "
+        await vm.saveEdit()
+        XCTAssertEqual(fake.sentQueuedEdits.map(\.choice), ["edit", "edit_save"])
+        XCTAssertEqual(fake.sentQueuedEdits.last?.text, "fix the flaky tests")
+        XCTAssertFalse(vm.isEditing)
+        XCTAssertEqual(closed, 1)
+        XCTAssertFalse(vm.offersEdit)
+    }
+
+    func test_save_ofUnchangedText_justReleasesTheHold() async {
+        let fake = FakeTimelineService()
+        let vm = makeVM(event: queuedCard(), timeline: fake)
+        await vm.beginEdit()
+        await vm.saveEdit()
+        XCTAssertEqual(fake.sentQueuedEdits.map(\.choice), ["edit", "edit_cancel"])
+        XCTAssertFalse(vm.isEditing)
+    }
+
+    func test_save_isRefusedForAnEmptyEdit() async {
+        let fake = FakeTimelineService()
+        let vm = makeVM(event: queuedCard(), timeline: fake)
+        await vm.beginEdit()
+        vm.editText = "   "
+        XCTAssertFalse(vm.canSaveEdit)
+        await vm.saveEdit()
+        XCTAssertEqual(fake.sentQueuedEdits.map(\.choice), ["edit"])
+        XCTAssertTrue(vm.isEditing)
+    }
+
+    func test_cancelEdit_releasesTheHold_withTheOriginalText() async {
+        let fake = FakeTimelineService()
+        let vm = makeVM(event: queuedCard(), timeline: fake)
+        await vm.beginEdit()
+        vm.editText = "something else"
+        await vm.cancelEdit()
+        XCTAssertEqual(fake.sentQueuedEdits.map(\.choice), ["edit", "edit_cancel"])
+        XCTAssertNil(fake.sentQueuedEdits.last?.text)
+        XCTAssertFalse(vm.isEditing)
+        XCTAssertTrue(vm.offersEdit, "the card still offers Edit, Send now and Cancel")
+    }
+
+    func test_aCardWithoutQueuedEdit_offersNone() {
+        let vm = makeVM(event: AskUserEvent(prompt: "Deploy?", kind: .text, expiresAt: nil))
+        XCTAssertFalse(vm.offersEdit)
+    }
+
+    func test_sendNow_isRefusedWhileTheMessageIsHeldForEditing() async {
+        let fake = FakeTimelineService()
+        let vm = makeVM(event: queuedCard(), timeline: fake)
+        await vm.beginEdit()
+        vm.selectedChoiceIDs = ["send"]
+        await vm.send()
+        XCTAssertTrue(fake.sentButtonResponses.isEmpty, "Send now would deliver the original the edit replaces")
+    }
 }

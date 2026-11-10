@@ -32,6 +32,26 @@ final class ItemQueuedRepliesTests: XCTestCase {
 
     // MARK: - Derivation
 
+    func testOnlyALiveResendCardMakesItsReplyEditable() {
+        func editableCard(_ seq: Int64, prompt: String, comment: String, mode: String?) -> JournalEvent {
+            var payload: [String: Any] = [
+                "kind": "queued_release", "prompt_id": prompt, "items": [["id": "\(prompt)::0", "text": "t"]],
+                "actions": [["id": "send"], ["id": "cancel"]], "item": ["item_id": "it_1", "comment_id": comment],
+            ]
+            if let mode { payload["edit"] = ["mode": mode, "hold_seconds": 600] }
+            return Self.event(seq, type: JournalEventType.prompt, payload: payload)
+        }
+        let rows = [
+            editableCard(10, prompt: "pr_a", comment: "ic_live", mode: "resend"),
+            editableCard(11, prompt: "pr_b", comment: "ic_gone", mode: "resend"),
+            editableCard(12, prompt: "pr_c", comment: "ic_old", mode: nil),
+            Self.release(20, prompt: "pr_b", action: "send"),
+        ]
+        XCTAssertEqual(ItemQueuedReplies.editable(rows: rows, itemID: "it_1"), ["ic_live"])
+        XCTAssertEqual(ItemQueuedReplies.editable(rows: rows, itemID: "it_2"), [])
+    }
+
+
     func testALiveCardMarksItsReplyQueuedWithTheCardsSeq() {
         let rows = [Self.card(10, prompt: "pr_a", comment: "ic_1", sendOne: true)]
         XCTAssertEqual(ItemQueuedReplies.derive(rows: rows, itemID: "it_1"),
@@ -349,6 +369,98 @@ final class ItemQueuedRepliesTests: XCTestCase {
         XCTAssertEqual(vm.draft, "Actually\n\nUse OAuth", "never over what's already typed")
         vm.editAndResend(commentID: "ic_1")
         XCTAssertEqual(vm.draft, "Actually\n\nUse OAuth", "a second tap doesn't paste it twice")
+    }
+
+    private static func resendCard(_ seq: Int64, prompt: String, comment: String) -> JournalEvent {
+        event(seq, type: JournalEventType.prompt, payload: [
+            "kind": "queued_release", "prompt_id": prompt, "items": [["id": "\(prompt)::0", "text": "📌 Item #12"]],
+            "actions": [["id": "send"], ["id": "cancel"]], "item": ["item_id": "it_1", "comment_id": comment],
+            "edit": ["mode": "resend", "hold_seconds": 600],
+        ])
+    }
+
+    func testEditHoldsTheQueuedReplyAndPutsItsTextInTheReplyBox_sendingCancelsTheOriginalFirst() async throws {
+        let cards = Cards(); let release = Release(); let store = Store()
+        store.thread = [Self.reply("ic_1", body: "Use OAuth")]
+        let (vm, _, _) = try await make(cards: cards, release: release, store: store)
+        try await waitUntil { vm.comments.count == 1 }
+        cards.land([Self.resendCard(10, prompt: "pr_a", comment: "ic_1")])
+        try await waitUntil { vm.editableQueuedReplies == ["ic_1"] }
+        vm.draft = "half a thought"
+        await vm.editQueuedReply(commentID: "ic_1")
+        XCTAssertEqual(release.sent.map(\.2), ["edit"])
+        XCTAssertEqual(release.sent.map(\.1), [10])
+        XCTAssertEqual(vm.editingQueuedReplyID, "ic_1")
+        XCTAssertEqual(vm.draft, "Use OAuth")
+        vm.draft = "Use OAuth with PKCE"
+        let send = Task { await vm.submitComment() }
+        try await waitUntil { release.sent.count == 2 }
+        XCTAssertEqual(release.sent.map(\.2), ["edit", "cancel"], "the original is withdrawn before the edit goes")
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(vm.draft, "Use OAuth with PKCE", "nothing is posted until the bridge confirms the cancel")
+        cards.land([Self.resendCard(10, prompt: "pr_a", comment: "ic_1"), Self.release(11, prompt: "pr_a", action: "cancel")])
+        await send.value
+        XCTAssertNil(vm.editingQueuedReplyID)
+        XCTAssertEqual(vm.draft, "")
+        XCTAssertEqual(vm.queuedReplies["ic_1"], .cancelled)
+        XCTAssertNil(vm.error)
+    }
+
+    func testAnUnconfirmedCancelKeepsTheEditInTheBoxAndTheReplyBeingEdited() async throws {
+        let cards = Cards(); let release = Release(); let store = Store()
+        store.thread = [Self.reply("ic_1", body: "Use OAuth")]
+        let (vm, _, _) = try await make(cards: cards, release: release, store: store)
+        vm.sendNowConfirmTimeout = .milliseconds(300)
+        try await waitUntil { vm.comments.count == 1 }
+        cards.land([Self.resendCard(10, prompt: "pr_a", comment: "ic_1")])
+        try await waitUntil { vm.editableQueuedReplies == ["ic_1"] }
+        await vm.editQueuedReply(commentID: "ic_1")
+        vm.draft = "Use OAuth with PKCE"
+        await vm.submitComment()
+        XCTAssertEqual(vm.draft, "Use OAuth with PKCE")
+        XCTAssertEqual(vm.editingQueuedReplyID, "ic_1")
+        XCTAssertNotNil(vm.error)
+    }
+
+    func testCancelEditReleasesTheHoldAndGivesTheReplyBoxBack() async throws {
+        let cards = Cards(); let release = Release(); let store = Store()
+        store.thread = [Self.reply("ic_1", body: "Use OAuth")]
+        let (vm, _, _) = try await make(cards: cards, release: release, store: store)
+        try await waitUntil { vm.comments.count == 1 }
+        cards.land([Self.resendCard(10, prompt: "pr_a", comment: "ic_1")])
+        try await waitUntil { vm.editableQueuedReplies == ["ic_1"] }
+        vm.draft = "half a thought"
+        await vm.editQueuedReply(commentID: "ic_1")
+        await vm.cancelQueuedReplyEdit()
+        XCTAssertEqual(release.sent.map(\.2), ["edit", "edit_cancel"])
+        XCTAssertNil(vm.editingQueuedReplyID)
+        XCTAssertEqual(vm.draft, "half a thought")
+    }
+
+    func testAReplyThatLeavesTheQueueMidEditEndsTheEdit() async throws {
+        let cards = Cards(); let release = Release(); let store = Store()
+        store.thread = [Self.reply("ic_1", body: "Use OAuth")]
+        let (vm, _, _) = try await make(cards: cards, release: release, store: store)
+        try await waitUntil { vm.comments.count == 1 }
+        cards.land([Self.resendCard(10, prompt: "pr_a", comment: "ic_1")])
+        try await waitUntil { vm.editableQueuedReplies == ["ic_1"] }
+        await vm.editQueuedReply(commentID: "ic_1")
+        cards.land([Self.resendCard(10, prompt: "pr_a", comment: "ic_1"), Self.release(11, prompt: "pr_a", action: "send")])
+        try await waitUntil { vm.editingQueuedReplyID == nil }
+        XCTAssertNotNil(vm.error)
+        XCTAssertEqual(vm.draft, "Use OAuth", "the edit stays in the box to send or clear")
+    }
+
+    func testACardWithoutResendEditOffersNoEdit() async throws {
+        let cards = Cards(); let release = Release(); let store = Store()
+        store.thread = [Self.reply("ic_1", body: "Use OAuth")]
+        let (vm, _, _) = try await make(cards: cards, release: release, store: store)
+        try await waitUntil { vm.comments.count == 1 }
+        cards.land([Self.card(10, prompt: "pr_a", comment: "ic_1")])
+        try await waitUntil { vm.queuedReplies["ic_1"] != nil }
+        await vm.editQueuedReply(commentID: "ic_1")
+        XCTAssertTrue(release.sent.isEmpty)
+        XCTAssertNil(vm.editingQueuedReplyID)
     }
 
     private static func outboxRow(_ localID: String, body: String, action: String? = nil) -> ItemOutboxRecord {

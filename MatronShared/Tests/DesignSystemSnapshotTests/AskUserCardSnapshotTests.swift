@@ -64,4 +64,43 @@ final class AskUserCardSnapshotTests: XCTestCase {
             named: "expired"
         )
     }
+
+    // MARK: - Editing a queued message
+
+    private var queuedEvent: AskUserEvent {
+        AskUserEvent(
+            prompt: "Send this queued message now, or cancel it?",
+            kind: .choice(options: [
+                AskUserEvent.Option(id: "send", label: "⚡ Send now", value: "send"),
+                AskUserEvent.Option(id: "cancel", label: "✕ Cancel", value: "cancel"),
+            ], allowOther: false),
+            expiresAt: nil, replyChannel: .buttonResponse, queuedReleasePromptID: "pr_1",
+            queuedEdit: AskUserEvent.QueuedEdit(text: "Run the migration on staging first", holdSeconds: 600)
+        )
+    }
+
+    private func queuedCard(editing: Bool, text: String = "Run the migration on staging first, then prod") -> some View {
+        AskUserCard(
+            event: queuedEvent, isAnswered: false, answerSummary: nil,
+            textInput: .constant(""), selectedChoiceIDs: .constant([]), booleanAnswer: .constant(nil),
+            isSending: false, isExpired: false, error: nil, onSend: {},
+            edit: AskUserCard.QueuedEditControls(
+                text: .constant(text), isEditing: editing, isBusy: false, canSave: true, error: nil,
+                holdMinutes: 10, onEdit: {}, onSave: {}, onCancel: {})
+        )
+        .frame(width: 360)
+        .padding()
+    }
+
+    func test_queued_offersEdit() {
+        assertVariants(of: queuedCard(editing: false), named: "queued_edit")
+    }
+
+    func test_queued_editorOpen() {
+        assertVariants(of: queuedCard(editing: true), named: "queued_editing")
+    }
+
+    func test_queued_editSaved() {
+        assertVariants(of: card(event: queuedEvent, isAnswered: true, answerSummary: "✎ Edited"), named: "queued_edited")
+    }
 }

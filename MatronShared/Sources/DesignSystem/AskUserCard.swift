@@ -29,7 +29,32 @@ public struct AskUserCard: View {
     public let foldsReminder: Bool
     /// The line's time, when folded.
     public let timestamp: Date?
+    /// Edit on a queued message (`AskUserEvent.QueuedEdit`), `nil` when the
+    /// card offers none.
+    public let edit: QueuedEditControls?
     @State private var expanded: Bool
+
+    /// What the card needs to draw Edit and the editor it opens. Plain
+    /// values and closures, so the card stays free of view-model types.
+    public struct QueuedEditControls {
+        public let text: Binding<String>
+        public let isEditing: Bool
+        public let isBusy: Bool
+        public let canSave: Bool
+        public let error: String?
+        public let holdMinutes: Int
+        public let onEdit: () -> Void
+        public let onSave: () -> Void
+        public let onCancel: () -> Void
+
+        public init(text: Binding<String>, isEditing: Bool, isBusy: Bool, canSave: Bool, error: String?,
+                    holdMinutes: Int, onEdit: @escaping () -> Void, onSave: @escaping () -> Void,
+                    onCancel: @escaping () -> Void) {
+            self.text = text; self.isEditing = isEditing; self.isBusy = isBusy; self.canSave = canSave
+            self.error = error; self.holdMinutes = holdMinutes
+            self.onEdit = onEdit; self.onSave = onSave; self.onCancel = onCancel
+        }
+    }
 
     public init(
         event: AskUserEvent,
@@ -44,7 +69,8 @@ public struct AskUserCard: View {
         onSend: @escaping () -> Void,
         foldsReminder: Bool = false,
         timestamp: Date? = nil,
-        expanded: Bool = false
+        expanded: Bool = false,
+        edit: QueuedEditControls? = nil
     ) {
         self.event = event
         self.isAnswered = isAnswered
@@ -58,6 +84,7 @@ public struct AskUserCard: View {
         self.onSend = onSend
         self.foldsReminder = foldsReminder
         self.timestamp = timestamp
+        self.edit = edit
         self._expanded = State(initialValue: expanded)
     }
 
@@ -83,18 +110,24 @@ public struct AskUserCard: View {
                     .foregroundStyle(.secondary)
                 }
                 .padding()
+            } else if let edit, edit.isEditing {
+                editor(edit)
             } else {
-                // AskUserSheetBody self-pads.
-                AskUserSheetBody(
-                    event: event,
-                    textInput: $textInput,
-                    selectedChoiceIDs: $selectedChoiceIDs,
-                    booleanAnswer: $booleanAnswer,
-                    isSending: isSending,
-                    isExpired: isExpired,
-                    error: error,
-                    onSend: onSend
-                )
+                VStack(alignment: .leading, spacing: 0) {
+                    // AskUserSheetBody self-pads.
+                    AskUserSheetBody(
+                        event: event,
+                        textInput: $textInput,
+                        selectedChoiceIDs: $selectedChoiceIDs,
+                        booleanAnswer: $booleanAnswer,
+                        // An Edit on its way holds the buttons too.
+                        isSending: isSending || (edit?.isBusy ?? false),
+                        isExpired: isExpired,
+                        error: error,
+                        onSend: onSend
+                    )
+                    if let edit { editRow(edit) }
+                }
             }
         }
         // Bot-bubble surface (matches `MessageBubble`'s bot chrome): a warm
@@ -106,6 +139,62 @@ public struct AskUserCard: View {
                 .fill(Color.matronBubbleBot)
                 .shadow(color: .matronBubbleShadow, radius: 2, y: 1)
         )
+    }
+
+    /// Edit, under the card's own Send now / Cancel.
+    private func editRow(_ edit: QueuedEditControls) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Button {
+                    edit.onEdit()
+                } label: {
+                    Label("Edit", systemImage: "pencil")
+                }
+                .buttonStyle(.bordered)
+                .disabled(edit.isBusy || isSending || isExpired)
+                .accessibilityIdentifier("queued-edit")
+                .accessibilityHint("Holds this message so it isn't sent while you edit it")
+                if edit.isBusy { ProgressView().controlSize(.small) }
+            }
+            if let error = edit.error {
+                Text(error).font(.caption).foregroundStyle(.red)
+            }
+        }
+        .padding([.horizontal, .bottom])
+    }
+
+    /// The open editor: the message is held until Save or Cancel edit.
+    private func editor(_ edit: QueuedEditControls) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Held while you edit. It won't be sent until you save or cancel "
+                  + "(or after \(edit.holdMinutes) minutes, with the original text).",
+                  systemImage: "pause.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            TextEditor(text: edit.text)
+                .font(.body)
+                .frame(minHeight: 60, maxHeight: 200)
+                .scrollContentBackground(.hidden)
+                .padding(4)
+                .background(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.3)))
+                .accessibilityIdentifier("queued-edit-text")
+            if let error = edit.error {
+                Text(error).font(.caption).foregroundStyle(.red)
+            }
+            HStack(spacing: 8) {
+                Button("Cancel edit", action: edit.onCancel)
+                    .buttonStyle(.bordered)
+                    .disabled(edit.isBusy)
+                    .accessibilityIdentifier("queued-edit-cancel")
+                Button("Save", action: edit.onSave)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(edit.isBusy || !edit.canSave)
+                    .accessibilityIdentifier("queued-edit-save")
+                if edit.isBusy { ProgressView().controlSize(.small) }
+            }
+        }
+        .padding()
     }
 
     /// The reminder as one line: Send now / Cancel while it is pending,

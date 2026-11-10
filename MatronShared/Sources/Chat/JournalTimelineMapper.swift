@@ -193,6 +193,16 @@ public enum JournalTimelineMapper {
                 break
             }
             let target = (payload["target_seq"] as? NSNumber)?.int64Value
+            // An Edit tap, or a cancelled edit, on a queue card doesn't
+            // answer it: the message is still queued and the card keeps its
+            // buttons. Kept out of the card's answer (and its reply
+            // relation) under its own namespace.
+            if let choice = payload["choice"] as? String,
+               choice == AskUserEvent.QueuedEdit.holdChoice || choice == AskUserEvent.QueuedEdit.cancelChoice,
+               let target {
+                kind = .askUserAnswer(promptEventID: "qe:\(target)", selectedValues: [choice])
+                break
+            }
             inReplyTo = target.map(String.init)
             if let choice = payload["choice"] as? String {
                 if let targetID = inReplyTo {
@@ -336,7 +346,22 @@ public enum JournalTimelineMapper {
         return AskUserEvent(
             prompt: question, kind: kind, expiresAt: nil,
             replyChannel: options.isEmpty ? .textReply : .buttonResponse,
-            queuedReleasePromptID: queuedReleasePromptID)
+            queuedReleasePromptID: queuedReleasePromptID,
+            queuedEdit: queuedReleasePromptID == nil ? nil : queuedEdit(fromPrompt: payload))
+    }
+
+    /// The edit a busy-queue card offers in the conversation: only an
+    /// in-place edit (`edit.mode == "replace"`), of a card that names one
+    /// message. A tracker reply's card (`item`) is edited from the item's
+    /// thread instead, where the reply box is.
+    static func queuedEdit(fromPrompt payload: [String: Any]) -> AskUserEvent.QueuedEdit? {
+        guard let edit = payload["edit"] as? [String: Any],
+              (edit["mode"] as? String) == "replace",
+              payload["item"] == nil,
+              let items = payload["items"] as? [[String: Any]], items.count == 1,
+              let text = items[0]["text"] as? String, !text.isEmpty else { return nil }
+        let hold = (edit["hold_seconds"] as? NSNumber)?.intValue ?? 600
+        return AskUserEvent.QueuedEdit(text: text, holdSeconds: max(hold, 0))
     }
 
     public static func streamingItem(messageRef: String, text: String, convoTS: Date) -> TimelineItem {

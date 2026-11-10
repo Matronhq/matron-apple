@@ -144,6 +144,11 @@ final class FakeTimelineService: TimelineService, @unchecked Sendable {
         if let err = nextSendError { nextSendError = nil; throw err }
         sentButtonResponses.append((selectedValues, promptEventID))
     }
+    var sentQueuedEdits: [(choice: String, text: String?, inReplyTo: String)] = []
+    func sendQueuedEdit(choice: String, text: String?, inReplyTo promptEventID: String) async throws {
+        if let err = nextSendError { nextSendError = nil; throw err }
+        sentQueuedEdits.append((choice, text, promptEventID))
+    }
     /// Throws once `failSendsAfter` media sends have already succeeded.
     private func failIfPastMediaLimit() throws {
         guard let limit = failSendsAfter, sentImages.count + sentFiles.count >= limit else { return }

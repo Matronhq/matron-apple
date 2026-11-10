@@ -41,6 +41,12 @@ public protocol TimelineService: Sendable {
     /// `TimelineController.sendButtonResponse`.
     func sendButtonResponse(selectedValues: [String], inReplyTo promptEventID: String) async throws
 
+    /// Answers a busy-queue card with an edit choice (`edit`, `edit_save`,
+    /// `edit_cancel` — see `AskUserEvent.QueuedEdit`), carrying the edited
+    /// text on a save. A requirement (with a default below) so a call
+    /// through `any TimelineService` reaches the journal implementation.
+    func sendQueuedEdit(choice: String, text: String?, inReplyTo promptEventID: String) async throws
+
     /// Sends an image attachment as an `m.image` event.
     ///
     /// `caption` is the composer text the attachment left with. It rides on
@@ -127,6 +133,12 @@ public protocol TimelineService: Sendable {
 }
 
 public extension TimelineService {
+    /// Services with no way to carry reply text (test fakes) answer with
+    /// the choice alone.
+    func sendQueuedEdit(choice: String, text: String?, inReplyTo promptEventID: String) async throws {
+        try await sendButtonResponse(selectedValues: [choice], inReplyTo: promptEventID)
+    }
+
     /// Plain send with no reply relation — the shape every pre-Phase-5
     /// call site (composer, slash commands) uses.
     func sendText(_ body: String) async throws {
