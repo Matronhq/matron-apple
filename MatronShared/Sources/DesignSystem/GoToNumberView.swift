@@ -71,6 +71,7 @@ public struct GoToNumberView: View {
         #else
         NavigationStack {
             Form {
+                MatronGroupedRows {
                 Section {
                     field
                         // Digits only: the `#` is optional and Go is in the bar.
@@ -78,6 +79,7 @@ public struct GoToNumberView: View {
                     if case .found = outcome { outcomeView }
                 } footer: {
                     if case .found = outcome { EmptyView() } else { outcomeView }
+                }
                 }
             }
             .navigationTitle(Self.title)

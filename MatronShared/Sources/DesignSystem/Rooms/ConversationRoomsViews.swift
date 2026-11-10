@@ -50,6 +50,7 @@ public struct ConversationRoomsList: View {
 
     public var body: some View {
         List(rooms) { room in
+            MatronGroupedRows {
             Button { onOpen(room.id) } label: {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     DashboardStateDot(state: room.state)
@@ -64,6 +65,7 @@ public struct ConversationRoomsList: View {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(ConversationRoomsFormat.rowAccessibilityLabel(room))
             .accessibilityAddTraits(.isButton)
+            }
         }
     }
 }

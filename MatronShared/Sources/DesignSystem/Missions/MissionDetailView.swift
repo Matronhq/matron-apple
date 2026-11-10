@@ -120,6 +120,7 @@ public struct MissionDetailView: View {
     public var body: some View {
         if let mission = model.mission {
             List {
+                MatronGroupedRows {
                 Section { header(mission) }
                 if let status = mission.status { Section { statusCard(status, mission: mission) } }
                 if !model.needsYouItems.isEmpty { needsYouSection }
@@ -130,6 +131,7 @@ public struct MissionDetailView: View {
                 }
                 if mission.state == .open {
                     Section("Close this mission") { closeControls }
+                }
                 }
             }
             #if os(iOS)

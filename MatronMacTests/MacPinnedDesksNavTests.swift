@@ -14,9 +14,9 @@ final class MacPinnedDesksNavTests: XCTestCase {
     func testDesksSitUnderTheCoordinatorInTheUsersOrder() {
         let pins = [ConvoPin(convoID: "b", label: "B"), ConvoPin(convoID: "a", label: "A")]
         XCTAssertEqual(MacNavColumn.entries(missionsSupported: true, pins: pins),
-                       [.coordinator, .desk("b"), .desk("a"), .missions, .decisions, .conversations, .memories])
+                       [.coordinator, .desk("b"), .desk("a"), .missions, .decisions, .conversations, .memories, .boxes])
         XCTAssertEqual(MacNavColumn.entries(missionsSupported: false, pins: pins),
-                       [.coordinator, .desk("b"), .desk("a"), .decisions, .conversations, .memories])
+                       [.coordinator, .desk("b"), .desk("a"), .decisions, .conversations, .memories, .boxes])
         XCTAssertEqual(MacNavColumn.entries(missionsSupported: true), MacNav.allCases, "no pins, no change")
     }
 

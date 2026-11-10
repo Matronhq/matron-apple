@@ -98,8 +98,10 @@ public struct GlobalSearchView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             List {
+                MatronGroupedRows {
                 sections
                 statusSection
+                }
             }
         }
     }

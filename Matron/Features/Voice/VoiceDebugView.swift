@@ -56,6 +56,7 @@ struct VoiceDebugView: View {
 
     var body: some View {
         List {
+            MatronGroupedRows {
             if recordingVoiceNote {
                 Section { Text("A voice note is being recorded. Finish it to hear a line.").font(.footnote) }
             } else if let lastSource {
@@ -89,6 +90,7 @@ struct VoiceDebugView: View {
                         player?.play(earcon)
                     }
                 }
+            }
             }
         }
         .navigationTitle("Speak a reply")

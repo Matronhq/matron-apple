@@ -45,6 +45,7 @@ public struct RoutinesListView: View {
 
     public var body: some View {
         List {
+            MatronGroupedRows {
             if !model.isSupported {
                 note("This journal doesn't have routines yet. Update the journal server to use them.")
             } else if let routines = model.routines {
@@ -70,6 +71,7 @@ public struct RoutinesListView: View {
                 .font(.caption)
             } else {
                 HStack { Spacer(); ProgressView(); Spacer() }
+            }
             }
         }
         #if os(iOS)

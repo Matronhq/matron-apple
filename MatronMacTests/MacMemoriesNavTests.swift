@@ -5,8 +5,8 @@ import MatronModels
 /// The Memories nav entry (spec 2026-09-27 memories).
 @MainActor
 final class MacMemoriesNavTests: XCTestCase {
-    func testTheEntryIsLastAndAlwaysShown() {
-        XCTAssertEqual(MacNav.allCases.last, .memories)
+    func testTheEntryIsAlwaysShown() {
+        XCTAssertEqual(MacNav.allCases.last, .boxes)
         XCTAssertEqual(MacNav.memories.title, "Memories")
         XCTAssertEqual(MacNav.memories.symbol, "brain")
         // Unlike Missions, an old journal doesn't hide it: its 404 shows on

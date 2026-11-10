@@ -2,6 +2,7 @@
 // (see `VoiceCapture.swift`).
 #if compiler(>=6.2)
 import SwiftUI
+import MatronDesignSystem
 import UIKit
 import MatronJournal
 import MatronViewModels
@@ -150,6 +151,7 @@ struct VoiceSpikeView: View {
 
     var body: some View {
         List {
+            MatronGroupedRows {
             if recordingVoiceNote {
                 Section { Text("A voice note is being recorded. Finish it to run the spike.").font(.footnote) }
             }
@@ -166,6 +168,7 @@ struct VoiceSpikeView: View {
                 ForEach(Array(spike.log.enumerated()), id: \.offset) { _, line in
                     Text(line).font(.caption.monospaced())
                 }
+            }
             }
         }
         .navigationTitle("Talking-over spike")

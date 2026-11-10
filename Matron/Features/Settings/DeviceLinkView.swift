@@ -20,6 +20,7 @@ struct DeviceLinkView: View {
 
     var body: some View {
         Form {
+            MatronGroupedRows {
             if let notice = viewModel.noticeMessage {
                 Section {
                     Text(notice).font(.callout).foregroundStyle(.orange)
@@ -53,6 +54,7 @@ struct DeviceLinkView: View {
                 case .scan:
                     scanTab
                 }
+            }
             }
         }
         .navigationTitle("Link a Device")

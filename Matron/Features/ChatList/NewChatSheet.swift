@@ -14,6 +14,8 @@ struct NewChatSheet: View {
     let deps: AppDependencies
     let session: UserSession
     let onCreated: (String) -> Void
+    /// Skips the box list and opens on this box's folders (the Boxes page).
+    var startOn: DeviceDTO?
 
     @Environment(\.dismiss) private var dismiss
     @State private var viewModel: NewChatViewModel
@@ -25,9 +27,10 @@ struct NewChatSheet: View {
     @State private var cancelled = false
 
     init(deps: AppDependencies, session: UserSession, pinnedModel: String? = nil,
-         onCreated: @escaping (String) -> Void) {
+         startOn: DeviceDTO? = nil, onCreated: @escaping (String) -> Void) {
         self.deps = deps
         self.session = session
+        self.startOn = startOn
         self.onCreated = onCreated
         _viewModel = State(initialValue: NewChatViewModel(
             api: deps.agentRPCService(for: session),
@@ -76,7 +79,13 @@ struct NewChatSheet: View {
                 }
             }
         }
-        .task { await viewModel.load() }
+        .task {
+            if let startOn {
+                await viewModel.select(agent: startOn)
+            } else {
+                await viewModel.load()
+            }
+        }
         // Live `box_status` frames repaint rows while the sheet is up; the
         // task (and its subscription) ends when the sheet goes away.
         .task { await viewModel.watchBoxStatus() }
@@ -114,6 +123,7 @@ struct NewChatSheet: View {
 
     @ViewBuilder private func agentPicker(_ agents: [DeviceDTO]) -> some View {
         List {
+            MatronGroupedRows {
             if let error = viewModel.errorMessage {
                 Section { Text(error).foregroundStyle(.red) }
             }
@@ -131,6 +141,7 @@ struct NewChatSheet: View {
                 if !agents.isEmpty && !agents.contains(where: \.connected) {
                     Text("All boxes are asleep — pick one to wake it.")
                 }
+            }
             }
         }
     }
@@ -216,6 +227,7 @@ struct NewChatSheet: View {
 
     @ViewBuilder private func folderPicker(_ agent: DeviceDTO) -> some View {
         List {
+            MatronGroupedRows {
             Section {
                 if viewModel.isWakingBox {
                     HStack(spacing: 10) {
@@ -315,6 +327,7 @@ struct NewChatSheet: View {
                 Text("Other folder")
             } footer: {
                 Text("Blank starts in the agent's default folder — pick a recent one above, or type a path.")
+            }
             }
         }
     }

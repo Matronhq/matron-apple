@@ -53,6 +53,7 @@ struct DeviceSettingsView: View {
 
     var body: some View {
         Form {
+            MatronGroupedRows {
             Section("Account") {
                 LabeledContent("User ID", value: session.userID)
                 LabeledContent("Device ID", value: session.deviceID)
@@ -163,6 +164,7 @@ struct DeviceSettingsView: View {
                 // @AppStorage observes the same key and applies it via
                 // .preferredColorScheme, so the switch is live.
                 AppearancePicker()
+            }
             }
         }
         .securitySettingsSheet(security)

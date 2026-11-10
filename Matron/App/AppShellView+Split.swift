@@ -41,8 +41,8 @@ extension AppShellView {
 
     private var splitNavEntries: [SplitNavEntry] {
         missionsVM.isSupported != false
-            ? [.coordinator, .projects, .decisions, .conversations, .memories]
-            : [.coordinator, .decisions, .conversations]
+            ? [.coordinator, .projects, .decisions, .conversations, .memories, .boxes]
+            : [.coordinator, .decisions, .conversations, .boxes]
     }
 
     /// The entry drawn selected: the page on screen.
@@ -53,6 +53,7 @@ extension AppShellView {
         case .missions: return nav.missionsPath.first == MemoriesRoute.list ? .memories : .projects
         case .search: return .search
         case .settings: return .settings
+        case .boxes: return .boxes
         case .conversations, .more: return .conversations
         }
     }
@@ -79,6 +80,7 @@ extension AppShellView {
         case .conversations: nav.tab = .conversations
         case .search: nav.tab = .search
         case .settings: nav.tab = .settings
+        case .boxes: nav.tab = .boxes
         }
     }
 
@@ -201,6 +203,7 @@ extension AppShellView {
                                onSetupSwipe: { _ in }, onBack: nil)
         case .missions: splitProjects
         case .settings: splitSettings
+        case .boxes: boxesStack(showsBackToMore: false)
         case .decisions:
             selectionStack(.decisions, rootName: "For you",
                            empty: ("Nothing chosen", "tray", "Choose an item from For you.")) {
@@ -346,6 +349,7 @@ enum SplitNavEntry: Hashable {
     case decisions
     case conversations
     case memories
+    case boxes
     case search
     case settings
 
@@ -356,6 +360,7 @@ enum SplitNavEntry: Hashable {
         case .decisions: return "For you"
         case .conversations: return "Chats"
         case .memories: return "Memories"
+        case .boxes: return "Boxes"
         case .search: return "Search"
         case .settings: return "Settings"
         }
@@ -368,6 +373,7 @@ enum SplitNavEntry: Hashable {
         case .decisions: return "tray"
         case .conversations: return "bubble.left.and.bubble.right"
         case .memories: return "brain"
+        case .boxes: return "server.rack"
         case .search: return "magnifyingglass"
         case .settings: return "gear"
         }

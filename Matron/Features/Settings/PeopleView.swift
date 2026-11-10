@@ -28,6 +28,7 @@ struct PeopleView: View {
 
     var body: some View {
         Form {
+            MatronGroupedRows {
             if let error = model.errorMessage {
                 Section {
                     Text(error).font(.callout).foregroundStyle(.red)
@@ -50,6 +51,7 @@ struct PeopleView: View {
                         }
                     }
                 }
+            }
             }
         }
         .navigationTitle("People")
@@ -189,6 +191,7 @@ struct AddContactSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                MatronGroupedRows {
                 switch model.phase {
                 case .opening:
                     Section {
@@ -213,6 +216,7 @@ struct AddContactSheet: View {
                             .foregroundStyle(.red)
                             .accessibilityIdentifier("people.add.refused")
                     }
+                }
                 }
             }
             .navigationTitle(AddContactViewModel.title)

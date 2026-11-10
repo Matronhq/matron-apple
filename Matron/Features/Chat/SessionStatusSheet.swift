@@ -336,12 +336,14 @@ struct SessionOptionPicker: View {
 
     var body: some View {
         List(row.options, id: \.value) { option in
+            MatronGroupedRows {
             Button {
                 onSelect(option)
             } label: {
                 optionLabel(option)
             }
             .accessibilityIdentifier("session-option-\(option.value)")
+            }
         }
         .navigationTitle(row.title)
         .navigationBarTitleDisplayMode(.inline)
@@ -372,6 +374,7 @@ struct SubagentsListView: View {
 
     var body: some View {
         List(subagents) { entry in
+            MatronGroupedRows {
             Button {
                 onSelect(entry.id)
             } label: {
@@ -385,6 +388,7 @@ struct SubagentsListView: View {
                 .foregroundStyle(Color.primary)
             }
             .accessibilityIdentifier("subagent-row-\(entry.id)")
+            }
         }
         .navigationTitle("Subagents")
         .navigationBarTitleDisplayMode(.inline)

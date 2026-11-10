@@ -1,4 +1,5 @@
 import SwiftUI
+import MatronDesignSystem
 import UIKit
 import MatronViewModels
 
@@ -12,6 +13,7 @@ struct ForgotPasswordSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                MatronGroupedRows {
                 if viewModel.forgotState == .sent {
                     Section {
                         Text(SignInViewModel.forgotPasswordSent)
@@ -48,6 +50,7 @@ struct ForgotPasswordSheet: View {
                         .disabled(!viewModel.canSendForgotPassword)
                         .accessibilityIdentifier("forgotPassword.submit")
                     }
+                }
                 }
             }
             .navigationTitle(SignInViewModel.forgotLinkTitle)

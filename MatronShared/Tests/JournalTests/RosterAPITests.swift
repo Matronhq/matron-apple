@@ -80,3 +80,28 @@ final class RosterAPITests: XCTestCase {
         XCTAssertEqual(request.url?.path, "/roster")
     }
 }
+
+extension RosterAPITests {
+    func test_decodeRoster_readsOpenSessionsPerBox() throws {
+        let snapshot = try JournalAPI.decodeRoster([
+            "conversations": [
+                ["id": "c1", "title": "One", "session_state": "running", "agent_device_id": 7, "last_ts": 1_700_000_000_000],
+                ["id": "c2", "title": "Two", "session_state": "waiting", "agent_device_id": 7],
+                ["id": "c3", "title": "Done", "session_state": "done", "agent_device_id": 7],
+                ["id": "c4", "title": "No box", "session_state": "running"],
+            ] as [[String: Any]],
+        ])
+        XCTAssertEqual(snapshot.sessionsByBox[7]?.map(\.id), ["c1", "c2"])
+        XCTAssertEqual(snapshot.sessionsByBox[7]?.first?.isRunning, true)
+        XCTAssertEqual(snapshot.sessionsByBox[7]?.first?.lastActivity, Date(timeIntervalSince1970: 1_700_000_000))
+        XCTAssertEqual(snapshot.sessionsByBox.count, 1)
+    }
+
+    func test_decodeRoster_readsWakeableBoxes() throws {
+        let snapshot = try JournalAPI.decodeRoster([
+            "conversations": [[String: Any]](),
+            "agents": [["device_id": 1, "wakeable": true], ["device_id": 2], ["device_id": 3, "wakeable": false]],
+        ])
+        XCTAssertEqual(snapshot.wakeableBoxes, [1])
+    }
+}

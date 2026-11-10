@@ -22,6 +22,8 @@ enum AppTab: Hashable, CaseIterable {
     case missions
     /// Settings, under More.
     case settings
+    /// Boxes, under More.
+    case boxes
 }
 
 /// Navigation state of the signed-in shell: the selected tab and each
@@ -44,7 +46,7 @@ final class AppShellNavigation {
     /// coming back to More lands on it, as the system's More does. Only
     /// "More" at a page's root goes back to the list.
     private(set) var morePage: AppTab = .more
-    private static let moreTabs: Set<AppTab> = [.more, .missions, .settings]
+    private static let moreTabs: Set<AppTab> = [.more, .missions, .settings, .boxes]
     /// The tab the app was on when it jumped to the Coordinator's
     /// conversation (a link, a mission or project page, a notification,
     /// search): the Coordinator's root then shows a Back button, and a
@@ -79,7 +81,7 @@ final class AppShellNavigation {
     /// What the More list offers, top to bottom, for a given support
     /// state: an old journal with no `/missions` routes has no Projects.
     static func moreEntries(missionsSupported: Bool) -> [AppTab] {
-        missionsSupported ? [.missions, .settings] : [.settings]
+        missionsSupported ? [.missions, .boxes, .settings] : [.boxes, .settings]
     }
 
     /// The tabs a root swipe walks, in bar order. Not More, whose pages
@@ -89,7 +91,7 @@ final class AppShellNavigation {
 
     /// The bar's selection: a page under More selects More.
     var barTab: AppTab {
-        tab == .missions || tab == .settings ? .more : tab
+        tab == .missions || tab == .settings || tab == .boxes ? .more : tab
     }
 
     /// A tap in the bar. Tapping More while one of its pages shows is
@@ -118,6 +120,8 @@ final class AppShellNavigation {
     /// carry their destination, so this stays empty in practice; it is a
     /// stack like the others so every cross-tab rule treats it the same.
     var settingsPath: [String] = []
+    /// Boxes tab stack: a box's session list.
+    var boxesPath: [String] = []
     /// Search tab stack: what a result opens (an item, a mission or
     /// project page, a conversation) is pushed here, so Back returns to the
     /// results.
@@ -164,11 +168,11 @@ final class AppShellNavigation {
     }
 
     /// The tab a jump lands on: the one the user is on, so Back returns to
-    /// where they were, except Settings, whose stack carries no chats,
-    /// items or pages, and the More list, which has no stack; jumps from
+    /// where they were, except Settings and Boxes, whose stacks carry no
+    /// chats, items or pages, and the More list, which has no stack; jumps from
     /// there land on `fallback`.
     static func jumpTab(from tab: AppTab, fallback: AppTab) -> AppTab {
-        tab == .settings || tab == .more ? fallback : tab
+        tab == .settings || tab == .boxes || tab == .more ? fallback : tab
     }
 
     /// A tapped conversation link or pill in a message:
@@ -223,6 +227,7 @@ final class AppShellNavigation {
         case .decisions: return decisionsPath
         case .missions: return missionsPath
         case .settings: return settingsPath
+        case .boxes: return boxesPath
         case .search: return searchPath
         case .more: return []
         }
@@ -237,6 +242,7 @@ final class AppShellNavigation {
         case .decisions: decisionsPath = path
         case .missions: missionsPath = path
         case .settings: settingsPath = path
+        case .boxes: boxesPath = path
         case .search: searchPath = path
         case .more: break
         }
@@ -604,6 +610,7 @@ final class AppShellNavigation {
         case .decisions: return decisionsPath.isEmpty
         case .missions: return missionsPath.isEmpty
         case .settings: return settingsPath.isEmpty
+        case .boxes: return boxesPath.isEmpty
         case .search: return searchPath.isEmpty
         case .more: return true
         }

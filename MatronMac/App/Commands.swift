@@ -18,13 +18,14 @@ public enum MatronCommand: String, CaseIterable, Sendable {
     case decreaseFontSize
     case resetFontSize
     case refresh
-    /// App shell (spec §5): nav-column selection — ⌘1 … ⌘5, top to
+    /// App shell (spec §5): nav-column selection — ⌘1 … ⌘6, top to
     /// bottom (`ChatCommands.navShortcuts`).
     case showCoordinator
     case showMissions
     case showDecisions
     case showConversations
     case showMemories
+    case showBoxes
 }
 
 public extension Notification.Name {
@@ -178,7 +179,7 @@ struct ChatCommands: Commands {
         }
     }
 
-    /// One View-menu item per nav entry, ⌘1 … ⌘5 top to bottom.
+    /// One View-menu item per nav entry, ⌘1 … ⌘6 top to bottom.
     struct NavShortcut {
         let nav: MacNav
         let command: MatronCommand
@@ -192,6 +193,7 @@ struct ChatCommands: Commands {
         NavShortcut(nav: .decisions, command: .showDecisions, key: "3"),
         NavShortcut(nav: .conversations, command: .showConversations, key: "4"),
         NavShortcut(nav: .memories, command: .showMemories, key: "5"),
+        NavShortcut(nav: .boxes, command: .showBoxes, key: "6"),
     ]
 }
 

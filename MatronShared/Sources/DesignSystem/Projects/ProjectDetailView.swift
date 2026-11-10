@@ -53,12 +53,14 @@ public struct ProjectDetailView: View {
 
     public var body: some View {
         List {
+            MatronGroupedRows {
             Section { headline }
             if !page.needsYou.isEmpty { needsYouSection }
             latestSection
             missionsSection
             ForEach(ProjectReferenceSection.allCases.filter { $0.isShown(page) }) { section in
                 fold(section)
+            }
             }
         }
         #if os(iOS)

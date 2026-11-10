@@ -18,6 +18,7 @@ struct SignInView: View {
     var body: some View {
         NavigationStack {
             Form {
+                MatronGroupedRows {
                 Section {
                     Image("app-logo")
                         .resizable()
@@ -87,6 +88,7 @@ struct SignInView: View {
                         .accessibilityIdentifier("signin.submit")
                     }
                     linkSignIn
+                }
                 }
             }
             .navigationTitle("Sign in to Matron")

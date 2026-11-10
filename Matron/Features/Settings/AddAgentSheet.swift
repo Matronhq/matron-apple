@@ -1,4 +1,5 @@
 import SwiftUI
+import MatronDesignSystem
 import MatronJournal
 import MatronViewModels
 
@@ -19,6 +20,7 @@ struct AddAgentSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                MatronGroupedRows {
                 switch viewModel.phase {
                 case .enterCode, .preview:
                     codeAndApprove
@@ -26,6 +28,7 @@ struct AddAgentSheet: View {
                     waiting
                 case .success(let name):
                     success(name)
+                }
                 }
             }
             .navigationTitle("Add Agent")

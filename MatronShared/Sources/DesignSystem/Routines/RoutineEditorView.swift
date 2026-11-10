@@ -108,6 +108,7 @@ public struct RoutineEditorView: View {
 
     public var body: some View {
         Form {
+            MatronGroupedRows {
             #if os(macOS)
             Section {
                 Text(routine?.title ?? "New routine").font(.title2.weight(.semibold))
@@ -210,6 +211,7 @@ public struct RoutineEditorView: View {
                     Button("Delete routine", role: .destructive) { confirmingDelete = true }
                         .accessibilityIdentifier("routine.delete")
                 }
+            }
             }
         }
         .formStyle(.grouped)
