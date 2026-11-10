@@ -1,8 +1,8 @@
 import Foundation
 import MatronModels
 
-/// The Projects timeline's words: week names, ledes and the lines on a
-/// story or a list row. Sentences, not counts.
+/// The Projects timeline's words: week names, a card's sentence and marks,
+/// and the lines on a list row.
 public enum TimelineFormat {
     public static let worthALook = "WORTH A LOOK"
     public static let earlierWeeks = "Earlier weeks"
@@ -14,15 +14,20 @@ public enum TimelineFormat {
     public static let finished = "Finished"
     public static let quietLede = "These were moving, then stopped without being finished."
     public static let longLede = "These have been open for three weeks or more."
-    public static let emptyLede = "Nothing moved this week."
+    public static let allProjects = "All projects"
+    /// A week's page when no project moved in it.
+    public static let nothingMoved = "Nothing moved this week."
+    /// The all-projects list, read and empty.
+    public static let noProjects = "No projects yet."
     /// The finished list, read and empty.
     public static let nothingFinished = "Nothing finished yet."
     public static let askAction = "Ask the Coordinator what to do with it"
     /// Replaces `askAction` on a row once the Ask has gone.
     public static let askedAction = "Asked the Coordinator"
-    public static let needsYouPrefix = "Needs you: "
-    /// Leads the line for items a story named that are no longer waiting.
-    public static let sortedOutPrefix = "Done: "
+    /// The mark of a card whose project says what comes next.
+    public static let nextMark = "→ Next"
+    /// Cards on a week's page; projects beyond them sit behind the foot line.
+    public static let maxCards = 8
     /// A story the journal gave no sentence (the project moved without a milestone).
     public static let movedSentence = "Moved this week."
     public static let chartCaption = "last 7 weeks"
@@ -69,17 +74,25 @@ public enum TimelineFormat {
         week.final && now < week.end.addingTimeInterval(7 * 86_400)
     }
 
-    /// The week's written lede, else the sidebar's sentence; a week where
-    /// nothing moved says so calmly.
-    public static func lede(_ week: TimelineWeek, sentence: String?) -> String? {
-        if let lede = week.lede?.trimmingCharacters(in: .whitespacesAndNewlines), !lede.isEmpty { return lede }
-        if week.stories.isEmpty && week.also.isEmpty { return emptyLede }
-        guard let sentence = sentence?.trimmingCharacters(in: .whitespacesAndNewlines), !sentence.isEmpty else { return nil }
-        return sentence
+    /// The week's cards: its first `maxCards` stories.
+    public static func cards(_ week: TimelineWeek) -> [TimelineStory] {
+        Array(week.stories.prefix(maxCards))
     }
 
-    public static func alsoLine(_ count: Int) -> String {
-        "Also this week: \(count) smaller job\(count == 1 ? "" : "s")"
+    /// The projects behind the foot line: those of the stories past the
+    /// last card, then the ones the journal lists as also moving.
+    public static func alsoMovedProjects(_ week: TimelineWeek) -> [TimelineProjectRef] {
+        week.stories.dropFirst(maxCards).map(\.project) + week.also
+    }
+
+    /// No project moved that week.
+    public static func movedNothing(_ week: TimelineWeek) -> Bool {
+        week.stories.isEmpty && week.also.isEmpty
+    }
+
+    /// "Also moved: 7 projects": the foot line; nil when there are none.
+    public static func alsoMoved(_ count: Int) -> String? {
+        count > 0 ? "Also moved: \(count) project\(count == 1 ? "" : "s")" : nil
     }
 
     // MARK: Stories
@@ -91,43 +104,22 @@ public enum TimelineFormat {
         return sentence
     }
 
-    /// The card's title: the Coordinator's, else the main project's name.
-    public static func storyTitle(_ story: TimelineStory) -> String {
-        story.title ?? story.project.title
-    }
+    // MARK: Marks
 
-    /// "Also: B and C": the story's other projects; nil for a story about
-    /// one project.
-    public static func alsoProjects(_ story: TimelineStory) -> String? {
-        let others = story.projects.dropFirst().map(\.title)
-        guard let last = others.last else { return nil }
-        let head = others.dropLast().joined(separator: ", ")
-        return "Also: " + (head.isEmpty ? last : "\(head) and \(last)")
-    }
+    /// "2 for you": follows the red dot.
+    public static func forYouMark(_ count: Int) -> String { "\(count) for you" }
 
-    /// What follows "Needs you: ": the first item still waiting, and how
-    /// many more. Items already done don't count.
-    public static func needsYou(_ story: TimelineStory) -> String? {
-        titles(story.needsYou.filter { !$0.done })
-    }
+    /// "✓ 5 done".
+    public static func doneMark(_ count: Int) -> String { "✓ \(count) done" }
 
-    /// What follows "Done: ": when nothing waits any more but the story
-    /// named items that did, the first of them and how many more; nil
-    /// while anything is still open.
-    public static func sortedOut(_ story: TimelineStory) -> String? {
-        guard !story.needsYou.contains(where: { !$0.done }) else { return nil }
-        return titles(story.needsYou.filter(\.done))
-    }
-
-    /// The first title, and how many more. A title that ends its own
-    /// sentence ("…uploads?") is followed by a new one ("And 1 more"),
-    /// not a comma.
-    private static func titles(_ items: [TimelineItemRef]) -> String? {
-        guard let first = items.first else { return nil }
-        let more = items.count - 1
-        guard more > 0 else { return first.title }
-        if let last = first.title.last, "?!.".contains(last) { return "\(first.title) And \(more) more" }
-        return "\(first.title), and \(more) more"
+    /// The marks as they are spoken: "2 waiting for you, 5 done, has a
+    /// next step", only those that apply; nil when there are none.
+    public static func marksLabel(_ marks: TimelineMarks) -> String? {
+        var parts: [String] = []
+        if marks.forYou > 0 { parts.append("\(marks.forYou) waiting for you") }
+        if marks.done > 0 { parts.append("\(marks.done) done") }
+        if marks.next { parts.append("has a next step") }
+        return parts.isEmpty ? nil : parts.joined(separator: ", ")
     }
 
     // MARK: Lists
@@ -136,6 +128,12 @@ public enum TimelineFormat {
     public static func lastMoved(_ date: Date?, now: Date) -> String? {
         guard let date else { return nil }
         return "Last moved \(daysAgo(date, now: now))"
+    }
+
+    /// "Moved 3 days ago": a row of the all-projects list.
+    public static func moved(_ date: Date?, now: Date) -> String? {
+        guard let date else { return nil }
+        return "Moved \(daysAgo(date, now: now))"
     }
 
     /// "19 days ago", "yesterday", under a day "3h ago".

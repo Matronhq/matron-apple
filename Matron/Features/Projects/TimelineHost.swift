@@ -32,9 +32,11 @@ struct TimelinePlacePage<Footer: View>: View {
 
     var body: some View {
         TimelinePlaceView(content: viewModel.content(for: place), now: Date(), images: images.images,
+                          sizes: images.sizes,
                           asked: viewModel.askedProjectIDs, onOpenProject: onOpenProject, onOpenItem: onOpenItem,
                           onAsk: { stalled in Task { await viewModel.ask(about: stalled) } },
                           onLoadMoreFinished: { Task { await viewModel.loadMoreFinished() } },
+                          onLoadMoreProjects: { Task { await viewModel.loadMoreProjects() } },
                           onRetry: { Task { await host.refresh() } }, footer: footer)
             .refreshable { await host.refresh() }
             .task(id: viewModel.imageBlobIDs(for: place)) {

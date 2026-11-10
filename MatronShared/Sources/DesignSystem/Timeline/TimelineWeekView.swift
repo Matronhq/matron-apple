@@ -1,29 +1,27 @@
 import SwiftUI
 import MatronModels
 
-/// One week of the Projects timeline: the title and dates, the week's
-/// lede, its story cards (two columns from 700 pt, one below), and one
-/// quiet line for the projects that moved without a story, which opens
-/// into a plain list of them. `footer` follows inside the scroll (the
-/// iPhone puts the "Worth a look" rows there). A pure leaf: hosts pass the
-/// week, the loaded pictures by blob id and the two openers.
+/// One week of the Projects timeline: the title and dates, a card for each
+/// project's week (eight at most; two columns from 700 pt, one below), and
+/// one quiet line for the other projects that moved, which opens into a
+/// plain list of them. A week where nothing moved says so in a line.
+/// `footer` follows inside the scroll (the iPhone puts the "Worth a look"
+/// rows there). A pure leaf: hosts pass the week, the loaded pictures and
+/// their pixel sizes by blob id, and the opener.
 public struct TimelineWeekView<Footer: View>: View {
     let week: TimelineWeek
-    /// The week's sidebar sentence: the lede when the week has none written.
-    let sentence: String?
     let now: Date
     let images: [String: Image]
+    let sizes: [String: CGSize]
     let onOpenProject: (String) -> Void
-    let onOpenItem: (String) -> Void
     let footer: Footer
 
     @State private var showsAlso = false
 
-    public init(week: TimelineWeek, sentence: String? = nil, now: Date, images: [String: Image],
-                onOpenProject: @escaping (String) -> Void, onOpenItem: @escaping (String) -> Void,
-                @ViewBuilder footer: () -> Footer) {
-        self.week = week; self.sentence = sentence; self.now = now; self.images = images
-        self.onOpenProject = onOpenProject; self.onOpenItem = onOpenItem; self.footer = footer()
+    public init(week: TimelineWeek, now: Date, images: [String: Image], sizes: [String: CGSize] = [:],
+                onOpenProject: @escaping (String) -> Void, @ViewBuilder footer: () -> Footer) {
+        self.week = week; self.now = now; self.images = images; self.sizes = sizes
+        self.onOpenProject = onOpenProject; self.footer = footer()
     }
 
     /// Two cards to a row on a wide page, one on a narrow one.
@@ -38,6 +36,10 @@ public struct TimelineWeekView<Footer: View>: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: TimelinePage.sectionSpacing) {
                     header
+                    if TimelineFormat.movedNothing(week) {
+                        Text(TimelineFormat.nothingMoved).font(TimelinePage.ledeFont).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("timeline.week.empty")
+                    }
                     cards(columns: Self.columnCount(pageWidth: geo.size.width))
                     also
                     footer
@@ -50,33 +52,26 @@ public struct TimelineWeekView<Footer: View>: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                Text(TimelineFormat.pageTitle(week, now: now)).font(TimelinePage.titleFont)
-                    .accessibilityAddTraits(.isHeader)
-                Spacer(minLength: 12)
-                if let dates = TimelineFormat.pageDates(week, now: now) {
-                    Text(dates).font(TimelinePage.datesFont).foregroundStyle(.secondary).lineLimit(1)
-                }
-            }
-            if let lede = TimelineFormat.lede(week, sentence: sentence) {
-                Text(MissionsDashboardFormat.statusPreviewText(lede))
-                    .font(TimelinePage.ledeFont).lineSpacing(4)
-                    .fixedSize(horizontal: false, vertical: true)
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(TimelineFormat.pageTitle(week, now: now)).font(TimelinePage.titleFont)
+                .accessibilityAddTraits(.isHeader)
+            if let dates = TimelineFormat.pageDates(week, now: now) {
+                Text(dates).font(TimelinePage.datesFont).foregroundStyle(.secondary).lineLimit(1)
             }
         }
     }
 
     @ViewBuilder private func cards(columns: Int) -> some View {
-        if !week.stories.isEmpty {
-            let rows = stride(from: 0, to: week.stories.count, by: columns).map {
-                Array(week.stories[$0..<min($0 + columns, week.stories.count)])
+        let stories = TimelineFormat.cards(week)
+        if !stories.isEmpty {
+            let rows = stride(from: 0, to: stories.count, by: columns).map {
+                Array(stories[$0..<min($0 + columns, stories.count)])
             }
             VStack(alignment: .leading, spacing: TimelinePage.cardSpacing) {
                 ForEach(rows.indices, id: \.self) { index in
                     // Cards in a row share the tallest one's height.
                     HStack(alignment: .top, spacing: TimelinePage.cardSpacing) {
-                        // By position: two written stories may share a main project.
+                        // By position: an older journal may send two stories for one project.
                         ForEach(Array(rows[index].enumerated()), id: \.offset) { _, story in card(story) }
                         if rows[index].count < columns { Color.clear.frame(maxWidth: .infinity) }
                     }
@@ -87,24 +82,27 @@ public struct TimelineWeekView<Footer: View>: View {
     }
 
     private func card(_ story: TimelineStory) -> some View {
-        TimelineStoryCard(story: story, image: story.media.flatMap { images[$0.blobID] }, onOpenItem: onOpenItem)
+        TimelineStoryCard(story: story, image: story.media.flatMap { images[$0.blobID] },
+                          pixelSize: story.media.flatMap { sizes[$0.blobID] })
             .onTapGesture { onOpenProject(story.project.id) }
             .accessibilityAction(named: Text("Open project")) { onOpenProject(story.project.id) }
     }
 
     @ViewBuilder private var also: some View {
-        if !week.also.isEmpty {
+        let projects = TimelineFormat.alsoMovedProjects(week)
+        if let line = TimelineFormat.alsoMoved(projects.count) {
             VStack(alignment: .leading, spacing: 10) {
                 Button { showsAlso.toggle() } label: {
-                    Text(TimelineFormat.alsoLine(week.also.count) + TimelineFormat.opensMark).font(TimelinePage.lineFont)
+                    Text(line + TimelineFormat.opensMark).font(TimelinePage.lineFont)
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(TimelineFormat.alsoLine(week.also.count))
+                .accessibilityLabel(line)
                 .accessibilityIdentifier("timeline.week.also")
                 if showsAlso {
                     VStack(alignment: .leading, spacing: 8) {
-                        ForEach(week.also, id: \.id) { project in
+                        // By position, as the cards are.
+                        ForEach(Array(projects.enumerated()), id: \.offset) { _, project in
                             Button { onOpenProject(project.id) } label: {
                                 Text(project.title).font(TimelinePage.lineFont).foregroundStyle(Color.primary)
                             }
@@ -119,10 +117,9 @@ public struct TimelineWeekView<Footer: View>: View {
 }
 
 public extension TimelineWeekView where Footer == EmptyView {
-    init(week: TimelineWeek, sentence: String? = nil, now: Date, images: [String: Image],
-         onOpenProject: @escaping (String) -> Void, onOpenItem: @escaping (String) -> Void) {
-        self.init(week: week, sentence: sentence, now: now, images: images, onOpenProject: onOpenProject,
-                  onOpenItem: onOpenItem) { EmptyView() }
+    init(week: TimelineWeek, now: Date, images: [String: Image], sizes: [String: CGSize] = [:],
+         onOpenProject: @escaping (String) -> Void) {
+        self.init(week: week, now: now, images: images, sizes: sizes, onOpenProject: onOpenProject) { EmptyView() }
     }
 }
 

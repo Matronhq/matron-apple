@@ -83,7 +83,8 @@ struct MacTimelineColumn: View {
 
     var body: some View {
         if let viewModel = state.viewModel {
-            TimelineSidebarView(weeks: viewModel.weeks, quietCount: viewModel.quiet?.total,
+            TimelineSidebarView(weeks: viewModel.weeks, projectsCount: viewModel.allProjects?.total,
+                                quietCount: viewModel.quiet?.total,
                                 longCount: viewModel.long?.total,
                                 // The journal sends no finished total; a
                                 // count of the rows loaded so far would read as one.
@@ -140,9 +141,11 @@ struct MacTimelinePlaceView: View {
 
     var body: some View {
         TimelinePlaceView(content: viewModel.content(for: place), now: Date(), images: images.images,
+                          sizes: images.sizes,
                           asked: viewModel.askedProjectIDs, onOpenProject: onOpenProject, onOpenItem: onOpenItem,
                           onAsk: { stalled in Task { await viewModel.ask(about: stalled) } },
                           onLoadMoreFinished: { Task { await viewModel.loadMoreFinished() } },
+                          onLoadMoreProjects: { Task { await viewModel.loadMoreProjects() } },
                           onRetry: { Task { await onRefresh() } })
             .task(id: viewModel.imageBlobIDs(for: place)) {
                 guard let deps else { return }

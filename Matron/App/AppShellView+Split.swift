@@ -106,7 +106,8 @@ extension AppShellView {
         NavigationStack {
             Group {
                 if let viewModel = timeline.viewModel {
-                    TimelineSidebarView(weeks: viewModel.weeks, quietCount: viewModel.quiet?.total,
+                    TimelineSidebarView(weeks: viewModel.weeks, projectsCount: viewModel.allProjects?.total,
+                                        quietCount: viewModel.quiet?.total,
                                         longCount: viewModel.long?.total,
                                         // The journal sends no finished total; a
                                         // count of the rows loaded so far would read as one.

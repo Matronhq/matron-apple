@@ -33,102 +33,50 @@ final class TimelineSnapshotTests: XCTestCase {
         XCTAssertNil(TimelineFormat.pageDates(older, now: D.now), "the title already says the dates")
     }
 
-    func testLedes() {
-        XCTAssertEqual(TimelineFormat.lede(D.thisWeek, sentence: "Sidebar line."), D.thisWeek.lede)
-        let noLede = TimelineWeek(week: "2026-10-19", start: D.now, end: D.now, final: true,
-                                  stories: [D.noMediaStory])
-        XCTAssertEqual(TimelineFormat.lede(noLede, sentence: "Sidebar line."), "Sidebar line.")
-        XCTAssertNil(TimelineFormat.lede(noLede, sentence: nil))
-        XCTAssertEqual(TimelineFormat.lede(D.emptyWeek, sentence: "A quiet week."), "Nothing moved this week.")
-        XCTAssertEqual(TimelineFormat.quietLede, "These were moving, then stopped without being finished.")
-        XCTAssertEqual(TimelineFormat.longLede, "These have been open for three weeks or more.")
-    }
-
+    /// The card's sentence, and the lines the lists and the sidebar say.
     func testStoryLines() {
         XCTAssertEqual(TimelineFormat.sentence(D.noMediaStory), D.noMediaStory.sentence)
         XCTAssertEqual(TimelineFormat.sentence(TimelineStory(project: D.noMediaStory.project)), "Moved this week.")
-        XCTAssertNil(TimelineFormat.needsYou(D.noMediaStory))
-        let one = TimelineStory(project: D.noMediaStory.project,
-                                needsYou: [TimelineItemRef(id: "it_a", num: 1, title: "Approve the copy")])
-        XCTAssertEqual(TimelineFormat.needsYou(one), "Approve the copy")
-        let three = TimelineStory(project: D.noMediaStory.project, needsYou: [
-            TimelineItemRef(id: "it_a", num: 1, title: "Approve the copy"),
-            TimelineItemRef(id: "it_b", num: 2, title: "B"), TimelineItemRef(id: "it_c", num: 3, title: "C"),
-        ])
-        XCTAssertEqual(TimelineFormat.needsYou(three), "Approve the copy, and 2 more")
-        XCTAssertEqual(TimelineFormat.needsYouPrefix, "Needs you: ")
-        XCTAssertEqual(TimelineFormat.alsoLine(1), "Also this week: 1 smaller job")
-        XCTAssertEqual(TimelineFormat.alsoLine(6), "Also this week: 6 smaller jobs")
+        XCTAssertEqual(TimelineFormat.nothingMoved, "Nothing moved this week.")
+        XCTAssertEqual(TimelineFormat.quietLede, "These were moving, then stopped without being finished.")
+        XCTAssertEqual(TimelineFormat.longLede, "These have been open for three weeks or more.")
         XCTAssertEqual(TimelineFormat.earlierWeeks, "Earlier weeks")
+        XCTAssertEqual(TimelineFormat.allProjects, "All projects")
         XCTAssertEqual(TimelineFormat.nothingFinished, "Nothing finished yet.")
     }
 
-    func testStoryTitleFallsBackToTheProjectName() {
-        let project = TimelineProjectRef(id: "pj_a", num: 1, title: "Docs site")
-        XCTAssertEqual(TimelineFormat.storyTitle(TimelineStory(project: project)), "Docs site")
-        XCTAssertEqual(TimelineFormat.storyTitle(TimelineStory(project: project, title: "Launch week")), "Launch week")
-        XCTAssertEqual(TimelineFormat.storyTitle(D.writtenStory), "Launch week is shaping up")
+    /// Counts and a word, in a fixed order, only those that apply.
+    func testMarksStrings() {
+        XCTAssertEqual(TimelineFormat.forYouMark(1), "1 for you")
+        XCTAssertEqual(TimelineFormat.forYouMark(4), "4 for you")
+        XCTAssertEqual(TimelineFormat.doneMark(1), "✓ 1 done")
+        XCTAssertEqual(TimelineFormat.doneMark(5), "✓ 5 done")
+        XCTAssertEqual(TimelineFormat.nextMark, "→ Next")
+        XCTAssertEqual(TimelineFormat.marksLabel(TimelineMarks(forYou: 2, done: 5, next: true)),
+                       "2 waiting for you, 5 done, has a next step")
+        XCTAssertEqual(TimelineFormat.marksLabel(TimelineMarks(forYou: 1)), "1 waiting for you")
+        XCTAssertEqual(TimelineFormat.marksLabel(TimelineMarks(done: 1, next: true)), "1 done, has a next step")
+        XCTAssertEqual(TimelineFormat.marksLabel(TimelineMarks(next: true)), "has a next step")
+        XCTAssertNil(TimelineFormat.marksLabel(TimelineMarks()))
     }
 
-    func testAlsoProjects() {
-        func story(_ titles: String...) -> TimelineStory {
-            let refs = titles.enumerated().map { TimelineProjectRef(id: "pj_\($0.offset)", num: $0.offset, title: $0.element) }
-            return TimelineStory(project: refs[0], projects: refs)
-        }
-        XCTAssertNil(TimelineFormat.alsoProjects(story("A")))
-        XCTAssertNil(TimelineFormat.alsoProjects(TimelineStory(project: D.noMediaStory.project)))
-        XCTAssertEqual(TimelineFormat.alsoProjects(story("A", "B")), "Also: B")
-        XCTAssertEqual(TimelineFormat.alsoProjects(story("A", "B", "C")), "Also: B and C")
-        XCTAssertEqual(TimelineFormat.alsoProjects(story("A", "B", "C", "D")), "Also: B, C and D")
-        XCTAssertEqual(TimelineFormat.alsoProjects(D.writtenStory), "Also: Themes")
+    func testAlsoMovedLine() {
+        XCTAssertNil(TimelineFormat.alsoMoved(0))
+        XCTAssertEqual(TimelineFormat.alsoMoved(1), "Also moved: 1 project")
+        XCTAssertEqual(TimelineFormat.alsoMoved(7), "Also moved: 7 projects")
     }
 
-    func testNeedsYouIgnoresDoneItems() {
-        func item(_ n: Int, _ title: String, done: Bool) -> TimelineItemRef {
-            TimelineItemRef(id: "it_\(n)", num: n, title: title, done: done)
-        }
-        let project = D.noMediaStory.project
-        let mixed = TimelineStory(project: project, needsYou: [item(1, "Old one", done: true), item(2, "Open one", done: false)])
-        XCTAssertEqual(TimelineFormat.needsYou(mixed), "Open one", "no \"and 1 more\" for a done item")
-        let allDone = TimelineStory(project: project, needsYou: [item(1, "Old one", done: true)])
-        XCTAssertNil(TimelineFormat.needsYou(allDone))
-        let two = TimelineStory(project: project, needsYou: [item(1, "A", done: false), item(2, "B", done: false),
-                                                            item(3, "C", done: true)])
-        XCTAssertEqual(TimelineFormat.needsYou(two), "A, and 1 more")
-    }
-
-    func testSortedOutOnlyWhenNothingIsOpen() {
-        func item(_ n: Int, _ title: String, done: Bool) -> TimelineItemRef {
-            TimelineItemRef(id: "it_\(n)", num: n, title: title, done: done)
-        }
-        let project = D.noMediaStory.project
-        XCTAssertEqual(TimelineFormat.sortedOutPrefix, "Done: ")
-        XCTAssertNil(TimelineFormat.sortedOut(TimelineStory(project: project)))
-        XCTAssertNil(TimelineFormat.sortedOut(TimelineStory(project: project, needsYou: [item(1, "A", done: false)])))
-        XCTAssertNil(TimelineFormat.sortedOut(TimelineStory(project: project, needsYou: [item(1, "A", done: true),
-                                                                                         item(2, "B", done: false)])),
-                     "something still waits: the red line shows, not this one")
-        XCTAssertEqual(TimelineFormat.sortedOut(TimelineStory(project: project, needsYou: [item(1, "A", done: true)])), "A")
-        XCTAssertEqual(TimelineFormat.sortedOut(TimelineStory(project: project, needsYou: [item(1, "A", done: true),
-                                                                                           item(2, "B", done: true)])),
-                       "A, and 1 more")
-        XCTAssertEqual(TimelineFormat.sortedOut(D.sortedOutStory), "Approve it, or ask for more")
-        XCTAssertNil(TimelineFormat.sortedOut(D.writtenStory))
-    }
-
-    /// A first title that ends a sentence starts a new one for the rest.
-    func testNeedsYouAfterAQuestion() {
-        func story(_ titles: String...) -> TimelineStory {
-            TimelineStory(project: D.noMediaStory.project, needsYou: titles.enumerated().map {
-                TimelineItemRef(id: "it_\($0.offset)", num: $0.offset, title: $0.element)
-            })
-        }
-        XCTAssertEqual(TimelineFormat.needsYou(story("Which retry policy for uploads?", "B")),
-                       "Which retry policy for uploads? And 1 more")
-        XCTAssertEqual(TimelineFormat.needsYou(story("Ship it now!", "B", "C")), "Ship it now! And 2 more")
-        XCTAssertEqual(TimelineFormat.needsYou(story("Approve the copy.", "B")), "Approve the copy. And 1 more")
-        XCTAssertEqual(TimelineFormat.needsYou(story("Approve the copy", "B")), "Approve the copy, and 1 more")
-        XCTAssertEqual(TimelineFormat.needsYou(story("Which retry policy for uploads?")), "Which retry policy for uploads?")
+    /// Eight cards at most; the stories beyond them join the projects
+    /// behind the foot line, ahead of the journal's own.
+    func testCardsStopAtEight() {
+        XCTAssertEqual(TimelineFormat.cards(D.thisWeek).count, D.thisWeek.stories.count)
+        XCTAssertEqual(TimelineFormat.alsoMovedProjects(D.thisWeek), D.thisWeek.also)
+        XCTAssertEqual(D.crowdedWeek.stories.count, 10)
+        XCTAssertEqual(TimelineFormat.cards(D.crowdedWeek), Array(D.crowdedWeek.stories.prefix(8)))
+        XCTAssertEqual(TimelineFormat.alsoMovedProjects(D.crowdedWeek),
+                       D.crowdedWeek.stories.suffix(2).map { $0.project } + D.crowdedWeek.also)
+        XCTAssertEqual(TimelineFormat.alsoMovedProjects(D.crowdedWeek).count, 7)
+        XCTAssertTrue(TimelineFormat.alsoMovedProjects(D.emptyWeek).isEmpty)
     }
 
     func testLastMoved() {
@@ -138,6 +86,10 @@ final class TimelineSnapshotTests: XCTestCase {
         XCTAssertEqual(TimelineFormat.lastMoved(ago(3 * 3_600), now: D.now), "Last moved 3h ago")
         XCTAssertEqual(TimelineFormat.lastMoved(ago(10), now: D.now), "Last moved just now")
         XCTAssertNil(TimelineFormat.lastMoved(nil, now: D.now))
+        XCTAssertEqual(TimelineFormat.moved(ago(3 * 86_400 + 600), now: D.now), "Moved 3 days ago")
+        XCTAssertEqual(TimelineFormat.moved(ago(86_400 + 60), now: D.now), "Moved yesterday")
+        XCTAssertEqual(TimelineFormat.moved(ago(3 * 3_600), now: D.now), "Moved 3h ago")
+        XCTAssertNil(TimelineFormat.moved(nil, now: D.now))
         XCTAssertEqual(TimelineFormat.askAction, "Ask the Coordinator what to do with it")
     }
 
@@ -317,13 +269,23 @@ final class TimelineSnapshotTests: XCTestCase {
     }
 
     private func sidebar(_ place: TimelinePlace) -> TimelineSidebarView {
-        TimelineSidebarView(weeks: D.weeks, quietCount: D.quiet.total, longCount: D.long.total, finishedCount: 289,
-                            selection: .constant(place), onLoadEarlier: {})
+        TimelineSidebarView(weeks: D.weeks, projectsCount: D.allProjects.total, quietCount: D.quiet.total,
+                            longCount: D.long.total, finishedCount: 289, selection: .constant(place), onLoadEarlier: {})
     }
 
-    private func weekPage(_ week: TimelineWeek, sentence: String? = nil) -> TimelineWeekView<EmptyView> {
-        TimelineWeekView(week: week, sentence: sentence, now: D.now, images: Self.images,
-                         onOpenProject: { _ in }, onOpenItem: { _ in })
+    private func weekPage(_ week: TimelineWeek) -> TimelineWeekView<EmptyView> {
+        TimelineWeekView(week: week, now: D.now, images: Self.images, sizes: D.sizes, onOpenProject: { _ in })
+    }
+
+    /// A card at a Mac column's width and at the iPhone page's.
+    private func assertCard(_ story: TimelineStory, named name: String, file: StaticString = #file,
+                            testName: String = #function, line: UInt = #line) {
+        func card() -> TimelineStoryCard {
+            TimelineStoryCard(story: story, image: story.media.flatMap { Self.images[$0.blobID] },
+                              pixelSize: story.media.flatMap { D.sizes[$0.blobID] })
+        }
+        assertVariants(of: card().frame(width: 448), named: "\(name)-mac", file: file, testName: testName, line: line)
+        assertVariants(of: card().frame(width: 358), named: "\(name)-phone", file: file, testName: testName, line: line)
     }
 
     func testWeekWithStories() {
@@ -333,45 +295,37 @@ final class TimelineSnapshotTests: XCTestCase {
         assertVariants(of: macWindow(.week(D.lastWeek.week)) { weekPage(D.lastWeek) }, named: "timeline-lastweek-mac")
     }
 
+    /// Nothing moved: the title, the dates and one calm line.
     func testWeekEmpty() {
-        let sentence = D.weeks[0].sentence
-        assertVariants(of: macWindow(.week(D.emptyWeek.week)) { weekPage(D.emptyWeek, sentence: sentence) },
-                       named: "timeline-week-empty-mac")
-        assertVariants(of: phone(weekPage(D.emptyWeek, sentence: sentence)), named: "timeline-week-empty-phone")
+        assertVariants(of: macWindow(.week(D.emptyWeek.week)) { weekPage(D.emptyWeek) }, named: "timeline-week-empty-mac")
+        assertVariants(of: phone(weekPage(D.emptyWeek)), named: "timeline-week-empty-phone")
+    }
+
+    /// Ten stories: eight cards, and the other two counted with the five
+    /// projects behind "Also moved: 7 projects". Tall enough to show the foot.
+    func testWeekMoreThanEightCards() {
+        assertVariants(of: weekPage(D.crowdedWeek).frame(width: 980, height: 1_500), named: "timeline-week-crowded-mac")
+        assertVariants(of: weekPage(D.crowdedWeek).frame(width: 390, height: 2_900), named: "timeline-week-crowded-phone")
+    }
+
+    /// Waiting on you, done and a next step: all three marks, in that order.
+    func testCardAllMarks() {
+        assertCard(D.allMarksStory, named: "timeline-card-marks")
+    }
+
+    /// Nothing to mark: the card ends at its sentence, with no empty line.
+    func testCardNoMarks() {
+        assertCard(D.noMarksStory, named: "timeline-card-nomarks")
     }
 
     /// No picture that week: no media area at all, not a grey box.
-    func testStoryCardNoMedia() {
-        assertVariants(of: TimelineStoryCard(story: D.noMediaStory, image: nil).frame(width: 448),
-                       named: "timeline-card-nomedia-mac")
-        assertVariants(of: TimelineStoryCard(story: D.noMediaStory, image: nil).frame(width: 358),
-                       named: "timeline-card-nomedia-phone")
-    }
-
-    /// A written story: the Coordinator's title, the other projects under
-    /// it, and the red line for what is still open.
-    func testStoryCardWritten() {
-        assertVariants(of: TimelineStoryCard(story: D.writtenStory, image: nil).frame(width: 448),
-                       named: "timeline-card-written-mac")
-        assertVariants(of: TimelineStoryCard(story: D.writtenStory, image: nil).frame(width: 358),
-                       named: "timeline-card-written-phone")
-    }
-
-    /// Everything the story named is sorted out: a quiet "Done:" line.
-    func testStoryCardSortedOut() {
-        assertVariants(of: TimelineStoryCard(story: D.sortedOutStory, image: nil).frame(width: 448),
-                       named: "timeline-card-done-mac")
-        assertVariants(of: TimelineStoryCard(story: D.sortedOutStory, image: nil).frame(width: 358),
-                       named: "timeline-card-done-phone")
+    func testCardNoMedia() {
+        assertCard(D.noMediaStory, named: "timeline-card-nomedia")
     }
 
     /// A video has no poster frame yet: a dark panel with ▶ and its name.
-    func testStoryCardVideo() {
-        let story = D.thisWeek.stories.first { $0.media?.isVideo == true }!
-        assertVariants(of: TimelineStoryCard(story: story, image: nil).frame(width: 448),
-                       named: "timeline-card-video-mac")
-        assertVariants(of: TimelineStoryCard(story: story, image: nil).frame(width: 358),
-                       named: "timeline-card-video-phone")
+    func testCardVideo() {
+        assertCard(D.thisWeek.stories.first { $0.media?.isVideo == true }!, named: "timeline-card-video")
     }
 
     /// The media area at a Mac card's width, with the window showing round
@@ -410,6 +364,15 @@ final class TimelineSnapshotTests: XCTestCase {
         }
         assertVariants(of: macWindow(.quiet) { page() }, named: "timeline-quiet-mac")
         assertVariants(of: phone(page()), named: "timeline-quiet-phone")
+    }
+
+    /// Every project, the most recently moved first, with when it moved.
+    func testAllProjects() {
+        func page() -> AllProjectsListView {
+            AllProjectsListView(list: D.allProjects, now: D.now, onOpenProject: { _ in }, onLoadMore: {})
+        }
+        assertVariants(of: macWindow(.projects) { page() }, named: "timeline-projects-mac")
+        assertVariants(of: phone(page()), named: "timeline-projects-phone")
     }
 
     func testFinished() {
