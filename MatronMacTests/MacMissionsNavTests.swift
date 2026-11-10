@@ -5,7 +5,7 @@ import SwiftUI
 @MainActor
 final class MacMissionsNavTests: XCTestCase {
     func testNavOrderIsCoordinatorMissionsDecisionsConversationsMemories() {
-        XCTAssertEqual(MacNav.allCases, [.coordinator, .missions, .decisions, .conversations, .memories])
+        XCTAssertEqual(MacNav.allCases, [.coordinator, .missions, .decisions, .conversations, .memories, .boxes])
     }
 
     /// The badge map generalises the old `decisionsCount`: two entries can
@@ -21,7 +21,7 @@ final class MacMissionsNavTests: XCTestCase {
     func testNavColumnSnapshotEntriesRespectTheSupportedFilter() {
         XCTAssertEqual(MacNavColumn.entries(missionsSupported: true), MacNav.allCases)
         XCTAssertEqual(MacNavColumn.entries(missionsSupported: false),
-                       [.coordinator, .decisions, .conversations, .memories],
+                       [.coordinator, .decisions, .conversations, .memories, .boxes],
                        "an old journal hides the Missions entry entirely")
     }
 

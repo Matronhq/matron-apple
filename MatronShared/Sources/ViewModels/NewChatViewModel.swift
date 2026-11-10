@@ -20,7 +20,7 @@ public protocol AgentRPCProviding: Sendable {
 
 /// Production adapter: the session's `JournalAPI` (roster) + sync engine
 /// (RPC send/correlate, engine-default timeout).
-public struct JournalAgentRPCService: AgentRPCProviding {
+public struct JournalAgentRPCService: AgentRPCProviding, BoxesProviding {
     private let api: JournalAPI
     private let engine: JournalSyncEngine
 
@@ -31,6 +31,10 @@ public struct JournalAgentRPCService: AgentRPCProviding {
 
     public func devices() async throws -> [DeviceDTO] {
         try await api.devices()
+    }
+
+    public func roster() async throws -> RosterSnapshot {
+        try await api.roster()
     }
 
     public func agentRequest(agentDeviceID: Int64, method: String, paramsData: Data) async throws -> RPCReply {

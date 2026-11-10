@@ -60,6 +60,69 @@ public struct BoxStatus: Equatable, Sendable {
     }
 }
 
+/// A box's `disk` block: free and total bytes on its working volume.
+public struct BoxDisk: Equatable, Sendable {
+    public let freeBytes: Int64
+    public let totalBytes: Int64
+
+    public init(freeBytes: Int64, totalBytes: Int64) {
+        self.freeBytes = freeBytes
+        self.totalBytes = totalBytes
+    }
+
+    /// Whole percent of the volume still free.
+    public var percentFree: Int { Int((Double(freeBytes) / Double(totalBytes) * 100).rounded()) }
+
+    /// Nil unless both sizes are whole, non-negative and consistent.
+    static func parse(_ object: [String: Any]?) -> BoxDisk? {
+        guard let free = BoxCapacity.wholeInt64(object?["free_bytes"]),
+              let total = BoxCapacity.wholeInt64(object?["total_bytes"]),
+              free >= 0, total > 0, free <= total else { return nil }
+        return BoxDisk(freeBytes: free, totalBytes: total)
+    }
+
+    /// 1024-based and dense: "7.4G", "233G", "1.8T". One decimal under ten,
+    /// whole numbers above; the reader is judging "is this box full".
+    public static func sizeText(_ bytes: Int64) -> String {
+        let units = ["B", "K", "M", "G", "T", "P"]
+        var value = Double(bytes)
+        var index = 0
+        while value >= 1024, index < units.count - 1 {
+            value /= 1024
+            index += 1
+        }
+        // The unit is picked before rounding, so 1023.9G must carry to 1.0T.
+        if value >= 1023.5, index < units.count - 1 {
+            value /= 1024
+            index += 1
+        }
+        let number = value >= 10 || value == value.rounded()
+            ? String(Int(value.rounded()))
+            : String(format: "%.1f", value)
+        return number + units[index]
+    }
+}
+
+/// What a new session on the box starts as, resolved by the bridge (the
+/// journal's box defaults, else the box's own environment).
+public struct BoxResolvedDefaults: Equatable, Sendable {
+    public let agent: String
+    public let model: String?
+    public let effort: String?
+
+    public init(agent: String, model: String?, effort: String?) {
+        self.agent = agent
+        self.model = model
+        self.effort = effort
+    }
+
+    static func parse(_ object: [String: Any]?) -> BoxResolvedDefaults? {
+        guard let agent = object?["agent"] as? String, !agent.isEmpty else { return nil }
+        return BoxResolvedDefaults(agent: agent, model: object?["model"] as? String,
+                                   effort: object?["effort"] as? String)
+    }
+}
+
 /// The capacity blocks a bridge attaches to its `recent_folders` reply:
 /// live-session count, usage-limit lines, logged-in account. Every block is
 /// optional wire-side (an old bridge omits them all), so parsing degrades
@@ -75,11 +138,23 @@ public struct BoxCapacity: Equatable, Sendable {
     public let limitLines: [LimitLine]
     /// `account.email` — nil for API-key accounts and older bridges.
     public let accountEmail: String?
+    /// The `disk` block — nil when the bridge sent none.
+    public let disk: BoxDisk?
+    /// `limits.as_of`: when the usage numbers themselves were read, which
+    /// can be well before the report that carried them.
+    public let limitsAsOf: Date?
+    /// The `defaults` block — nil for a bridge predating it.
+    public let defaults: BoxResolvedDefaults?
 
-    public init(liveSessions: Int?, limitLines: [LimitLine], accountEmail: String?) {
+    public init(liveSessions: Int?, limitLines: [LimitLine], accountEmail: String?,
+                disk: BoxDisk? = nil, limitsAsOf: Date? = nil,
+                defaults: BoxResolvedDefaults? = nil) {
         self.liveSessions = liveSessions
         self.limitLines = limitLines
         self.accountEmail = accountEmail
+        self.disk = disk
+        self.limitsAsOf = limitsAsOf
+        self.defaults = defaults
     }
 
     /// True when this capacity carries anything the chooser grid can show.
@@ -103,7 +178,8 @@ public struct BoxCapacity: Equatable, Sendable {
         let liveSessions = wholeNumber(activity?["live_sessions"])
             .flatMap { $0 >= 0 ? $0 : nil }
 
-        let lines = ((replyObject["limits"] as? [String: Any])?["lines"] as? [[String: Any]]) ?? []
+        let limits = replyObject["limits"] as? [String: Any]
+        let lines = (limits?["lines"] as? [[String: Any]]) ?? []
         let limitLines = lines.compactMap { line -> LimitLine? in
             guard let id = line["id"] as? String, !id.isEmpty,
                   let label = line["label"] as? String, !label.isEmpty,
@@ -115,7 +191,12 @@ public struct BoxCapacity: Equatable, Sendable {
 
         let email = (replyObject["account"] as? [String: Any])?["email"] as? String
         return BoxCapacity(liveSessions: liveSessions, limitLines: limitLines,
-                           accountEmail: (email?.isEmpty == false) ? email : nil)
+                           accountEmail: (email?.isEmpty == false) ? email : nil,
+                           disk: BoxDisk.parse(replyObject["disk"] as? [String: Any]),
+                           limitsAsOf: wholeInt64(limits?["as_of"]).map {
+                               Date(timeIntervalSince1970: Double($0) / 1000)
+                           },
+                           defaults: BoxResolvedDefaults.parse(replyObject["defaults"] as? [String: Any]))
     }
 
     /// Union of limit lines across a fleet, in first-encounter order — the
@@ -145,6 +226,16 @@ public struct BoxCapacity: Equatable, Sendable {
         // Both fields are small counts; anything past Int32 is malformed too.
         guard double.rounded() == double, abs(double) <= 2_147_483_647 else { return nil }
         return number.intValue
+    }
+
+    /// A JSON number that has to be whole but may be large: byte counts and
+    /// epoch milliseconds, which `wholeNumber`'s Int32 bound would drop.
+    static func wholeInt64(_ value: Any?) -> Int64? {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        let double = number.doubleValue
+        guard double.rounded() == double, abs(double) < 9_007_199_254_740_992 else { return nil }
+        return number.int64Value
     }
 
     /// Bridge timestamps come from `Date.toISOString()` (always fractional),

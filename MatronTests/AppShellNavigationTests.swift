@@ -217,8 +217,8 @@ final class AppShellNavigationTests: XCTestCase {
     func test_morePages_selectMoreInTheBar() {
         let nav = AppShellNavigation()
         XCTAssertEqual(AppShellNavigation.barTabs, [.coordinator, .decisions, .conversations, .more, .search])
-        XCTAssertEqual(AppShellNavigation.moreEntries(missionsSupported: true), [.missions, .settings])
-        XCTAssertEqual(AppShellNavigation.moreEntries(missionsSupported: false), [.settings])
+        XCTAssertEqual(AppShellNavigation.moreEntries(missionsSupported: true), [.missions, .boxes, .settings])
+        XCTAssertEqual(AppShellNavigation.moreEntries(missionsSupported: false), [.boxes, .settings])
         nav.selectBarTab(.more)
         XCTAssertEqual(nav.tab, .more)
         nav.tab = .missions

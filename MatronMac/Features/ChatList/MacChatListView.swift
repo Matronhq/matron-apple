@@ -301,7 +301,7 @@ struct MacChatListView: View {
                 memoriesColumn
             case .missions where timeline.isShown:
                 MacTimelineColumn(state: timeline, onSelect: selectTimelinePlace)
-            case .coordinator, .missions, .desk:
+            case .coordinator, .missions, .desk, .boxes:
                 // Full-width detail: the list column collapses to the nav
                 // column alone (the width modifier below shrinks it).
                 Spacer(minLength: 0)
@@ -372,6 +372,8 @@ struct MacChatListView: View {
             return MacPlace(detail: .decision(id: selectedDecisionID))
         case .memories:
             return MacPlace(detail: .memory(selectedMemory))
+        case .boxes:
+            return MacPlace(detail: .boxes)
         }
     }
 
@@ -495,6 +497,8 @@ struct MacChatListView: View {
             decisionsDetail
         case .memories:
             memoryDetail
+        case .boxes:
+            boxesDetail
         case .coordinator:
             coordinatorPageDetail
         case .desk(let id):
@@ -764,7 +768,7 @@ struct MacChatListView: View {
         case .conversations:
             return detailShowsChat(selectedSummaryID, coordinatorConvoID: coordinatorConvoID,
                                    isStaleRestore: isStaleRestore, pinnedIDs: pinnedIDs) ? selectedSummaryID : nil
-        case .missions, .decisions, .memories:
+        case .missions, .decisions, .memories, .boxes:
             return nil
         }
     }
@@ -1001,6 +1005,7 @@ struct MacChatListView: View {
             .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showConversations))) { _ in nav = .conversations }
             .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showDecisions))) { _ in nav = .decisions }
             .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showMemories))) { _ in nav = .memories }
+            .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showBoxes))) { _ in nav = .boxes }
             // Go ▸ Back / Forward, ⌘[ / ⌘] (spec 2026-09-23 §5): published
             // to the menu bar for THIS window only, unlike the bus above;
             // history is per window (PR #233 review I1).
@@ -1212,6 +1217,10 @@ struct MacChatListView: View {
             // conversation once it syncs in, so an unattended capture can show
             // a chat without injected clicks. See DebugSnapshot.swift.
             // MATRON_DEBUG_SETTINGS_TAB=<pane> opens Settings on that pane.
+            .task {
+                guard BoxesDemoData.isRequested else { return }
+                nav = .boxes
+            }
             .task {
                 guard DebugSnapshot.settingsTab != nil else { return }
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
@@ -1564,6 +1573,8 @@ struct MacChatListView: View {
         case .memory(let selection):
             selectedMemory = selection
             nav = .memories
+        case .boxes:
+            nav = .boxes
         }
     }
 
@@ -1774,7 +1785,7 @@ struct MacChatListView: View {
         switch nav {
         case .conversations: return searchResultsShown ? nil : detailChatID
         case .coordinator, .desk: return detailChatID
-        case .missions, .decisions, .memories: return nil
+        case .missions, .decisions, .memories, .boxes: return nil
         }
     }
 
@@ -1827,6 +1838,15 @@ struct MacChatListView: View {
                 .id(ObjectIdentifier(memoriesVM))
         } else {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    @ViewBuilder
+    private var boxesDetail: some View {
+        if let deps, let session {
+            MacBoxesPage(deps: deps, session: session, onOpenConversation: openConversationFromDecisions)
+        } else {
+            Color.clear
         }
     }
 
