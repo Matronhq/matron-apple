@@ -448,7 +448,9 @@ struct MacTimelineProjectHost: View {
                                hasMore: summary?.hasMoreHistory == true,
                                onOpenMilestone: { actions.onOpenMilestone($0.milestone) },
                                onLoadMore: { Task { await summary?.loadMoreHistory() } })
-                .task { await summary?.loadHistory() }
+                // Coming back to the section runs this again: the weeks paged
+                // in stay, and nothing is read twice.
+                .task { await summary?.loadHistoryIfNeeded() }
         case .missions:
             if let page = detail?.page {
                 ProjectMissionsListView(open: page.missions, closed: page.closedMissions, now: Date(),
