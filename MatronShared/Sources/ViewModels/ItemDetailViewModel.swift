@@ -450,9 +450,12 @@ public final class ItemDetailViewModel {
         }
     }
 
-    /// Sending an edited reply: cancel the held original first (which
-    /// withdraws it), so the agent gets only the edit. Returns a failure's
-    /// message, leaving the edit in the reply box.
+    /// Sending an edited reply: cancel the held original first, and wait
+    /// for the bridge's `cancel` release, which is what withdraws it, before
+    /// the edit goes. Posting on the strength of the request alone could
+    /// leave both replies to reach the agent if the cancel never lands.
+    /// Returns a failure's message, leaving the edit in the reply box and
+    /// the reply still being edited, so Send can be tried again.
     private func withdrawEditedOriginal() async -> String? {
         guard let commentID = editingQueuedReplyID else { return nil }
         let target: (convoID: String, seq: Int64, sendOne: Bool)
@@ -463,31 +466,47 @@ public final class ItemDetailViewModel {
             return "That reply left the queue before the edit was sent. Your edit is still in the reply box."
         }
         guard let queuedRelease else { return "Couldn't replace the queued reply." }
+        busyCount += 1
+        defer { busyCount -= 1 }
         do {
             try await queuedRelease.sendQueuedRelease(convoID: target.convoID, targetSeq: target.seq,
                                                       choice: ItemQueuedReplies.cancelChoice)
         } catch {
             return "Couldn't replace the queued reply. Try again."
         }
+        // Not "being edited" while the cancel settles: its release would
+        // otherwise read as the reply leaving the queue mid-edit.
         editingQueuedReplyID = nil
-        preEditDraft = ""
-        // "Cancelling…" until the bridge's release lands, as for a Cancel
-        // tap — and, as there, tappable again if it never does.
         let attempt = UUID()
         sendNowAttempts[commentID] = attempt
         queuedTransient[commentID] = .cancelling
         refreshQueuedReplies()
-        let timeout = sendNowConfirmTimeout
-        Task { [weak self] in
-            try? await Task.sleep(for: timeout)
-            guard let self, self.sendNowAttempts[commentID] == attempt,
-                  self.queuedTransient[commentID] == .cancelling else { return }
-            self.queuedTransient[commentID] = .sendFailed(
+        let deadline = ContinuousClock.now.advanced(by: sendNowConfirmTimeout)
+        while true {
+            switch ItemQueuedReplies.derive(rows: queuedRows, itemID: itemID)[commentID] {
+            case .cancelled?, .notDelivered?:
+                // Withdrawn, or never going to be delivered: the edit replaces it.
+                preEditDraft = ""
+                return nil
+            case nil:
+                // Delivered after all (sent from the conversation first).
+                return "That reply reached the agent before the edit was sent. Your edit is still in the reply box."
+            default:
+                break
+            }
+            if ContinuousClock.now >= deadline || sendNowAttempts[commentID] != attempt { break }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        // Unconfirmed: the original may still be queued (and held), so the
+        // edit must not go yet.
+        if queuedTransient[commentID] == .cancelling {
+            queuedTransient[commentID] = .sendFailed(
                 convoID: target.convoID, targetSeq: target.seq, offersSendOne: target.sendOne,
                 reason: "The session hasn't confirmed the cancel. Try again, or check the conversation.")
-            self.refreshQueuedReplies()
         }
-        return nil
+        editingQueuedReplyID = commentID
+        refreshQueuedReplies()
+        return "The session hasn't confirmed it replaced the queued reply. Your edit is still in the reply box; try again."
     }
 
     /// Follows the origin conversation's queue cards — the conversation the

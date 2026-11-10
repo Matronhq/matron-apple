@@ -393,11 +393,33 @@ final class ItemQueuedRepliesTests: XCTestCase {
         XCTAssertEqual(vm.editingQueuedReplyID, "ic_1")
         XCTAssertEqual(vm.draft, "Use OAuth")
         vm.draft = "Use OAuth with PKCE"
-        await vm.submitComment()
+        let send = Task { await vm.submitComment() }
+        try await waitUntil { release.sent.count == 2 }
         XCTAssertEqual(release.sent.map(\.2), ["edit", "cancel"], "the original is withdrawn before the edit goes")
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(vm.draft, "Use OAuth with PKCE", "nothing is posted until the bridge confirms the cancel")
+        cards.land([Self.resendCard(10, prompt: "pr_a", comment: "ic_1"), Self.release(11, prompt: "pr_a", action: "cancel")])
+        await send.value
         XCTAssertNil(vm.editingQueuedReplyID)
         XCTAssertEqual(vm.draft, "")
-        XCTAssertEqual(vm.queuedReplies["ic_1"], .cancelling)
+        XCTAssertEqual(vm.queuedReplies["ic_1"], .cancelled)
+        XCTAssertNil(vm.error)
+    }
+
+    func testAnUnconfirmedCancelKeepsTheEditInTheBoxAndTheReplyBeingEdited() async throws {
+        let cards = Cards(); let release = Release(); let store = Store()
+        store.thread = [Self.reply("ic_1", body: "Use OAuth")]
+        let (vm, _, _) = try await make(cards: cards, release: release, store: store)
+        vm.sendNowConfirmTimeout = .milliseconds(300)
+        try await waitUntil { vm.comments.count == 1 }
+        cards.land([Self.resendCard(10, prompt: "pr_a", comment: "ic_1")])
+        try await waitUntil { vm.editableQueuedReplies == ["ic_1"] }
+        await vm.editQueuedReply(commentID: "ic_1")
+        vm.draft = "Use OAuth with PKCE"
+        await vm.submitComment()
+        XCTAssertEqual(vm.draft, "Use OAuth with PKCE")
+        XCTAssertEqual(vm.editingQueuedReplyID, "ic_1")
+        XCTAssertNotNil(vm.error)
     }
 
     func testCancelEditReleasesTheHoldAndGivesTheReplyBoxBack() async throws {
