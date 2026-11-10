@@ -65,6 +65,8 @@ public struct BoxStateLabel: View {
             Circle().fill(color).frame(width: 7, height: 7)
             Text(state.title)
         }
+        .lineLimit(1)
+        .fixedSize()
     }
 
     private var color: Color {
@@ -93,5 +95,7 @@ public struct BoxBadge: View {
             .padding(.horizontal, 6)
             .padding(.vertical, 1)
             .background(color.opacity(0.18), in: Capsule())
+            .lineLimit(1)
+            .fixedSize()
     }
 }

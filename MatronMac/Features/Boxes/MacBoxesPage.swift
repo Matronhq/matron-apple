@@ -18,7 +18,8 @@ struct MacBoxesPage: View {
     @State private var startingOn: DeviceDTO?
 
     private static let sessionsWidth: CGFloat = 62
-    private static let meterWidth: CGFloat = 170
+    /// Meters narrow first, so the box column keeps room for its login.
+    private static func meterWidth(isWide: Bool) -> CGFloat { isWide ? 170 : 128 }
     private static let defaultsWidth: CGFloat = 170
     private static let diskWidth: CGFloat = 92
     private static let actionsWidth: CGFloat = 92
@@ -119,7 +120,7 @@ struct MacBoxesPage: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
     }
 
     // MARK: Table
@@ -129,7 +130,9 @@ struct MacBoxesPage: View {
             Text("Box").frame(maxWidth: .infinity, alignment: .leading)
             Text("Sessions").frame(width: Self.sessionsWidth, alignment: .trailing)
             ForEach(columns) { column in
-                Text(column.label).frame(width: Self.meterWidth, alignment: .leading)
+                Text(column.label)
+                    .lineLimit(1)
+                    .frame(width: Self.meterWidth(isWide: isWide), alignment: .leading)
             }
             if isWide {
                 Text("Default for new sessions").frame(width: Self.defaultsWidth, alignment: .leading)
@@ -151,7 +154,7 @@ struct MacBoxesPage: View {
                 ForEach(columns) { column in
                     BoxMeterView(line: row.capacity?.limitLines.first { $0.id == column.id },
                                  freshness: row.freshness)
-                        .frame(width: Self.meterWidth, alignment: .leading)
+                        .frame(width: Self.meterWidth(isWide: isWide), alignment: .leading)
                 }
                 if isWide {
                     Text(row.defaultsText ?? "—")

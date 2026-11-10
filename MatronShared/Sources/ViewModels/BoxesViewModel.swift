@@ -172,7 +172,7 @@ public final class BoxesViewModel {
         }
         let spare = BoxAllowances.mostSpare(readings, now: now)
         let lowest = rows.compactMap { row in row.capacity?.disk.map { (name: row.device.name, disk: $0) } }
-            .min { $0.disk.percentFree < $1.disk.percentFree }
+            .min { $0.disk.freeBytes < $1.disk.freeBytes }
         return BoxesSummary(
             total: rows.count,
             online: rows.filter { $0.state == .online }.count,
