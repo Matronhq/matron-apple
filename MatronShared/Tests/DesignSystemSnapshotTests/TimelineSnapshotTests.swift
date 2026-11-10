@@ -132,6 +132,60 @@ final class TimelineSnapshotTests: XCTestCase {
         XCTAssertEqual(TimelineMediaFit.of(pixelSize: D.sizes["docs"]), .fill)
     }
 
+    // MARK: Project page
+
+    /// The page's headings and its three rows, each with its count.
+    func testProjectPageLines() {
+        XCTAssertEqual(TimelineFormat.nextHeading, "Next")
+        XCTAssertEqual(TimelineFormat.needsYouHeading, "Needs you")
+        XCTAssertEqual(TimelineFormat.doneHeading, "Done")
+        XCTAssertEqual(ProjectSection.allCases.map(TimelineFormat.sectionTitle),
+                       ["This week and before", "Missions", "Files"])
+        XCTAssertEqual(ProjectSection.allCases.map { TimelineFormat.sectionCount($0, page: D.summaryPage) },
+                       ["6 weeks", "3 open, 4 done", "7"])
+        XCTAssertEqual(TimelineFormat.weeksCount(1), "1 week")
+        XCTAssertEqual(TimelineFormat.weeksCount(0), "0 weeks")
+        XCTAssertEqual(TimelineFormat.missionsCount(open: 0, done: 12), "0 open, 12 done")
+    }
+
+    /// A row with nothing behind it can't be opened.
+    func testProjectSectionWithNothingBehindIt() {
+        let empty = TimelineProjectPage(project: D.summaryPage.project)
+        XCTAssertEqual(ProjectSection.allCases.map { TimelineFormat.sectionIsEmpty($0, page: empty) }, [true, true, true])
+        XCTAssertEqual(ProjectSection.allCases.map { TimelineFormat.sectionIsEmpty($0, page: D.summaryPage) },
+                       [false, false, false])
+        let finished = TimelineProjectPage(project: D.summaryPage.project, missionsDone: 2)
+        XCTAssertFalse(TimelineFormat.sectionIsEmpty(.missions, page: finished), "done missions are still missions")
+        XCTAssertEqual(ProjectSection.allCases.map { TimelineFormat.sectionIsEmpty($0, page: D.summaryPageBare) },
+                       [false, false, true])
+    }
+
+    /// "and 2 more" under the items shown; nothing when they are all there.
+    func testWaitingBeyondTheRowsShown() {
+        XCTAssertNil(TimelineFormat.moreWaiting(D.summaryPage))
+        XCTAssertEqual(D.summaryPageManyWaiting.needsYou.count, 3)
+        XCTAssertEqual(TimelineFormat.moreWaiting(D.summaryPageManyWaiting), "and 2 more")
+        let short = TimelineProjectPage(project: D.summaryPage.project, needsYou: D.summaryPage.needsYou, needsYouTotal: 0)
+        XCTAssertNil(TimelineFormat.moreWaiting(short), "a total below the rows sent")
+    }
+
+    /// The week being lived is this week, the one before it last week,
+    /// any other its dates.
+    func testHistoryWeekTitles() {
+        XCTAssertEqual(D.history.map { TimelineFormat.historyWeekTitle($0, now: D.now) },
+                       ["This week", "Last week", "19 – 25 Oct"])
+        XCTAssertNil(TimelineFormat.moreMilestones(0))
+        XCTAssertEqual(TimelineFormat.moreMilestones(1), "1 more")
+        XCTAssertEqual(TimelineFormat.moreMilestones(4), "4 more")
+    }
+
+    func testFileColumnsFollowThePageWidth() {
+        XCTAssertEqual(ProjectFilesGridView.columnCount(pageWidth: 390), 2)
+        XCTAssertEqual(ProjectFilesGridView.columnCount(pageWidth: 699), 2)
+        XCTAssertEqual(ProjectFilesGridView.columnCount(pageWidth: 700), 3)
+        XCTAssertEqual(ProjectFilesGridView.columnCount(pageWidth: 1_280), 3)
+    }
+
     // MARK: Project story
 
     private static func file(_ name: String?, _ type: String, at date: Date, item: Int? = nil) -> ProjectFile {
@@ -408,5 +462,65 @@ final class TimelineSnapshotTests: XCTestCase {
     func testProjectStoryNoMedia() {
         assertVariants(of: storyPage(D.quietProjectPage).frame(width: 1_280, height: 800), named: "project-story-nomedia-mac")
         assertVariants(of: phone(storyPage(D.quietProjectPage)), named: "project-story-nomedia-phone")
+    }
+
+    // MARK: Project page
+
+    private func summary(_ page: TimelineProjectPage) -> some View {
+        ProjectSummaryView(page: page, image: page.media.flatMap { Self.images[$0.blobID] },
+                           pixelSize: page.media.flatMap { D.sizes[$0.blobID] },
+                           onOpenItem: { _ in }, onOpenSection: { _ in }) {
+            Button("Rename…") {}
+        }
+    }
+
+    private func assertPage(_ page: () -> some View, named name: String, file: StaticString = #file,
+                            testName: String = #function, line: UInt = #line) {
+        assertVariants(of: page().frame(width: 1_280, height: 800), named: "\(name)-mac", file: file, testName: testName,
+                       line: line)
+        assertVariants(of: phone(page()), named: "\(name)-phone", file: file, testName: testName, line: line)
+    }
+
+    /// The picture, the name, where it stands, what is next, what waits on
+    /// you, then the three rows that open the detail.
+    func testProjectSummary() {
+        assertPage({ summary(D.summaryPage) }, named: "project-summary")
+    }
+
+    /// Nothing but the name and the rows: no picture area, no sentence, no
+    /// "Next", no "Needs you"; a row with nothing behind it is dimmed.
+    func testProjectSummaryBare() {
+        assertPage({ summary(D.summaryPageBare) }, named: "project-summary-bare")
+    }
+
+    /// More waiting than the page lists: "and 2 more" under the rows. Its
+    /// very wide picture is shown whole.
+    func testProjectSummaryManyWaiting() {
+        assertPage({ summary(D.summaryPageManyWaiting) }, named: "project-summary-waiting")
+    }
+
+    /// Week by week: the card's sentence and picture when there was one,
+    /// then that week's milestones, one line each.
+    func testProjectHistory() {
+        assertPage({
+            ProjectHistoryView(weeks: D.history, now: D.now, images: Self.images, sizes: D.sizes, hasMore: true,
+                               onOpenMilestone: { _ in }, onLoadMore: {})
+        }, named: "project-history")
+    }
+
+    /// Open missions by name and status, then the finished ones under "Done".
+    func testProjectMissions() {
+        assertPage({
+            ProjectMissionsListView(open: D.docsProjectPage.missions, closed: D.docsProjectPage.closedMissions,
+                                    now: D.now, onOpenMission: { _ in })
+        }, named: "project-missions")
+    }
+
+    /// Pictures, a video and a document: three to a row, two on a phone.
+    func testProjectFiles() {
+        assertPage({
+            ProjectFilesGridView(files: D.docsProjectPage.files.rows, images: Self.images, now: D.now, hasMore: false,
+                                 onOpenFile: { _ in }, onLoadMore: {})
+        }, named: "project-files")
     }
 }

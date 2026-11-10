@@ -157,6 +157,69 @@ public enum TimelineFormat {
         count > 0 ? "And \(count) more." : nil
     }
 
+    // MARK: Project page
+
+    public static let nextHeading = "Next"
+    public static let needsYouHeading = "Needs you"
+    /// Over a project's finished missions.
+    public static let doneHeading = "Done"
+
+    /// The row that opens a section, and that section's own title.
+    public static func sectionTitle(_ section: ProjectSection) -> String {
+        switch section {
+        case .history: return "This week and before"
+        case .missions: return "Missions"
+        case .files: return "Files"
+        }
+    }
+
+    /// What a section's row says is behind it: "6 weeks", "3 open, 4 done", "7".
+    public static func sectionCount(_ section: ProjectSection, page: TimelineProjectPage) -> String {
+        switch section {
+        case .history: return weeksCount(page.weeks)
+        case .missions: return missionsCount(open: page.missionsOpen, done: page.missionsDone)
+        case .files: return "\(page.files)"
+        }
+    }
+
+    /// Nothing is behind the row, so it can't be opened.
+    public static func sectionIsEmpty(_ section: ProjectSection, page: TimelineProjectPage) -> Bool {
+        switch section {
+        case .history: return page.weeks <= 0
+        case .missions: return page.missionsOpen + page.missionsDone <= 0
+        case .files: return page.files <= 0
+        }
+    }
+
+    public static func weeksCount(_ count: Int) -> String {
+        "\(count) week\(count == 1 ? "" : "s")"
+    }
+
+    public static func missionsCount(open: Int, done: Int) -> String {
+        "\(open) open, \(done) done"
+    }
+
+    /// "and 2 more": the items waiting beyond the rows the page lists; nil
+    /// when they are all listed.
+    public static func moreWaiting(_ page: TimelineProjectPage) -> String? {
+        let more = page.needsYouTotal - page.needsYou.count
+        return more > 0 ? "and \(more) more" : nil
+    }
+
+    /// A week of a project's history: the week `now` falls in is this
+    /// week, the one that ended within the last seven days last week, any
+    /// other its dates ("19 – 25 Oct").
+    public static func historyWeekTitle(_ week: TimelineHistoryWeek, now: Date) -> String {
+        if now < week.end { return thisWeek }
+        if now < week.end.addingTimeInterval(7 * 86_400) { return lastWeek }
+        return shortRange(week.week) ?? week.week
+    }
+
+    /// "4 more": a week's milestones beyond the ones listed; nil when none.
+    public static func moreMilestones(_ count: Int) -> String? {
+        count > 0 ? "\(count) more" : nil
+    }
+
     // MARK: Project story
 
     public static let comingUpPrefix = "Coming up:"

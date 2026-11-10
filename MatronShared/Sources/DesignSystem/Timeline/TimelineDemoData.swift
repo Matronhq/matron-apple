@@ -131,10 +131,76 @@ public enum TimelineDemoData {
         FinishedProject(project: project(40 + index, row.0), finishedAt: daysAgo(row.1))
     }
 
+    // MARK: A project's page
+
+    /// "Docs site launch" as its page: a picture, where it stands, what is
+    /// next, one question waiting, and something behind each of its rows.
+    public static let summaryPage = TimelineProjectPage(
+        project: docs, isLive: true,
+        sentence: "Search is live on staging, pages load in under a second, and the getting-started guide is drafted.",
+        next: "A rehearsal on Monday, then the switch-over and launch on Wednesday 11 November.",
+        needsYou: [TimelineItemRef(id: "it_demo_11", num: 11, title: "Approve the getting-started copy")],
+        media: image("docs", "docs-search.png"), weeks: 6, missionsOpen: 3, missionsDone: 4, files: 7)
+
+    /// A project with only its name to show: no picture, no sentence, no
+    /// next step, nothing waiting, and no files.
+    public static let summaryPageBare = TimelineProjectPage(
+        project: audit, isLive: true, weeks: 2, missionsOpen: 1, missionsDone: 0, files: 0)
+
+    /// Five items wait and the page lists three; its picture is a very
+    /// wide strip.
+    public static let summaryPageManyWaiting = TimelineProjectPage(
+        project: themes, isLive: true,
+        sentence: "All fifteen themes now come in sepia and high contrast.",
+        next: "Once you pick the default, the themes go out in the next build.",
+        needsYou: [TimelineItemRef(id: "it_demo_51", num: 51, title: "Pick the default theme"),
+                   TimelineItemRef(id: "it_demo_52", num: 52, title: "Approve the high-contrast palette"),
+                   TimelineItemRef(id: "it_demo_53", num: 53, title: "Should sepia follow the system’s night mode?")],
+        needsYouTotal: 5, media: image("strip", "theme-strip.png"), weeks: 9, missionsOpen: 2, missionsDone: 11, files: 24)
+
+    /// Three weeks of "Docs site launch": this week with its card and more
+    /// milestones than it lists, last week with a sentence and no picture,
+    /// and an older week the project moved in without a card.
+    public static let history: [TimelineHistoryWeek] = [
+        historyWeek("2026-11-02", sentence: "Search is live on staging, and pages now load in under a second.",
+                    media: image("docs", "docs-search.png"),
+                    milestones: [(61, "Search page live on staging", day(11, 4, 11)),
+                                 (60, "Pages load in 0.8 s, down from 2.1 s", day(11, 3, 16)),
+                                 (59, "Launch checklist written", day(11, 2, 10))],
+                    more: 4),
+        historyWeek("2026-10-26", sentence: "The getting-started guide was drafted and the themes page filmed.",
+                    milestones: [(52, "Getting-started guide drafted", day(10, 30, 12)),
+                                 (51, "Themes walkthrough recorded", day(10, 29, 14))]),
+        historyWeek("2026-10-19",
+                    milestones: [(44, "Docs colour palette chosen", day(10, 21, 9))]),
+    ]
+
+    private static func historyWeek(_ key: String, sentence: String? = nil, media: TimelineMedia? = nil,
+                                    milestones: [(num: Int, title: String, at: Date)], more: Int = 0) -> TimelineHistoryWeek {
+        let bounds = monday(key)
+        return TimelineHistoryWeek(
+            week: key, start: bounds.start, end: bounds.end, sentence: sentence, media: media,
+            milestones: milestones.map {
+                ProjectMilestone(milestone: Milestone(id: "ms_demo_\($0.num)", missionID: "mi_demo_1", num: $0.num,
+                                                      kind: .progress, title: $0.title, convoID: "c_demo_1",
+                                                      seq: Int64($0.num), createdAt: $0.at),
+                                 missionNum: 71)
+            },
+            moreMilestones: more)
+    }
+
+    private static func mission(_ num: Int, _ title: String, status: String? = nil, closed summary: String? = nil,
+                                closedDaysAgo: Double? = nil) -> Mission {
+        Mission(id: "mi_demo_\(num)", num: num, state: closedDaysAgo == nil ? .open : .closed, title: title,
+                closeSummary: summary, originConvoID: "c_demo_\(num)", createdAt: daysAgo(30), updatedAt: daysAgo(1),
+                closedAt: closedDaysAgo.map(daysAgo), status: status, projectID: docs.id, projectNum: docs.num)
+    }
+
     // MARK: A project's story
 
-    /// "Docs site launch" as its own page: a status, three tasks coming
-    /// up, one question waiting, and pictures and a video over three weeks.
+    /// "Docs site launch" in full: a status, three tasks coming up, one
+    /// question waiting, open and finished missions, and pictures, a video
+    /// and a document over three weeks.
     public static let docsProjectPage: ProjectPageModel = {
         let tasks = [task(31, "A rehearsal on Monday at 07:00"), task(32, "The CDN switch-over"), task(33, "Launch"),
                      task(34, "Write the launch post")]
@@ -149,11 +215,23 @@ public enum TimelineDemoData {
             file("themes", "palette.png", day(10, 21, 9), source: .item(num: palette.num)),
             file("not-loaded-yet", "IMG_0412.png", day(10, 20, 17)),
         ]
+        let open = [
+            mission(71, "Search on the docs site", status: "Live on staging; the index rebuilds on every publish."),
+            mission(72, "Getting-started guide", status: "Drafted. The copy waits on your approval."),
+            mission(73, "Launch day"),
+        ]
+        let closed = [
+            mission(64, "Faster pages", closed: "Pages load in 0.8 s, down from 2.1 s.", closedDaysAgo: 3),
+            mission(58, "Docs colour palette", closed: "The palette was chosen and applied.", closedDaysAgo: 14),
+            mission(55, "Move the old pages across", closedDaysAgo: 20),
+        ]
         return ProjectPageModel(
             project: Project(id: docs.id, num: docs.num, title: docs.title,
                              body: "Ship a new docs site with search.",
                              status: "A new docs site with search, live on Wednesday 11 November. It’s on track: "
                                  + "search works, pages are fast, and the getting-started guide is drafted."),
+            missions: open.map { MissionRowModel(mission: $0, activity: .idle, lastActivity: daysAgo(1)) },
+            closedMissions: closed,
             needsYou: waiting, openItems: waiting + tasks + [palette],
             files: ProjectFeedPage(total: files.count, rows: files), hasFeed: true)
     }()
