@@ -46,12 +46,16 @@ final class MatronDarkAppearanceTests: XCTestCase {
         let host = UIHostingController(rootView: List {
             Section { Text("Row").frame(maxWidth: .infinity, minHeight: 60) }
         }.listStyle(.insetGrouped))
-        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 400))
+        // A window outside a scene renders black, whatever it holds.
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 390, height: 400)
         window.overrideUserInterfaceStyle = .dark
         window.rootViewController = host
         window.isHidden = false
         RunLoop.main.run(until: Date().addingTimeInterval(1))
         window.layoutIfNeeded()
+        defer { window.isHidden = true }
 
         let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
             window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
@@ -61,42 +65,6 @@ final class MatronDarkAppearanceTests: XCTestCase {
         assertClose(page, MatronDarkSurface.page)
         let rowY = try XCTUnwrap(firstY(in: image, x: 195, matching: MatronDarkSurface.card))
         XCTAssertGreaterThan(rowY, 0, "no row drawn in the card colour")
-    }
-
-    /// Temporary: prints what each background approach draws.
-    func test_diag() {
-        func render<V: View>(_ name: String, _ view: V) {
-            let host = UIHostingController(rootView: view)
-            let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 400))
-            window.overrideUserInterfaceStyle = .dark
-            window.rootViewController = host
-            window.isHidden = false
-            RunLoop.main.run(until: Date().addingTimeInterval(1))
-            window.layoutIfNeeded()
-            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
-                window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
-            }
-            var out: [String] = []
-            for y in stride(from: 20, to: 380, by: 40) {
-                if let p = pixel(in: image, x: 4, y: y), let q = pixel(in: image, x: 195, y: y) {
-                    out.append("\(y):\(Int(p.0)),\(Int(p.1)),\(Int(p.2))|\(Int(q.0)),\(Int(q.1)),\(Int(q.2))")
-                }
-            }
-            print("DIAG \(name) \(out.joined(separator: " "))")
-            window.isHidden = true
-        }
-        let row = Text("Row").frame(maxWidth: .infinity, minHeight: 60)
-        render("red", Color.red)
-        render("uicolor", Color(uiColor: .systemGroupedBackground))
-        render("list", List { Section { row } }.listStyle(.insetGrouped))
-        render("form", Form { Section { row } })
-        render("plainList", List { row }.listStyle(.plain))
-        render("scroll", ScrollView { row })
-        render("nav", NavigationStack { ScrollView { row } })
-        UICollectionView.appearance().backgroundColor = .green
-        render("listAppearance", List { Section { row } }.listStyle(.insetGrouped))
-        render("formAppearance", Form { Section { row } })
-        UICollectionView.appearance().backgroundColor = nil
     }
 
     private func pixel(in image: UIImage, x: Int, y: Int) -> (Double, Double, Double)? {
