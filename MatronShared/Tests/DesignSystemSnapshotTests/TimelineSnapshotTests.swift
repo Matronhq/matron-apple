@@ -63,6 +63,59 @@ final class TimelineSnapshotTests: XCTestCase {
         XCTAssertEqual(TimelineFormat.nothingFinished, "Nothing finished yet.")
     }
 
+    func testStoryTitleFallsBackToTheProjectName() {
+        let project = TimelineProjectRef(id: "pj_a", num: 1, title: "Docs site")
+        XCTAssertEqual(TimelineFormat.storyTitle(TimelineStory(project: project)), "Docs site")
+        XCTAssertEqual(TimelineFormat.storyTitle(TimelineStory(project: project, title: "Launch week")), "Launch week")
+        XCTAssertEqual(TimelineFormat.storyTitle(D.writtenStory), "Launch week is shaping up")
+    }
+
+    func testAlsoProjects() {
+        func story(_ titles: String...) -> TimelineStory {
+            let refs = titles.enumerated().map { TimelineProjectRef(id: "pj_\($0.offset)", num: $0.offset, title: $0.element) }
+            return TimelineStory(project: refs[0], projects: refs)
+        }
+        XCTAssertNil(TimelineFormat.alsoProjects(story("A")))
+        XCTAssertNil(TimelineFormat.alsoProjects(TimelineStory(project: D.noMediaStory.project)))
+        XCTAssertEqual(TimelineFormat.alsoProjects(story("A", "B")), "Also: B")
+        XCTAssertEqual(TimelineFormat.alsoProjects(story("A", "B", "C")), "Also: B and C")
+        XCTAssertEqual(TimelineFormat.alsoProjects(story("A", "B", "C", "D")), "Also: B, C and D")
+        XCTAssertEqual(TimelineFormat.alsoProjects(D.writtenStory), "Also: Themes")
+    }
+
+    func testNeedsYouIgnoresDoneItems() {
+        func item(_ n: Int, _ title: String, done: Bool) -> TimelineItemRef {
+            TimelineItemRef(id: "it_\(n)", num: n, title: title, done: done)
+        }
+        let project = D.noMediaStory.project
+        let mixed = TimelineStory(project: project, needsYou: [item(1, "Old one", done: true), item(2, "Open one", done: false)])
+        XCTAssertEqual(TimelineFormat.needsYou(mixed), "Open one", "no \"and 1 more\" for a done item")
+        let allDone = TimelineStory(project: project, needsYou: [item(1, "Old one", done: true)])
+        XCTAssertNil(TimelineFormat.needsYou(allDone))
+        let two = TimelineStory(project: project, needsYou: [item(1, "A", done: false), item(2, "B", done: false),
+                                                            item(3, "C", done: true)])
+        XCTAssertEqual(TimelineFormat.needsYou(two), "A, and 1 more")
+    }
+
+    func testSortedOutOnlyWhenNothingIsOpen() {
+        func item(_ n: Int, _ title: String, done: Bool) -> TimelineItemRef {
+            TimelineItemRef(id: "it_\(n)", num: n, title: title, done: done)
+        }
+        let project = D.noMediaStory.project
+        XCTAssertEqual(TimelineFormat.sortedOutPrefix, "Done: ")
+        XCTAssertNil(TimelineFormat.sortedOut(TimelineStory(project: project)))
+        XCTAssertNil(TimelineFormat.sortedOut(TimelineStory(project: project, needsYou: [item(1, "A", done: false)])))
+        XCTAssertNil(TimelineFormat.sortedOut(TimelineStory(project: project, needsYou: [item(1, "A", done: true),
+                                                                                         item(2, "B", done: false)])),
+                     "something still waits: the red line shows, not this one")
+        XCTAssertEqual(TimelineFormat.sortedOut(TimelineStory(project: project, needsYou: [item(1, "A", done: true)])), "A")
+        XCTAssertEqual(TimelineFormat.sortedOut(TimelineStory(project: project, needsYou: [item(1, "A", done: true),
+                                                                                           item(2, "B", done: true)])),
+                       "A, and 1 more")
+        XCTAssertEqual(TimelineFormat.sortedOut(D.sortedOutStory), "Approve it, or ask for more")
+        XCTAssertNil(TimelineFormat.sortedOut(D.writtenStory))
+    }
+
     /// A first title that ends a sentence starts a new one for the rest.
     func testNeedsYouAfterAQuestion() {
         func story(_ titles: String...) -> TimelineStory {
@@ -269,6 +322,23 @@ final class TimelineSnapshotTests: XCTestCase {
                        named: "timeline-card-nomedia-mac")
         assertVariants(of: TimelineStoryCard(story: D.noMediaStory, image: nil).frame(width: 358),
                        named: "timeline-card-nomedia-phone")
+    }
+
+    /// A written story: the Coordinator's title, the other projects under
+    /// it, and the red line for what is still open.
+    func testStoryCardWritten() {
+        assertVariants(of: TimelineStoryCard(story: D.writtenStory, image: nil).frame(width: 448),
+                       named: "timeline-card-written-mac")
+        assertVariants(of: TimelineStoryCard(story: D.writtenStory, image: nil).frame(width: 358),
+                       named: "timeline-card-written-phone")
+    }
+
+    /// Everything the story named is sorted out: a quiet "Done:" line.
+    func testStoryCardSortedOut() {
+        assertVariants(of: TimelineStoryCard(story: D.sortedOutStory, image: nil).frame(width: 448),
+                       named: "timeline-card-done-mac")
+        assertVariants(of: TimelineStoryCard(story: D.sortedOutStory, image: nil).frame(width: 358),
+                       named: "timeline-card-done-phone")
     }
 
     /// A video has no poster frame yet: a dark panel with ▶ and its name.

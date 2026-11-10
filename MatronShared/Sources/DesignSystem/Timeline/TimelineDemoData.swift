@@ -77,6 +77,21 @@ public enum TimelineDemoData {
         project: audit, sentence: "The report was written and two fixes went in.",
         next: "the rest of the fixes, planned for the next release.")
 
+    /// A Coordinator-written story: its own title, two projects, and one
+    /// open question.
+    public static let writtenStory = TimelineStory(
+        project: docs, title: "Launch week is shaping up", projects: [docs, themes],
+        sentence: "Search is live on staging, and the new themes are ready for it.",
+        next: "a rehearsal on Monday, then launch on Wednesday.",
+        needsYou: [item(11, "Approve the getting-started copy")])
+
+    /// A story whose only named item has since been answered: a quiet
+    /// "Done:" line instead of the red one.
+    public static let sortedOutStory = TimelineStory(
+        project: cropper, sentence: "Smart crop now handles rounded corners.",
+        next: "nothing, unless you want changes.",
+        needsYou: [TimelineItemRef(id: "it_16", num: 16, title: "Approve it, or ask for more", done: true)])
+
     // MARK: Lists
 
     public static let quiet = StalledList(total: 5, rows: [

@@ -31,17 +31,23 @@ public struct TimelineProjectRef: Equatable, Hashable, Sendable {
     }
 }
 
-/// An open item awaiting the user, on a week's story.
+/// An item a week's story names as needing the user: open (waiting), or
+/// `done` (named by the story, since sorted out).
 public struct TimelineItemRef: Equatable, Hashable, Sendable {
     public let id: String
     public let num: Int
     public let title: String
+    /// The Coordinator's story named it, and it no longer waits on the
+    /// user (answered, or closed). False when the journal doesn't say.
+    public let done: Bool
 
-    public init(id: String, num: Int, title: String) { self.id = id; self.num = num; self.title = title }
+    public init(id: String, num: Int, title: String, done: Bool = false) {
+        self.id = id; self.num = num; self.title = title; self.done = done
+    }
 
     public init?(json: [String: Any]) {
         guard let id = json["id"] as? String, !id.isEmpty, let num = (json["num"] as? NSNumber)?.intValue else { return nil }
-        self.init(id: id, num: num, title: json["title"] as? String ?? "")
+        self.init(id: id, num: num, title: json["title"] as? String ?? "", done: json["done"] as? Bool ?? false)
     }
 }
 
@@ -86,9 +92,17 @@ public struct TimelineWeekSummary: Equatable, Hashable, Sendable {
     }
 }
 
-/// A project that moved in a week.
+/// A story on a week's page: the Coordinator's written story when the
+/// journal has one, else a project that moved.
 public struct TimelineStory: Equatable, Hashable, Sendable {
+    /// The main project (the story's first).
     public let project: TimelineProjectRef
+    /// The Coordinator's title for the story; nil when none was written
+    /// (the project's name stands in).
+    public let title: String?
+    /// Every project the story covers, the main one first. Never empty:
+    /// a journal that sends none gives `[project]`.
+    public let projects: [TimelineProjectRef]
     /// The newest milestone title that week; nil when the project moved
     /// without one.
     public let sentence: String?
@@ -96,15 +110,23 @@ public struct TimelineStory: Equatable, Hashable, Sendable {
     public let needsYou: [TimelineItemRef]
     public let media: TimelineMedia?
 
-    public init(project: TimelineProjectRef, sentence: String? = nil, next: String? = nil,
+    /// `projects` nil (or empty) means just `project`.
+    public init(project: TimelineProjectRef, title: String? = nil, projects: [TimelineProjectRef]? = nil,
+                sentence: String? = nil, next: String? = nil,
                 needsYou: [TimelineItemRef] = [], media: TimelineMedia? = nil) {
-        self.project = project; self.sentence = sentence; self.next = next
+        self.project = project; self.title = title
+        // The main project always leads, once, whatever the decoded list held.
+        self.projects = [project] + (projects ?? []).filter { $0.id != project.id }
+        self.sentence = sentence; self.next = next
         self.needsYou = needsYou; self.media = media
     }
 
     public init?(json: [String: Any]) {
         guard let project = TimelineProjectRef(json: json["project"] as? [String: Any]) else { return nil }
-        self.init(project: project, sentence: json["sentence"] as? String, next: json["next"] as? String,
+        let title = (json["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.init(project: project, title: title?.isEmpty == false ? title : nil,
+                  projects: (json["projects"] as? [[String: Any]])?.compactMap { TimelineProjectRef(json: $0) },
+                  sentence: json["sentence"] as? String, next: json["next"] as? String,
                   needsYou: (json["needs_you"] as? [[String: Any]] ?? []).compactMap(TimelineItemRef.init(json:)),
                   media: TimelineMedia(json: json["media"] as? [String: Any]))
     }

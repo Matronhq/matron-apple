@@ -2,10 +2,12 @@ import SwiftUI
 import MatronModels
 
 /// One story on a week page: its picture or video (no media area when
-/// there is none), the project's name, one sentence on what was done,
-/// "Next: …", and a red "Needs you: …" line only when something waits.
-/// The page makes the card open its project; the needs-you line opens its
-/// item.
+/// there is none), the story's title (the Coordinator's, else the project's
+/// name) with "Also: …" under it when the story spans projects, one
+/// sentence on what was done, "Next: …", and a red "Needs you: …" line only
+/// when something waits. When nothing waits any more but the story named
+/// items that did, a quiet "Done: …" line stands in. The page makes the
+/// card open its project; the needs-you and done lines open their item.
 public struct TimelineStoryCard: View {
     let story: TimelineStory
     let image: Image?
@@ -46,7 +48,11 @@ public struct TimelineStoryCard: View {
 
     private var words: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(story.project.title).font(Self.titleFont).lineLimit(2)
+            Text(TimelineFormat.storyTitle(story)).font(Self.titleFont).lineLimit(2)
+            if let also = TimelineFormat.alsoProjects(story) {
+                Text(also).font(Self.noteFont).foregroundStyle(.secondary).lineLimit(1)
+                    .accessibilityIdentifier("timeline.story.\(story.project.num).also")
+            }
             Text(MissionsDashboardFormat.statusPreviewText(TimelineFormat.sentence(story)))
                 .font(Self.sentenceFont).lineSpacing(3)
                 .fixedSize(horizontal: false, vertical: true)
@@ -57,12 +63,13 @@ public struct TimelineStoryCard: View {
                     .padding(.top, 2)
             }
             needsYou
+            sortedOut
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder private var needsYou: some View {
-        if let line = TimelineFormat.needsYou(story), let first = story.needsYou.first {
+        if let line = TimelineFormat.needsYou(story), let first = story.needsYou.first(where: { !$0.done }) {
             Button { onOpenItem?(first.id) } label: {
                 HStack(alignment: .firstTextBaseline, spacing: 7) {
                     Circle().fill(Color.red).frame(width: 9, height: 9)
@@ -77,6 +84,25 @@ public struct TimelineStoryCard: View {
             .buttonStyle(.plain)
             .padding(.top, 2)
             .accessibilityIdentifier("timeline.story.\(story.project.num).needsYou")
+        }
+    }
+
+    @ViewBuilder private var sortedOut: some View {
+        if let line = TimelineFormat.sortedOut(story), let first = story.needsYou.first(where: \.done) {
+            Button { onOpenItem?(first.id) } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 7) {
+                    Image(systemName: "checkmark.circle")
+                        .imageScale(.small)
+                    Text(TimelineFormat.sortedOutPrefix + line)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .font(Self.noteFont)
+                .foregroundStyle(.secondary)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 2)
+            .accessibilityIdentifier("timeline.story.\(story.project.num).done")
         }
     }
 }
