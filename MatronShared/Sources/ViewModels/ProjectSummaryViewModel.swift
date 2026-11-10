@@ -14,6 +14,8 @@ import MatronJournal
 ///
 /// A project merged into another answers with the one it became:
 /// `redirectedTo` names it and every later read asks for it.
+///
+/// A read that was called off sets no `error`: nothing failed.
 @MainActor @Observable
 public final class ProjectSummaryViewModel {
     /// The last page that loaded: a failed read keeps it on screen.
@@ -74,7 +76,7 @@ public final class ProjectSummaryViewModel {
             history = loaded.weeks
             historyNextBefore = loaded.nextBefore
         } catch {
-            if generation == historyGeneration { self.error = error.localizedDescription }
+            if generation == historyGeneration, !error.isReadCancellation { self.error = error.localizedDescription }
         }
     }
 
@@ -89,7 +91,7 @@ public final class ProjectSummaryViewModel {
             history += loaded.weeks
             historyNextBefore = loaded.nextBefore
         } catch {
-            if generation == historyGeneration { self.error = error.localizedDescription }
+            if generation == historyGeneration, !error.isReadCancellation { self.error = error.localizedDescription }
         }
     }
 
@@ -111,7 +113,7 @@ public final class ProjectSummaryViewModel {
         } catch JournalAPIError.notFound {
             await settleNotFound(generation)
         } catch {
-            if generation == pageGeneration { self.error = error.localizedDescription }
+            if generation == pageGeneration, !error.isReadCancellation { self.error = error.localizedDescription }
         }
     }
 
@@ -128,7 +130,7 @@ public final class ProjectSummaryViewModel {
             isUnsupported = true
             isMissing = false
         } catch {
-            if generation == pageGeneration { self.error = error.localizedDescription }
+            if generation == pageGeneration, !error.isReadCancellation { self.error = error.localizedDescription }
         }
     }
 }

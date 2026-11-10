@@ -159,7 +159,7 @@ public final class TimelineViewModel {
             guard generation == projectsGeneration else { return }
             allProjects = TimelineProjectList(total: page.total, rows: shown.rows + page.rows, nextBefore: page.nextBefore)
         } catch {
-            if generation == projectsGeneration { self.error = error.localizedDescription }
+            if generation == projectsGeneration, !error.isReadCancellation { self.error = error.localizedDescription }
         }
     }
 
@@ -242,7 +242,8 @@ public final class TimelineViewModel {
             if case .week = target {} else { fresh.insert(target) }
         } catch {
             if case .week = target, generation != weekGeneration { return }
-            if place == target { self.error = error.localizedDescription }
+            // A read that was called off is not a failure.
+            if place == target, !error.isReadCancellation { self.error = error.localizedDescription }
         }
     }
 

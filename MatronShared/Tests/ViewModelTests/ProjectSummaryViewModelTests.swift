@@ -203,6 +203,57 @@ final class ProjectSummaryViewModelTests: XCTestCase {
         XCTAssertTrue(vm.hasMoreHistory)
     }
 
+    /// A read called off (the screen left, a newer read began) is not a
+    /// failure to tell the reader about.
+    func testACancelledPageReadSetsNoError() async {
+        let (vm, fake) = make()
+        await vm.start()
+        fake.page = .failure(JournalAPIError.transport("cancelled"))
+        await vm.refresh()
+        XCTAssertNil(vm.error)
+        XCTAssertEqual(vm.page, page(), "the page stays")
+        fake.page = .failure(CancellationError())
+        await vm.refresh()
+        XCTAssertNil(vm.error)
+    }
+
+    func testACancelledProbeSetsNoError() async {
+        let (vm, fake) = make()
+        fake.page = .failure(JournalAPIError.notFound)
+        fake.list = .failure(JournalAPIError.transport("cancelled"))
+        await vm.start()
+        XCTAssertNil(vm.error)
+        XCTAssertFalse(vm.isMissing, "nothing was learnt")
+        XCTAssertFalse(vm.isUnsupported)
+    }
+
+    func testACancelledHistoryReadSetsNoError() async {
+        let (vm, fake) = make()
+        fake.historyPages[nil] = ([week("2026-11-02")], "2026-11-02")
+        await vm.start()
+        await vm.loadHistory()
+        fake.historyError = JournalAPIError.transport("cancelled")
+        await vm.loadMoreHistory()
+        XCTAssertNil(vm.error)
+        await vm.loadHistory()
+        XCTAssertNil(vm.error)
+        XCTAssertEqual(vm.history.map(\.week), ["2026-11-02"], "what loaded stays")
+        XCTAssertTrue(vm.hasMoreHistory)
+    }
+
+    /// A read that fails while its task is cancelled says nothing either,
+    /// whatever the error.
+    func testAReadFailingInACancelledTaskSetsNoError() async {
+        let (vm, fake) = make()
+        fake.page = .failure(JournalAPIError.forbidden)
+        let task = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            await vm.start()
+        }
+        await task.value
+        XCTAssertNil(vm.error)
+    }
+
     func testAProjectGoneOnRefreshIsMissing() async {
         let (vm, fake) = make()
         await vm.start()

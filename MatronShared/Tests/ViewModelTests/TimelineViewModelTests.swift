@@ -23,6 +23,7 @@ private final class FakeTimeline: TimelineProviding, @unchecked Sendable {
         var longCalls = 0
         var finishedCalls: [String?] = []
         var projectPages: [String?: TimelineProjectList] = [:]
+        var projectsError: Error?
         var projectsCalls: [String?] = []
         var gated: Set<String> = []
         var held: [String: CheckedContinuation<Void, Never>] = [:]
@@ -57,6 +58,8 @@ private final class FakeTimeline: TimelineProviding, @unchecked Sendable {
     var projectPages: [String?: TimelineProjectList] {
         get { read(\.projectPages) } set { write { $0.projectPages = newValue } }
     }
+    /// What every all-projects read throws, when set.
+    var projectsError: Error? { get { read(\.projectsError) } set { write { $0.projectsError = newValue } } }
     var projectsCalls: [String?] { read(\.projectsCalls) }
 
     // MARK: Gates
@@ -128,11 +131,12 @@ private final class FakeTimeline: TimelineProviding, @unchecked Sendable {
     }
 
     func timelineProjects(before: String?, limit: Int?) async throws -> TimelineProjectList {
-        let page = lock.withLock { () -> TimelineProjectList? in
+        let (page, failure) = lock.withLock { () -> (TimelineProjectList?, Error?) in
             state.projectsCalls.append(before)
-            return state.projectPages[before]
+            return (state.projectPages[before], state.projectsError)
         }
         await holdIfGated("projects:\(before ?? "nil")")
+        if let failure { throw failure }
         guard let page else { throw JournalAPIError.notFound }
         return page
     }
@@ -587,6 +591,25 @@ final class TimelineViewModelTests: XCTestCase {
         XCTAssertNil(vm.allProjects)
         XCTAssertNotNil(vm.error)
         XCTAssertEqual(vm.content(for: .projects), .failed)
+    }
+
+    /// A read called off is not a failure to tell the reader about.
+    func testACancelledAllProjectsReadSetsNoError() async {
+        let (vm, fake, _) = make()
+        scriptProjects(fake)
+        await vm.start()
+        fake.projectsError = JournalAPIError.transport("cancelled")
+        await vm.select(.projects)
+        XCTAssertNil(vm.error)
+        XCTAssertEqual(vm.content(for: .projects), .loading)
+        fake.projectsError = nil
+        await vm.select(.week("2026-11-02"))
+        await vm.select(.projects)
+        XCTAssertEqual(vm.allProjects?.rows.map(\.project.num), [1, 2], "the next visit reads it")
+        fake.projectsError = JournalAPIError.transport("cancelled")
+        await vm.loadMoreProjects()
+        XCTAssertNil(vm.error)
+        XCTAssertTrue(vm.hasMoreProjects, "the page can be asked for again")
     }
 
     func testPagingAllProjectsDuringAReloadIsRefused() async {
