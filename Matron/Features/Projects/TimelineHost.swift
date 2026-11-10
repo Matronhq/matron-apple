@@ -71,9 +71,11 @@ extension View {
 /// one of the page's three sections, pushed one level down. Where the
 /// project stands and its history come from a `ProjectSummaryViewModel`;
 /// its missions, its files and the "···" actions from a
-/// `ProjectDetailViewModel`. Both live as long as the pushed screen. On a
-/// journal without the project-page route it shows the project page that
-/// journal has (`ProjectDetailHost`).
+/// `ProjectDetailViewModel`. Both live as long as the pushed screen. A
+/// project merged into another takes its place on the stack, so every
+/// part of the page is the surviving project's. On a journal without the
+/// project-page route it shows the project page that journal has
+/// (`ProjectDetailHost`).
 struct TimelineStoryHost: View {
     let projectID: String
     /// The section this screen shows; nil is the page itself.
@@ -90,11 +92,13 @@ struct TimelineStoryHost: View {
     /// The shell's timeline: its lists name the project too, so a "···"
     /// write reads them again.
     @Environment(TimelineHostState.self) private var timeline: TimelineHostState?
+    /// The stack this screen is on: a merged project's entries become the
+    /// surviving project's.
+    @Environment(\.chatNavigationPath) private var path
     @State private var summary: ProjectSummaryViewModel?
     @State private var detail: ProjectDetailViewModel?
-    /// The route id the view models were built for (a merge changes the
-    /// page's project, not this), so a reused host never keeps another
-    /// project's.
+    /// The route id the view models were built for, so a reused host
+    /// never keeps another project's.
     @State private var loadedProjectID: String?
     /// The first read of the page failed, so there is nothing to show.
     @State private var loadFailed = false
@@ -142,6 +146,18 @@ struct TimelineStoryHost: View {
         return loadFailed ? .loadFailed : .loading
     }
 
+    /// The project this page moved to, or nil while it is where it was.
+    /// Either read can say the project was merged into another: the page
+    /// read names the one it became (`summaryRedirect`), and the project's
+    /// own view model follows it (`detailProjectID`). The journal's answer
+    /// comes first. Reads built for another project (`readsBuiltFor`, on a
+    /// screen reused before its own begin) say nothing about this page.
+    static func redirectTarget(pageProjectID: String, readsBuiltFor: String?, summaryRedirect: String?,
+                               detailProjectID: String?) -> String? {
+        guard readsBuiltFor == pageProjectID else { return nil }
+        return [summaryRedirect, detailProjectID].compactMap { $0 }.first { $0 != pageProjectID }
+    }
+
     /// How a file of the Files section opens: a picture in the image
     /// viewer, a video in the player, anything else where it was posted.
     enum FileOpening: Equatable { case picture, video, source }
@@ -172,6 +188,18 @@ struct TimelineStoryHost: View {
         // the view models are kept, and the page alone is read again.
         .task(id: projectID) { await load() }
         .onDisappear { detail?.stop() }
+        // A merge moved the project: the surviving project's page takes
+        // this one's place, whichever read says so first.
+        .onChange(of: redirectTarget) { _, target in
+            guard let target, let path else { return }
+            let moved = ProjectPageTarget.stack(path.wrappedValue, following: projectID, to: target)
+            if moved != path.wrappedValue { path.wrappedValue = moved }
+        }
+    }
+
+    private var redirectTarget: String? {
+        Self.redirectTarget(pageProjectID: projectID, readsBuiltFor: loadedProjectID,
+                            summaryRedirect: summary?.redirectedTo, detailProjectID: detail?.projectID)
     }
 
     private var content: Content {

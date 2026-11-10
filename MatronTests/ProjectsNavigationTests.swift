@@ -170,6 +170,45 @@ final class ProjectsNavigationTests: XCTestCase {
         XCTAssertEqual(nav.missionsPath, ["story/pj_1", "story-section/missions/pj_1", "mission/ms_1", "story/pj_2"])
     }
 
+    /// A project merged into another while its page is open: the page's
+    /// entry, and any section of it above, become the surviving project's,
+    /// in place. Back still leads where it led, and nothing else moves.
+    func testAMergedProjectsPageBecomesTheSurvivingProjects() {
+        typealias Target = ProjectPageTarget
+        XCTAssertEqual(Target.stack(["story/pj_1"], following: "pj_1", to: "pj_2"), ["story/pj_2"])
+        XCTAssertEqual(Target.stack(["timeline/quiet", "story/pj_1", "story-section/history/pj_1"],
+                                    following: "pj_1", to: "pj_2"),
+                       ["timeline/quiet", "story/pj_2", "story-section/history/pj_2"], "the section follows its page")
+        XCTAssertEqual(Target.stack(["c1", "project/pj_1"], following: "pj_1", to: "pj_2"), ["c1", "project/pj_2"],
+                       "a page pushed before the journal answered is the same page")
+        XCTAssertEqual(Target.stack(["story/pj_3", "mission/ms_1", "story/pj_1", "mission/ms_2"],
+                                    following: "pj_1", to: "pj_2"),
+                       ["story/pj_3", "mission/ms_1", "story/pj_2", "mission/ms_2"], "other pages stay as they are")
+        XCTAssertEqual(Target.stack(["story/pj_2", "story/pj_1"], following: "pj_1", to: "pj_2"), ["story/pj_2"],
+                       "never two copies of one page in a row")
+        XCTAssertEqual(Target.stack(["story/pj_2", "mission/ms_1", "story/pj_1"], following: "pj_1", to: "pj_2"),
+                       ["story/pj_2", "mission/ms_1", "story/pj_2"])
+        let untouched = ["story/pj_3", "story-section/files/pj_3", "mission/pj_1", "pj_1"]
+        XCTAssertEqual(Target.stack(untouched, following: "pj_1", to: "pj_2"), untouched,
+                       "only a project's page or section names it")
+        XCTAssertEqual(Target.stack(["story/pj_1"], following: "pj_1", to: "pj_1"), ["story/pj_1"])
+    }
+
+    /// The same through the shell's own stack: said twice (each of the
+    /// page's two reads can say it), the second changes nothing.
+    func testFollowingAMergeOnTheProjectsStackIsSaidOnce() {
+        let nav = AppShellNavigation()
+        nav.projectsOpenAsStories = true
+        nav.tab = .missions
+        nav.pushProject("pj_1")
+        nav.setPath(ProjectPageTarget.stack(nav.missionsPath, following: "pj_1", to: "pj_2"), on: .missions)
+        XCTAssertEqual(nav.missionsPath, ["story/pj_2"])
+        nav.setPath(ProjectPageTarget.stack(nav.missionsPath, following: "pj_1", to: "pj_2"), on: .missions)
+        XCTAssertEqual(nav.missionsPath, ["story/pj_2"])
+        nav.pushProject("pj_2")
+        XCTAssertEqual(nav.missionsPath, ["story/pj_2"], "the surviving project is the page on the stack")
+    }
+
     /// Switch off, or a journal without the timeline: today's page, as before.
     func testWithTheTimelineHiddenAProjectOpensTodaysPage() {
         let nav = AppShellNavigation()

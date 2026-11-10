@@ -61,6 +61,35 @@ struct ProjectPageTarget: Equatable {
         }
     }
 
+    /// `stack` once the project `from` was merged into `to`: each page or
+    /// section of `from` becomes the same page or section of `to`, where
+    /// it sits, so Back leads where it led. Two copies of one page never
+    /// end up in a row.
+    static func stack(_ stack: [String], following from: String, to: String) -> [String] {
+        guard from != to else { return stack }
+        var result: [String] = []
+        for entry in stack {
+            let moved = Self.entry(entry, following: from, to: to)
+            if moved != entry, result.last == moved { continue }
+            result.append(moved)
+        }
+        return result
+    }
+
+    /// `entry` naming `to` in place of `from`, by the route it already is.
+    private static func entry(_ entry: String, following from: String, to: String) -> String {
+        if let route = ProjectSectionRoute(pathValue: entry) {
+            return route.projectID == from ? ProjectSectionRoute(projectID: to, section: route.section).pathValue : entry
+        }
+        if let route = ProjectStoryRoute(pathValue: entry) {
+            return route.id == from ? ProjectStoryRoute(id: to).pathValue : entry
+        }
+        if let route = ProjectRoute(pathValue: entry) {
+            return route.id == from ? ProjectRoute(id: to).pathValue : entry
+        }
+        return entry
+    }
+
     /// What an entry shows.
     enum Page: Equatable {
         /// The project's page while the timeline is shown, or a section of it.

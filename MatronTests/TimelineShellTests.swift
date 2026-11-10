@@ -175,6 +175,32 @@ final class TimelineShellTests: XCTestCase {
         }
     }
 
+    /// Where a merged project's page goes: either of its two reads can
+    /// say the project moved, and both lead to the one surviving project.
+    /// Reads made for another project say nothing about this page.
+    func testEitherReadOfAMergedProjectLeadsToTheSurvivor() {
+        typealias Host = TimelineStoryHost
+        XCTAssertNil(Host.redirectTarget(pageProjectID: "pj_1", readsBuiltFor: "pj_1", summaryRedirect: nil,
+                                         detailProjectID: "pj_1"))
+        XCTAssertNil(Host.redirectTarget(pageProjectID: "pj_1", readsBuiltFor: "pj_1", summaryRedirect: nil,
+                                         detailProjectID: nil), "nothing read yet")
+        XCTAssertEqual(Host.redirectTarget(pageProjectID: "pj_1", readsBuiltFor: "pj_1", summaryRedirect: "pj_2",
+                                           detailProjectID: "pj_1"), "pj_2", "the page read says so")
+        XCTAssertEqual(Host.redirectTarget(pageProjectID: "pj_1", readsBuiltFor: "pj_1", summaryRedirect: nil,
+                                           detailProjectID: "pj_2"), "pj_2", "the project's own read says so")
+        XCTAssertEqual(Host.redirectTarget(pageProjectID: "pj_1", readsBuiltFor: "pj_1", summaryRedirect: "pj_2",
+                                           detailProjectID: "pj_2"), "pj_2")
+        XCTAssertEqual(Host.redirectTarget(pageProjectID: "pj_1", readsBuiltFor: "pj_1", summaryRedirect: "pj_3",
+                                           detailProjectID: "pj_2"), "pj_3", "the journal's answer first")
+        XCTAssertNil(Host.redirectTarget(pageProjectID: "pj_2", readsBuiltFor: "pj_2", summaryRedirect: "pj_2",
+                                         detailProjectID: "pj_2"), "already there")
+        // A screen reused for another project, before its own reads begin.
+        XCTAssertNil(Host.redirectTarget(pageProjectID: "pj_5", readsBuiltFor: "pj_1", summaryRedirect: "pj_2",
+                                         detailProjectID: "pj_2"))
+        XCTAssertNil(Host.redirectTarget(pageProjectID: "pj_5", readsBuiltFor: nil, summaryRedirect: nil,
+                                         detailProjectID: "pj_1"))
+    }
+
     /// What the new page draws: a journal without the project-page route
     /// shows the project page it has, before anything else.
     func testAJournalWithoutThePageRouteFallsBackToTodaysPage() {
