@@ -93,6 +93,50 @@ final class TimelineAPITests: XCTestCase {
         XCTAssertEqual(week.also, [TimelineProjectRef(id: "pj_c", num: 11, title: "Taxes")])
     }
 
+    private func week(stories: [[String: Any]]) throws -> TimelineWeek {
+        try JournalAPI.decodeTimelineWeek([
+            "week": "2026-11-02", "start": 1, "end": 2, "final": false, "stories": stories, "also": [],
+        ])
+    }
+
+    func testAWrittenStoryDecodesTitleProjectsAndDoneItems() throws {
+        let shed = project(), bike = project("pj_b", num: 9, title: "Bike")
+        let story = try XCTUnwrap(week(stories: [[
+            "project": shed, "title": "  Shed and bike weekend ", "projects": [shed, ["num": 3, "title": "No id"], bike],
+            "sentence": "x", "next": NSNull(),
+            "needs_you": [["id": "it_1", "num": 41, "title": "Pick a colour", "done": false],
+                          ["id": "it_2", "num": 42, "title": "Order brakes", "done": true]],
+            "media": NSNull(),
+        ]]).stories.first)
+        XCTAssertEqual(story.title, "Shed and bike weekend")
+        XCTAssertEqual(story.project, TimelineProjectRef(id: "pj_a", num: 7, title: "Garden shed"))
+        XCTAssertEqual(story.projects, [TimelineProjectRef(id: "pj_a", num: 7, title: "Garden shed"),
+                                        TimelineProjectRef(id: "pj_b", num: 9, title: "Bike")],
+                       "a project row without an id is dropped")
+        XCTAssertEqual(story.needsYou.map(\.done), [false, true])
+    }
+
+    func testAStoryFromAnOlderJournalHasNoTitleOneProjectAndNothingDone() throws {
+        let story = try XCTUnwrap(week(stories: [[
+            "project": project(), "sentence": "x", "next": NSNull(),
+            "needs_you": [["id": "it_1", "num": 41, "title": "Pick a colour"]], "media": NSNull(),
+        ]]).stories.first)
+        XCTAssertNil(story.title)
+        XCTAssertEqual(story.projects, [story.project])
+        XCTAssertEqual(story.needsYou.map(\.done), [false])
+    }
+
+    func testEmptyOrBlankWrittenFieldsFallBack() throws {
+        let story = try XCTUnwrap(week(stories: [[
+            "project": project(), "title": "   ", "projects": [], "needs_you": [],
+        ]]).stories.first)
+        XCTAssertNil(story.title, "a blank title is no title")
+        XCTAssertEqual(story.projects, [story.project], "an empty projects list is just the project")
+        let nulls = try XCTUnwrap(week(stories: [["project": project(), "title": NSNull(), "projects": NSNull()]]).stories.first)
+        XCTAssertNil(nulls.title)
+        XCTAssertEqual(nulls.projects, [nulls.project])
+    }
+
     func testAFinalWeekWithALedeDecodes() throws {
         let week = try JournalAPI.decodeTimelineWeek([
             "week": "2026-10-26", "start": 1, "end": 2, "final": true, "lede": "A big week.",

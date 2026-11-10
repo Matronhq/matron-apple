@@ -21,6 +21,8 @@ public enum TimelineFormat {
     /// Replaces `askAction` on a row once the Ask has gone.
     public static let askedAction = "Asked the Coordinator"
     public static let needsYouPrefix = "Needs you: "
+    /// Leads the line for items a story named that are no longer waiting.
+    public static let sortedOutPrefix = "Done: "
     /// A story the journal gave no sentence (the project moved without a milestone).
     public static let movedSentence = "Moved this week."
     public static let chartCaption = "last 7 weeks"
@@ -89,12 +91,40 @@ public enum TimelineFormat {
         return sentence
     }
 
-    /// What follows "Needs you: ": the first item waiting, and how many
-    /// more. A title that ends its own sentence ("…uploads?") is followed
-    /// by a new one ("And 1 more"), not a comma.
+    /// The card's title: the Coordinator's, else the main project's name.
+    public static func storyTitle(_ story: TimelineStory) -> String {
+        story.title ?? story.project.title
+    }
+
+    /// "Also: B and C": the story's other projects; nil for a story about
+    /// one project.
+    public static func alsoProjects(_ story: TimelineStory) -> String? {
+        let others = story.projects.dropFirst().map(\.title)
+        guard let last = others.last else { return nil }
+        let head = others.dropLast().joined(separator: ", ")
+        return "Also: " + (head.isEmpty ? last : "\(head) and \(last)")
+    }
+
+    /// What follows "Needs you: ": the first item still waiting, and how
+    /// many more. Items already done don't count.
     public static func needsYou(_ story: TimelineStory) -> String? {
-        guard let first = story.needsYou.first else { return nil }
-        let more = story.needsYou.count - 1
+        titles(story.needsYou.filter { !$0.done })
+    }
+
+    /// What follows "Done: ": when nothing waits any more but the story
+    /// named items that did, the first of them and how many more; nil
+    /// while anything is still open.
+    public static func sortedOut(_ story: TimelineStory) -> String? {
+        guard !story.needsYou.contains(where: { !$0.done }) else { return nil }
+        return titles(story.needsYou.filter(\.done))
+    }
+
+    /// The first title, and how many more. A title that ends its own
+    /// sentence ("…uploads?") is followed by a new one ("And 1 more"),
+    /// not a comma.
+    private static func titles(_ items: [TimelineItemRef]) -> String? {
+        guard let first = items.first else { return nil }
+        let more = items.count - 1
         guard more > 0 else { return first.title }
         if let last = first.title.last, "?!.".contains(last) { return "\(first.title) And \(more) more" }
         return "\(first.title), and \(more) more"
