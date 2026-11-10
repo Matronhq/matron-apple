@@ -115,7 +115,8 @@ public struct TimelineStory: Equatable, Hashable, Sendable {
                 sentence: String? = nil, next: String? = nil,
                 needsYou: [TimelineItemRef] = [], media: TimelineMedia? = nil) {
         self.project = project; self.title = title
-        self.projects = projects.flatMap { $0.isEmpty ? nil : $0 } ?? [project]
+        // The main project always leads, once, whatever the decoded list held.
+        self.projects = [project] + (projects ?? []).filter { $0.id != project.id }
         self.sentence = sentence; self.next = next
         self.needsYou = needsYou; self.media = media
     }

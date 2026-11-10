@@ -116,6 +116,14 @@ final class TimelineAPITests: XCTestCase {
         XCTAssertEqual(story.needsYou.map(\.done), [false, true])
     }
 
+    func testTheMainProjectLeadsOnceEvenWhenTheListStartsElsewhere() throws {
+        let shed = project(), bike = project("pj_b", num: 9, title: "Bike")
+        let story = try XCTUnwrap(week(stories: [[
+            "project": shed, "projects": [["num": 3, "title": "No id"], bike, shed], "sentence": "x",
+        ]]).stories.first)
+        XCTAssertEqual(story.projects.map(\.id), ["pj_a", "pj_b"])
+    }
+
     func testAStoryFromAnOlderJournalHasNoTitleOneProjectAndNothingDone() throws {
         let story = try XCTUnwrap(week(stories: [[
             "project": project(), "sentence": "x", "next": NSNull(),
