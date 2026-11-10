@@ -148,7 +148,8 @@ struct MacTimelineColumn: View {
 
     var body: some View {
         if let viewModel = state.viewModel {
-            TimelineSidebarView(weeks: viewModel.weeks, projectsCount: viewModel.allProjects?.total,
+            TimelineSidebarView(weeks: viewModel.weeks, showsProjects: viewModel.showsAllProjects,
+                                projectsCount: viewModel.allProjects?.total,
                                 quietCount: viewModel.quiet?.total,
                                 longCount: viewModel.long?.total,
                                 // The journal sends no finished total; a

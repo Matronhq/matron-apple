@@ -30,6 +30,10 @@ extension TimelineViewModel {
         }
     }
 
+    /// Whether the hosts offer "All projects": until the journal says it
+    /// has no such list.
+    public var showsAllProjects: Bool { projectsSupported != false }
+
     /// Whether `place` has a page on screen (a finished or all-projects list once read, even empty).
     public func hasContent(for place: TimelinePlace?) -> Bool {
         switch place {

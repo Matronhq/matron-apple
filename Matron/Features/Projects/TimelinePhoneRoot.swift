@@ -4,8 +4,8 @@ import MatronModels
 import MatronViewModels
 
 /// The iPhone's Projects root with the timeline shown: the week picked in
-/// the title's menu, then "All projects" and "Worth a look", rows that
-/// push their lists. A card pushes the project's page. Its alert is
+/// the title's menu, then "All projects" (on a journal that has the list)
+/// and "Worth a look", rows that push their lists. A card pushes the project's page. Its alert is
 /// `ProjectsTabRoot`'s one.
 struct TimelinePhoneRoot: View {
     let state: TimelineHostState
@@ -30,8 +30,11 @@ struct TimelinePhoneRoot: View {
     /// The lists under "Worth a look", top to bottom.
     static let worthALookPlaces: [TimelinePlace] = [.quiet, .long, .finished]
 
-    /// The rows at the foot of the week page: every project first.
-    static let footPlaces: [TimelinePlace] = [.projects] + worthALookPlaces
+    /// The rows at the foot of the week page: every project first, unless
+    /// the journal has no all-projects list.
+    static func footPlaces(showsAllProjects: Bool) -> [TimelinePlace] {
+        (showsAllProjects ? [.projects] : []) + worthALookPlaces
+    }
 
     /// The week page's place: the week the menu shows.
     static func place(_ state: TimelineHostState) -> TimelinePlace? {
@@ -70,21 +73,24 @@ struct TimelinePhoneRoot: View {
         if viewModel.hasEarlierWeeks {
             Button("Earlier weeks") { Task { await viewModel.loadEarlierWeeks() } }
         }
-        Divider()
-        Button { onOpenList(.projects) } label: { Label(TimelineFormat.allProjects, systemImage: ProjectGlyph.symbol) }
+        if viewModel.showsAllProjects {
+            Divider()
+            Button { onOpenList(.projects) } label: { Label(TimelineFormat.allProjects, systemImage: ProjectGlyph.symbol) }
+        }
     }
 
     /// "All projects", then "Worth a look": each row pushes its list, with
     /// its count when known.
     private var footRows: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(Self.footPlaces, id: \.self) { place in
+            let places = Self.footPlaces(showsAllProjects: viewModel.showsAllProjects)
+            ForEach(places, id: \.self) { place in
                 if place == Self.worthALookPlaces.first {
                     Text(TimelineFormat.worthALook)
                         .font(.footnote.weight(.semibold)).tracking(0.8).foregroundStyle(.secondary)
                         .padding(.top, 18).padding(.bottom, 6)
                         .accessibilityAddTraits(.isHeader)
-                } else if place != Self.footPlaces.first {
+                } else if place != places.first {
                     Divider()
                 }
                 row(place)

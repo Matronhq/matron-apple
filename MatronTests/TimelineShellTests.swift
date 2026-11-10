@@ -231,13 +231,18 @@ final class TimelineShellTests: XCTestCase {
 
     /// The week page's foot rows: all projects first, then "Worth a look".
     func testThePhoneRootOffersAllProjects() throws {
-        XCTAssertEqual(TimelinePhoneRoot.footPlaces, [.projects, .quiet, .long, .finished])
+        XCTAssertEqual(TimelinePhoneRoot.footPlaces(showsAllProjects: true), [.projects, .quiet, .long, .finished])
         XCTAssertEqual(TimelinePhoneRoot.worthALookPlaces, [.quiet, .long, .finished])
-        for place in TimelinePhoneRoot.footPlaces {
+        for place in TimelinePhoneRoot.footPlaces(showsAllProjects: true) {
             XCTAssertNotNil(TimelineListRoute(place: place), "\(place) pushes a list")
         }
         XCTAssertEqual(AppShellView.timelineListTitle(.projects), "All projects")
         XCTAssertEqual(AppShellView.timelineListTitle(.quiet), "Went quiet")
+    }
+
+    /// A journal without the all-projects list: only "Worth a look".
+    func testThePhoneRootOffersNoAllProjectsWithoutTheList() {
+        XCTAssertEqual(TimelinePhoneRoot.footPlaces(showsAllProjects: false), [.quiet, .long, .finished])
     }
 
     private static func file(_ seq: Int64, blob: String, type: String?) -> ProjectFile {

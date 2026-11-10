@@ -689,6 +689,49 @@ final class TimelineViewModelTests: XCTestCase {
         XCTAssertEqual(vm.quiet?.total, 5, "the other counts still land")
     }
 
+    /// A journal with the weeks but no all-projects route: the hosts hide
+    /// the row, and nothing asks for the list again.
+    func testAJournalWithoutAllProjectsIsRecordedAndNotAskedAgain() async {
+        let (vm, fake, _) = make()
+        await vm.start()
+        XCTAssertNil(vm.projectsSupported, "not known before a read")
+        XCTAssertTrue(vm.showsAllProjects, "offered until the journal says otherwise")
+        await vm.loadCounts()
+        XCTAssertEqual(vm.projectsSupported, false)
+        XCTAssertFalse(vm.showsAllProjects)
+        await vm.refresh()
+        await vm.loadCounts()
+        XCTAssertEqual(fake.projectsCalls, [nil], "its 404 would only come again")
+        XCTAssertEqual(vm.projectsSupported, false)
+    }
+
+    func testAnAllProjectsListThatAnswersIsSupported() async {
+        let (vm, fake, _) = make()
+        scriptProjects(fake)
+        await vm.start()
+        await vm.loadCounts()
+        XCTAssertEqual(vm.projectsSupported, true)
+        XCTAssertTrue(vm.showsAllProjects)
+    }
+
+    func testAVisitThatFindsNoAllProjectsRouteRecordsIt() async {
+        let (vm, _, _) = make()
+        await vm.start()
+        await vm.select(.projects)
+        XCTAssertEqual(vm.projectsSupported, false)
+    }
+
+    func testAnotherAllProjectsFailureLeavesSupportUnknown() async {
+        let (vm, fake, _) = make()
+        fake.projectsError = JournalAPIError.forbidden
+        await vm.start()
+        await vm.loadCounts()
+        XCTAssertNil(vm.projectsSupported)
+        await vm.select(.projects)
+        XCTAssertNil(vm.projectsSupported)
+        XCTAssertTrue(vm.showsAllProjects)
+    }
+
     func testFlagKey() {
         XCTAssertEqual(TimelineViewModel.flagKey, "projects.timeline")
     }

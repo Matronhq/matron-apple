@@ -29,6 +29,10 @@ public final class TimelineViewModel {
     public private(set) var allProjects: TimelineProjectList?
     /// nil before the first weeks load; false once the journal answered 404.
     public private(set) var isSupported: Bool?
+    /// nil until the all-projects list answers; false once the journal
+    /// answered 404 for it (it has the weeks, not that list). The hosts
+    /// then offer no "All projects" and nothing asks for it again.
+    public private(set) var projectsSupported: Bool?
     /// Projects the Coordinator was asked about in this session: their
     /// rows say so instead of offering the Ask again, across refreshes.
     public private(set) var askedProjectIDs: Set<String> = []
@@ -100,11 +104,14 @@ public final class TimelineViewModel {
         let epoch = refreshEpoch
         let timeline = self.timeline
         let needsQuiet = !fresh.contains(.quiet), needsLong = !fresh.contains(.long)
-        let needsProjects = !fresh.contains(.projects)
+        let needsProjects = !fresh.contains(.projects) && projectsSupported != false
         async let quietRead = Self.read(needsQuiet) { try await timeline.wentQuiet() }
         async let longRead = Self.read(needsLong) { try await timeline.openLong() }
-        async let projectsRead = Self.read(needsProjects) { try await timeline.timelineProjects(before: nil, limit: nil) }
-        let (quietList, longList, projectList) = await (quietRead, longRead, projectsRead)
+        async let projectsRead = Self.attempt(needsProjects) { try await timeline.timelineProjects(before: nil, limit: nil) }
+        let (quietList, longList, projectsResult) = await (quietRead, longRead, projectsRead)
+        // Whether the journal has the list holds across a refresh.
+        noteProjectsSupport(projectsResult)
+        let projectList = try? projectsResult?.get()
         guard epoch == refreshEpoch else { return }
         // A visit that read the list meanwhile is as fresh: keep it.
         if let quietList, !fresh.contains(.quiet) { quiet = quietList; fresh.insert(.quiet) }
@@ -235,8 +242,9 @@ public final class TimelineViewModel {
                 let generation = projectsGeneration
                 isReloadingProjects = true
                 defer { if generation == projectsGeneration { isReloadingProjects = false } }
-                let page = try await timeline.timelineProjects(before: nil, limit: nil)
-                guard generation == projectsGeneration else { return }
+                let result = await Self.attempt(true) { [timeline] in try await timeline.timelineProjects(before: nil, limit: nil) }
+                noteProjectsSupport(result)
+                guard let page = try result?.get(), generation == projectsGeneration else { return }
                 allProjects = page
             }
             if case .week = target {} else { fresh.insert(target) }
@@ -245,6 +253,23 @@ public final class TimelineViewModel {
             // A read that was called off is not a failure.
             if place == target, !error.isReadCancellation { self.error = error.localizedDescription }
         }
+    }
+
+    /// What an all-projects first-page read says of the route: an answer
+    /// means the journal has it, a 404 that it does not.
+    private func noteProjectsSupport(_ result: Result<TimelineProjectList, Error>?) {
+        switch result {
+        case .success: projectsSupported = true
+        case .failure(JournalAPIError.notFound): projectsSupported = false
+        case .failure, nil: break
+        }
+    }
+
+    /// `read()`'s answer or failure when `needed`, nil when not.
+    private nonisolated static func attempt<List: Sendable>(_ needed: Bool,
+                                                            _ read: @Sendable () async throws -> List) async -> Result<List, Error>? {
+        guard needed else { return nil }
+        do { return .success(try await read()) } catch { return .failure(error) }
     }
 
     /// `read()` when `needed`, nil when not or when it fails.

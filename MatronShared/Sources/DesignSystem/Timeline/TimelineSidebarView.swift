@@ -2,11 +2,13 @@ import SwiftUI
 import MatronModels
 
 /// The timeline's list: the weeks newest first, by their dates alone,
-/// "Earlier weeks ›" when there are more, "All projects" with its count,
-/// then "Worth a look": Went quiet, Open a long time and Finished, each
+/// "Earlier weeks ›" when there are more, "All projects" with its count
+/// (unless the journal has no such list), then "Worth a look": Went quiet, Open a long time and Finished, each
 /// with one count. Text only.
 public struct TimelineSidebarView: View {
     let weeks: [TimelineWeekSummary]
+    /// False on a journal without the all-projects list: no row for it.
+    let showsProjects: Bool
     let projectsCount: Int?
     let quietCount: Int?
     let longCount: Int?
@@ -15,9 +17,11 @@ public struct TimelineSidebarView: View {
     /// nil when there are no earlier weeks to load.
     let onLoadEarlier: (() -> Void)?
 
-    public init(weeks: [TimelineWeekSummary], projectsCount: Int?, quietCount: Int?, longCount: Int?,
-                finishedCount: Int?, selection: Binding<TimelinePlace?>, onLoadEarlier: (() -> Void)?) {
-        self.weeks = weeks; self.projectsCount = projectsCount; self.quietCount = quietCount
+    public init(weeks: [TimelineWeekSummary], showsProjects: Bool = true, projectsCount: Int?, quietCount: Int?,
+                longCount: Int?, finishedCount: Int?, selection: Binding<TimelinePlace?>,
+                onLoadEarlier: (() -> Void)?) {
+        self.weeks = weeks; self.showsProjects = showsProjects
+        self.projectsCount = projectsCount; self.quietCount = quietCount
         self.longCount = longCount; self.finishedCount = finishedCount
         self._selection = selection; self.onLoadEarlier = onLoadEarlier
     }
@@ -51,8 +55,10 @@ public struct TimelineSidebarView: View {
                     .accessibilityLabel(TimelineFormat.earlierWeeks)
                     .accessibilityIdentifier("timeline.sidebar.earlier")
                 }
-                entry(.projects, symbol: ProjectGlyph.symbol, TimelineFormat.allProjects, count: projectsCount)
-                    .padding(.top, 10)
+                if showsProjects {
+                    entry(.projects, symbol: ProjectGlyph.symbol, TimelineFormat.allProjects, count: projectsCount)
+                        .padding(.top, 10)
+                }
                 Text(TimelineFormat.worthALook)
                     .font(Self.smallFont.weight(.semibold)).tracking(0.8).foregroundStyle(.secondary)
                     .padding(.horizontal, Self.rowInsets.leading)
