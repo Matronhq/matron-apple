@@ -41,7 +41,8 @@ public struct BoxMeterView: View {
                     Text(reset)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .accessibilityElement(children: .ignore)
