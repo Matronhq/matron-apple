@@ -110,6 +110,10 @@ final class MacTimelineState {
     /// The section of the open project's page; nil is the page itself.
     var storySection: ProjectSection?
 
+    /// How many times the shell asked for a re-read (⌘R, the app coming
+    /// back): an open project's page reads itself again on each.
+    private(set) var refreshCount = 0
+
     var viewModel: TimelineViewModel? { host.viewModel }
     var isShown: Bool { host.isShown }
     var place: TimelinePlace? { host.place }
@@ -133,6 +137,13 @@ final class MacTimelineState {
     }
 
     func select(_ place: TimelinePlace?) { host.select(place) }
+
+    /// The shell's refresh: the week or list and the counts, and the page
+    /// of the project open over them.
+    func refresh() async {
+        refreshCount += 1
+        await host.refresh()
+    }
 
     /// A new session: nothing of the old one's timeline carries over.
     func reset() {
@@ -183,6 +194,7 @@ struct MacTimelineDetail: View {
             MacTimelineProjectHost(projectID: projectID, section: state.storySection, session: session,
                                    missionsViewModel: missionsViewModel, slot: $slot, actions: actions,
                                    onOpenSection: onOpenSection, onRedirectStory: onRedirectStory,
+                                   refreshCount: state.refreshCount,
                                    onChanged: { await state.host.projectChanged() })
                 // Another project is another page: its reads, its pictures
                 // and anything it was asking start over.
@@ -249,6 +261,8 @@ struct MacTimelineProjectHost: View {
     let actions: MacProjectPageActions
     let onOpenSection: (ProjectSection?) -> Void
     let onRedirectStory: (String) -> Void
+    /// `MacTimelineState.refreshCount`: a change reads the page again.
+    var refreshCount = 0
     /// A "···" write landed: the timeline's lists name the project too.
     let onChanged: () async -> Void
 
@@ -291,6 +305,12 @@ struct MacTimelineProjectHost: View {
             await load()
         }
         .onDisappear { slot.pageDidDisappear(owner: owner, page: pageToken) }
+        // ⌘R, or back in the app: the page again. The history keeps the
+        // weeks it has paged.
+        .onChange(of: refreshCount) {
+            guard let summary, summary.page != nil else { return }
+            Task { await summary.refreshPage() }
+        }
     }
 
     private var owner: ObjectIdentifier { ObjectIdentifier(missionsViewModel) }

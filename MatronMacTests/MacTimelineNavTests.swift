@@ -155,6 +155,16 @@ final class MacTimelineNavTests: XCTestCase {
         XCTAssertNil(state.storySection)
     }
 
+    /// The shell's refresh is counted, so an open project's page reads
+    /// itself again with the timeline under it.
+    func testState_aRefreshIsCountedForTheOpenProjectsPage() async {
+        let state = MacTimelineState()
+        XCTAssertEqual(state.refreshCount, 0)
+        await state.refresh()
+        await state.refresh()
+        XCTAssertEqual(state.refreshCount, 2)
+    }
+
     func testPlace_withoutTheTimelineIsTodaysHome() {
         XCTAssertEqual(place(timeline: nil), MacPlace(detail: .mission(id: nil)))
     }

@@ -1588,13 +1588,14 @@ struct MacChatListView: View {
                              refresh: refreshesTimeline ? { refreshTimeline() } : nil)
     }
 
-    /// The Projects timeline is on screen: ⌘R and coming back to the app read it again.
+    /// The Projects timeline is on screen: ⌘R and coming back to the app
+    /// read it again, and the page of a project open over it.
     private var refreshesTimeline: Bool {
         MacTimelineNav.refreshesTimeline(nav: nav, timelineShown: timeline.isShown, selectedMissionID: selectedMissionID)
     }
 
     private func refreshTimeline() {
-        Task { await timeline.host.refresh() }
+        Task { await timeline.refresh() }
     }
 
     /// Go ▸ Search… (⌘K), Go ▸ Go to Number… (⌘J) and the nav column's
