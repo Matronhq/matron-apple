@@ -84,4 +84,33 @@ final class ItemDetailDeliverySnapshotTests: XCTestCase {
             .frame(width: 380, height: 1000)
         assertVariants(of: view, named: "ItemDetail_queuedReplies")
     }
+
+    /// A queued reply whose card can be edited offers Edit beside Cancel and
+    /// Send now; the one being edited says it is held, with Cancel edit.
+    func testQueuedRepliesOfferEditAndShowTheOneBeingEdited() {
+        let item = TrackerItem(id: "it_3", num: 33, kind: .question, awaiting: .agent, title: "Ship tonight?",
+                               body: "Ready to merge.", originConvoID: "c1", createdAt: Self.t0, updatedAt: Self.t0, commentCount: 2)
+        let comments = [
+            TrackerComment(id: "e1", itemID: "it_3", author: .user, body: "Yes, ship it.", createdAt: Self.t0.addingTimeInterval(60)),
+            TrackerComment(id: "e2", itemID: "it_3", author: .user, body: "And deploy the journal first.", createdAt: Self.t0.addingTimeInterval(90)),
+        ]
+        func view(editing: String?) -> AnyView {
+            let model = ItemDetailView.Model(
+                item: item, comments: comments, pending: [], availableResolutions: [.answered], isBusy: false,
+                queuedReplies: ["e1": .queued(convoID: "c1", targetSeq: 10, offersSendOne: true),
+                                "e2": .queued(convoID: "c1", targetSeq: 11, offersSendOne: true)],
+                editableQueuedReplies: ["e1", "e2"], editingQueuedReplyID: editing)
+            return AnyView(ItemDetailView(model: model, draft: .constant(editing == nil ? "" : "And deploy the journal and the bridge first."),
+                                  image: { _ in nil },
+                                  onOpenAttachment: { _ in }, onOpenLink: { _ in }, onOpenConversation: { _ in },
+                                  onSubmit: {}, onAttach: {}, onVoiceNote: {}, onClose: { _ in }, onReopen: {},
+                                  now: Self.t0.addingTimeInterval(600),
+                                  replyDelivery: .init(sendQueuedNow: { _ in }, cancelQueued: { _ in }, editAndResend: { _ in },
+                                                       sendPendingNow: {}, cancelPending: { _ in },
+                                                       editQueued: { _ in }, cancelQueuedEdit: {}))
+                .frame(width: 380, height: 700))
+        }
+        assertVariants(of: view(editing: nil), named: "ItemDetail_queuedReplies_edit")
+        assertVariants(of: view(editing: "e2"), named: "ItemDetail_queuedReplies_editing")
+    }
 }
