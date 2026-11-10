@@ -328,4 +328,13 @@ final class AskUserSheetViewModelTests: XCTestCase {
         let vm = makeVM(event: AskUserEvent(prompt: "Deploy?", kind: .text, expiresAt: nil))
         XCTAssertFalse(vm.offersEdit)
     }
+
+    func test_sendNow_isRefusedWhileTheMessageIsHeldForEditing() async {
+        let fake = FakeTimelineService()
+        let vm = makeVM(event: queuedCard(), timeline: fake)
+        await vm.beginEdit()
+        vm.selectedChoiceIDs = ["send"]
+        await vm.send()
+        XCTAssertTrue(fake.sentButtonResponses.isEmpty, "Send now would deliver the original the edit replaces")
+    }
 }

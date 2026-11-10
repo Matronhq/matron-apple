@@ -120,7 +120,8 @@ public struct AskUserCard: View {
                         textInput: $textInput,
                         selectedChoiceIDs: $selectedChoiceIDs,
                         booleanAnswer: $booleanAnswer,
-                        isSending: isSending,
+                        // An Edit on its way holds the buttons too.
+                        isSending: isSending || (edit?.isBusy ?? false),
                         isExpired: isExpired,
                         error: error,
                         onSend: onSend

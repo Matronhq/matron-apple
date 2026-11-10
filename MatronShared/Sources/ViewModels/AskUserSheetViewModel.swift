@@ -67,7 +67,9 @@ public final class AskUserSheetViewModel {
     /// guard so this late `onClose()` can't tear down a successor
     /// prompt's sheet.
     public func send() async {
-        guard !isExpired, !isSending, !hasSent else { return }
+        // Not while an edit holds the message, or is on its way to: Send now
+        // would deliver the original the edit is replacing.
+        guard !isExpired, !isSending, !hasSent, !isEditing, !isSendingEdit else { return }
         isSending = true
         defer { isSending = false }
         do {

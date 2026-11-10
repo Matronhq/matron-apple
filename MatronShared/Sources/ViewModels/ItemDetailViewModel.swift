@@ -406,21 +406,27 @@ public final class ItemDetailViewModel {
         case .queued(let c, let s, _), .sendFailed(let c, let s, _, _): target = (c, s)
         default: return
         }
+        // Marked as being edited at the tap, so its Send now and Cancel go
+        // away while the hold is on its way and can't send the original.
+        editingQueuedReplyID = commentID
+        preEditDraft = draft
         do {
             try await queuedRelease.sendQueuedRelease(convoID: target.convoID, targetSeq: target.seq,
                                                       choice: ItemQueuedReplies.editChoice)
         } catch {
+            if editingQueuedReplyID == commentID { editingQueuedReplyID = nil }
             self.error = "Couldn't hold that reply for editing. Try again."
             return
         }
-        // Released while the hold was on its way: nothing to edit.
+        // Released (or the edit cancelled) while the hold was on its way.
+        guard editingQueuedReplyID == commentID else { return }
         switch queuedReplies[commentID] {
         case .queued, .sendFailed: break
-        default: return
+        default:
+            editingQueuedReplyID = nil
+            return
         }
-        preEditDraft = draft
         draft = comment.body
-        editingQueuedReplyID = commentID
     }
 
     /// Cancel edit: the held reply goes as it was, and the reply box gets
@@ -939,10 +945,6 @@ public final class ItemDetailViewModel {
     /// returns as soon as the reply is queued, without awaiting delivery.
     public func submitComment() async {
         guard canSubmit, !isBusy else { return }
-        if editingQueuedReplyID != nil, let failure = await withdrawEditedOriginal() {
-            error = failure
-            return
-        }
         if let failure = await sendReply(leading: nil) { error = failure }
     }
 
@@ -961,6 +963,13 @@ public final class ItemDetailViewModel {
     /// turn. Returns `nil` once queued, or the failure's message with
     /// everything already back in the composer for its caller to report.
     private func sendReply(leading note: LeadingVoiceNote?) async -> String? {
+        // An edited queued reply (typed or spoken) replaces the held
+        // original, so the original is withdrawn first; if that fails the
+        // reply stays here, the note back in the tray.
+        if editingQueuedReplyID != nil, let failure = await withdrawEditedOriginal() {
+            if let note { restoreUnsent([note.attachment], text: "", note: note, localID: "") }
+            return failure
+        }
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = (note.map { [$0.attachment] } ?? []) + stagedAttachments
         busyCount += 1
