@@ -165,4 +165,8 @@ private final class StubTimeline: TimelineProviding, @unchecked Sendable {
     func finishedProjects(before: String?, limit: Int?) async throws -> (rows: [FinishedProject], nextBefore: String?) {
         ([], nil)
     }
+    func timelineProjects(before: String?, limit: Int?) async throws -> TimelineProjectList { throw JournalAPIError.notFound }
+    func timelineProject(_ id: String) async throws -> TimelineProjectPage { throw JournalAPIError.notFound }
+    func timelineProjectHistory(_ id: String, before: String?, limit: Int?) async throws
+        -> (weeks: [TimelineHistoryWeek], nextBefore: String?) { throw JournalAPIError.notFound }
 }

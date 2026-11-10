@@ -17,13 +17,14 @@ struct TimelineListRoute: PathPrefixedRoute {
     static let pathPrefix = "timeline/"
     init(id: String) { self.id = id }
 
-    /// nil for a week: the week page is the root, never pushed.
+    /// nil for a week (the week page is the root, never pushed) and for
+    /// the all-projects list, which has no route here.
     init?(place: TimelinePlace) {
         switch place {
         case .quiet: self.init(id: "quiet")
         case .long: self.init(id: "long")
         case .finished: self.init(id: "finished")
-        case .week: return nil
+        case .week, .projects: return nil
         }
     }
 

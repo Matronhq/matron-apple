@@ -118,6 +118,11 @@ private final class FakeTimeline: TimelineProviding, @unchecked Sendable {
         await holdIfGated("finished:\(before ?? "nil")")
         return page
     }
+
+    func timelineProjects(before: String?, limit: Int?) async throws -> TimelineProjectList { throw JournalAPIError.notFound }
+    func timelineProject(_ id: String) async throws -> TimelineProjectPage { throw JournalAPIError.notFound }
+    func timelineProjectHistory(_ id: String, before: String?, limit: Int?) async throws
+        -> (weeks: [TimelineHistoryWeek], nextBefore: String?) { throw JournalAPIError.notFound }
 }
 
 @MainActor

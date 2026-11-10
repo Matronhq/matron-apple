@@ -197,6 +197,9 @@ public final class TimelineViewModel {
                 finished = page.rows
                 finishedNextBefore = page.nextBefore
                 hasLoadedFinished = true
+            case .projects:
+                // Nothing here reads the all-projects list yet.
+                return
             }
             if case .week = target {} else { fresh.insert(target) }
         } catch {

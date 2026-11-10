@@ -663,7 +663,7 @@ struct AppShellView: View {
         case .quiet: return TimelineFormat.wentQuiet
         case .long: return TimelineFormat.openLong
         case .finished: return TimelineFormat.finished
-        case .week: return "Projects"
+        case .week, .projects: return "Projects"
         }
     }
 

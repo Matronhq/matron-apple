@@ -23,6 +23,8 @@ extension TimelineViewModel {
             return long.map { .long($0) } ?? unloaded
         case .finished:
             return hasLoadedFinished ? .finished(finished, hasMore: hasMoreFinished) : unloaded
+        case .projects:
+            return unloaded
         case nil:
             return weeks.isEmpty && error == nil ? .nothingYet : unloaded
         }
@@ -35,6 +37,7 @@ extension TimelineViewModel {
         case .quiet: return quiet != nil
         case .long: return long != nil
         case .finished: return hasLoadedFinished
+        case .projects: return false
         case nil: return false
         }
     }
