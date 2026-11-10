@@ -192,6 +192,10 @@ final class ProjectsNavigationTests: XCTestCase {
         XCTAssertEqual(Target.stack(untouched, following: "pj_1", to: "pj_2"), untouched,
                        "only a project's page or section names it")
         XCTAssertEqual(Target.stack(["story/pj_1"], following: "pj_1", to: "pj_1"), ["story/pj_1"])
+        XCTAssertEqual(Target.stack(["story/pj_1", "story/pj_2"], following: "pj_1", to: "pj_2"), ["story/pj_2"],
+                       "the survivor's own page after the merged one is not a second copy")
+        XCTAssertEqual(Target.stack(["project/pj_1", "story/pj_2"], following: "pj_1", to: "pj_2"), ["project/pj_2"],
+                       "either route form of one page counts as the same page")
     }
 
     /// The same through the shell's own stack: said twice (each of the

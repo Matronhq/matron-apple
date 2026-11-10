@@ -70,7 +70,9 @@ struct ProjectPageTarget: Equatable {
         var result: [String] = []
         for entry in stack {
             let moved = Self.entry(entry, following: from, to: to)
-            if moved != entry, result.last == moved { continue }
+            if let page = ProjectPageTarget(pathValue: moved), page.projectID == to,
+               let last = result.last.flatMap(ProjectPageTarget.init(pathValue:)),
+               last.projectID == page.projectID, last.section == page.section { continue }
             result.append(moved)
         }
         return result
