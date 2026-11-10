@@ -267,7 +267,7 @@ extension AppShellView {
             MissionRouteDestination(route: mission, session: session, deps: deps, vmCache: vmCache,
                                     onOpenConversation: openConversationOnChatStack,
                                     onOpenItem: { nav.push(ItemRoute(id: $0).pathValue, on: .conversations) })
-        } else if let project = ProjectRoute(pathValue: value) {
+        } else if let project = ProjectPageTarget(pathValue: value) {
             ProjectRouteDestination(route: project, session: session, deps: deps, vmCache: vmCache,
                                     onOpenConversation: openConversationOnChatStack,
                                     onOpenItem: { nav.push(ItemRoute(id: $0).pathValue, on: .conversations) },

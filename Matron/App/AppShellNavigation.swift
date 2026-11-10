@@ -419,19 +419,39 @@ final class AppShellNavigation {
         }
     }
 
+    /// Whether a project opens as its new page (`ProjectStoryRoute`): the
+    /// shell sets it while the Projects timeline is shown. Off, a project
+    /// opens the page it has without the timeline (`ProjectRoute`).
+    var projectsOpenAsStories = false
+
+    /// Whether a project's page, or a section of one, is on any stack. The
+    /// shell asks the journal for the timeline then, as on a visit to
+    /// Projects: a project opened from a chat before Projects was ever
+    /// visited shows its new page once the journal has answered.
+    var showsAProjectPage: Bool {
+        [coordinatorPath, decisionsPath, chatPath, missionsPath, searchPath]
+            .contains { $0.contains { ProjectPageTarget(pathValue: $0) != nil } }
+    }
+
+    /// The stack entry that opens a project.
+    nonisolated static func projectRoute(_ projectID: String, asStory: Bool) -> String {
+        asStory ? ProjectStoryRoute(id: projectID).pathValue : ProjectRoute(id: projectID).pathValue
+    }
+
     /// Push a project onto a tab's stack (the Projects stack by default)
     /// without changing the tab. When that project is already on the
     /// stack — the top entry (a double tap) or below it (a mission page's
     /// project chip, the breadcrumb back up to the project it was opened
     /// from) — pop back to the existing page instead of stacking a second
-    /// copy.
+    /// copy. Either route is the project's page (one pushed before the
+    /// timeline answered shows the same page as one pushed after).
     func pushProject(_ projectID: String, on target: AppTab = .missions) {
-        let route = ProjectRoute(id: projectID).pathValue
+        let pages = [true, false].map { Self.projectRoute(projectID, asStory: $0) }
         let stack = path(of: target)
-        if let index = stack.lastIndex(of: route) {
+        if let index = stack.lastIndex(where: pages.contains) {
             setPath(Array(stack[...index]), on: target)
         } else {
-            setPath(stack + [route], on: target)
+            setPath(stack + [Self.projectRoute(projectID, asStory: projectsOpenAsStories)], on: target)
         }
     }
 

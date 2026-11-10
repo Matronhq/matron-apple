@@ -196,11 +196,11 @@ public enum TimelineDemoData {
                 closedAt: closedDaysAgo.map(daysAgo), status: status, projectID: docs.id, projectNum: docs.num)
     }
 
-    // MARK: A project's story
+    // MARK: A project's missions and files
 
-    /// "Docs site launch" in full: a status, three tasks coming up, one
-    /// question waiting, open and finished missions, and pictures, a video
-    /// and a document over three weeks.
+    /// "Docs site launch" in full: a status, open tasks, one question
+    /// waiting, open and finished missions, and pictures, a video and a
+    /// document over three weeks.
     public static let docsProjectPage: ProjectPageModel = {
         let tasks = [task(31, "A rehearsal on Monday at 07:00"), task(32, "The CDN switch-over"), task(33, "Launch"),
                      task(34, "Write the launch post")]
@@ -234,26 +234,6 @@ public enum TimelineDemoData {
             closedMissions: closed,
             needsYou: waiting, openItems: waiting + tasks + [palette],
             files: ProjectFeedPage(total: files.count, rows: files), hasFeed: true)
-    }()
-
-    /// A project with nothing to show beyond words: no status or goal (the
-    /// newest milestone speaks for it), nothing coming up or waiting, and
-    /// only a document among its files.
-    public static let quietProjectPage: ProjectPageModel = {
-        let milestones = [
-            Milestone(id: "ms_demo_2", missionID: "mi_demo_6", num: 2, kind: .progress,
-                      title: "The report was written and two fixes went in.", convoID: "c_demo_6", seq: 2,
-                      createdAt: day(10, 22, 10)),
-            Milestone(id: "ms_demo_1", missionID: "mi_demo_6", num: 1, kind: .progress,
-                      title: "Audit started.", convoID: "c_demo_6", seq: 1, createdAt: day(10, 12, 10)),
-        ]
-        return ProjectPageModel(
-            project: Project(id: audit.id, num: audit.num, title: audit.title),
-            openItems: [task(41, "Should we cover the web app too?", kind: .question)],
-            recentMilestones: milestones,
-            files: ProjectFeedPage(total: 1, rows: [file("report", "audit-report.pdf", day(10, 22, 9),
-                                                         type: "application/pdf")]),
-            hasFeed: true)
     }()
 
     private static func task(_ num: Int, _ title: String, kind: ItemKind = .task) -> TrackerItem {

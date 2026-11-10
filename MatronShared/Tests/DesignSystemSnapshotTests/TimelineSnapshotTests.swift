@@ -186,122 +186,11 @@ final class TimelineSnapshotTests: XCTestCase {
         XCTAssertEqual(ProjectFilesGridView.columnCount(pageWidth: 1_280), 3)
     }
 
-    // MARK: Project story
-
-    private static func file(_ name: String?, _ type: String, at date: Date, item: Int? = nil) -> ProjectFile {
-        ProjectFile(blobID: name ?? "blob", name: name, contentType: type,
-                    source: item.map { .item(num: $0) } ?? .chat(convoID: "c_demo", seq: 1), postedAt: date)
-    }
-
-    private static func task(_ num: Int, _ title: String, kind: ItemKind = .task, state: ItemState = .open) -> TrackerItem {
-        TrackerItem(id: "it_\(num)", num: num, kind: kind, state: state, title: title, originConvoID: "c_demo")
-    }
-
-    /// The Coordinator's status, else the goal, else the newest milestone.
-    /// Only the goal is held to a few lines: it can run to pages.
-    func testStorySentence() {
-        let milestone = { (title: String, hours: Double) in
-            Milestone(id: "ms_\(title)", missionID: "mi_demo", num: 1, kind: .progress, title: title,
-                      convoID: "c_demo", seq: 1, createdAt: D.now.addingTimeInterval(-hours * 3_600))
-        }
-        var page = ProjectPageModel(project: Project(id: "pj", num: 1, title: "Docs", body: "The goal.",
-                                                     status: "Where it stands."))
-        XCTAssertEqual(TimelineFormat.storySentence(page), .init(text: "Where it stands.", lineLimit: nil))
-        page.project = Project(id: "pj", num: 1, title: "Docs", body: "The goal.", status: "  ")
-        XCTAssertEqual(TimelineFormat.storySentence(page), .init(text: "The goal.", lineLimit: 3))
-        page.project = Project(id: "pj", num: 1, title: "Docs")
-        XCTAssertNil(TimelineFormat.storySentence(page))
-        page.recentMilestones = [milestone("Older", 5), milestone("Newest", 1)]
-        XCTAssertEqual(TimelineFormat.storySentence(page), .init(text: "Newest", lineLimit: nil))
-    }
-
-    /// A goal written as a document: its first paragraph, without the
-    /// heading, list and quote marks that start its lines.
-    func testStorySentenceFromAGoalIsItsFirstParagraph() {
-        func goal(_ body: String) -> String? {
-            TimelineFormat.storySentence(ProjectPageModel(project: Project(id: "pj", num: 1, title: "Docs", body: body)))?.text
-        }
-        XCTAssertEqual(goal("\n# Docs site\nShip a new docs site\nwith **search**.\n\n## Later\nMore."),
-                       "Docs site Ship a new docs site with **search**.")
-        XCTAssertEqual(goal("- Search\n* Fast pages\n+ A guide\n> Quoted\n1. First\n\nSecond paragraph."),
-                       "Search Fast pages A guide Quoted First")
-        XCTAssertEqual(goal("#hashtag stays, as does -5 °C and *emphasis*."), "#hashtag stays, as does -5 °C and *emphasis*.")
-        XCTAssertNil(goal("#\n- \n"))
-    }
-
-    /// The first three open tasks, as one sentence; what already waits on
-    /// the user is in the card below, not here.
-    func testComingUp() {
-        var page = ProjectPageModel(project: Project(id: "pj", num: 1, title: "Docs"))
-        XCTAssertNil(TimelineFormat.comingUp(page))
-        page.openItems = [Self.task(1, "Launch")]
-        XCTAssertEqual(TimelineFormat.comingUp(page), "Launch.")
-        page.openItems = [Self.task(1, "A rehearsal on Monday at 07:00"), Self.task(2, "Pick a colour", kind: .question),
-                          Self.task(3, "The CDN switch-over."), Self.task(4, "Waits on you"),
-                          Self.task(5, "Launch"), Self.task(6, "Write the launch post")]
-        page.needsYou = [Self.task(4, "Waits on you")]
-        XCTAssertEqual(TimelineFormat.comingUp(page), "A rehearsal on Monday at 07:00, The CDN switch-over, then Launch.",
-                       "titles as written, less a closing full stop")
-        page.openItems = [Self.task(1, "CDN switch-over"), Self.task(2, "iOS build")]
-        XCTAssertEqual(TimelineFormat.comingUp(page), "CDN switch-over, then iOS build.")
-        XCTAssertEqual(TimelineFormat.comingUpPrefix, "Coming up:")
-    }
-
-    /// The file's caption, else the item it was posted on; never the
-    /// file's name, which is rarely words.
-    func testGalleryCaption() {
-        let items = [Self.task(30, "Pick the docs palette", kind: .decision)]
-        func file(_ name: String?, caption: String?, item: Int? = nil) -> ProjectFile {
-            ProjectFile(blobID: "blob", name: name, contentType: "image/png", caption: caption,
-                        source: item.map { .item(num: $0) } ?? .chat(convoID: "c_demo", seq: 1), postedAt: D.now)
-        }
-        XCTAssertEqual(TimelineFormat.galleryCaption(file("docs-1.png", caption: " Search page live\non staging "), items: items),
-                       "Search page live on staging")
-        XCTAssertEqual(TimelineFormat.galleryCaption(file("docs-1.png", caption: "Live", item: 30), items: items), "Live")
-        XCTAssertEqual(TimelineFormat.galleryCaption(file("docs-1.png", caption: "  ", item: 30), items: items),
-                       "Pick the docs palette")
-        XCTAssertNil(TimelineFormat.galleryCaption(file("docs-1.png", caption: nil), items: items))
-        XCTAssertNil(TimelineFormat.galleryCaption(file("docs-1.png", caption: nil, item: 99), items: items))
-        XCTAssertNil(TimelineFormat.galleryCaption(file(nil, caption: nil), items: items))
-    }
-
-    /// Images and videos only, grouped by Monday-based week, newest first:
-    /// "This week", "Last week", then the dates.
-    func testGalleryWeeks() {
+    func testWeekday() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "Europe/London")!
-        calendar.firstWeekday = 2
-        func at(_ month: Int, _ day: Int, _ hour: Int, _ minute: Int = 0) -> Date {
-            calendar.date(from: DateComponents(year: 2026, month: month, day: day, hour: hour, minute: minute))!
-        }
-        let files = [
-            Self.file("monday.png", "image/png", at: at(11, 2, 0, 30)),
-            Self.file("notes.pdf", "application/pdf", at: at(11, 3, 9)),
-            Self.file("sunday.mp4", "video/mp4", at: at(11, 1, 23)),
-            Self.file("older.jpg", "image/jpeg", at: at(10, 21, 12)),
-            Self.file("thursday.png", "image/png", at: at(11, 5, 9)),
-            ProjectFile(blobID: "undated", name: "undated.png", contentType: "image/png", source: .chat(convoID: "c", seq: 2),
-                        postedAt: nil),
-        ]
-        let weeks = ProjectGallery.weeks(files, now: D.now, calendar: calendar)
-        XCTAssertEqual(weeks.map(\.title), ["This week", "Last week", "19 – 25 Oct"])
-        XCTAssertEqual(weeks.map { $0.files.map(\.name) }, [["thursday.png", "monday.png"], ["sunday.mp4"], ["older.jpg"]])
-        XCTAssertTrue(ProjectGallery.weeks([files[1]], now: D.now, calendar: calendar).isEmpty)
-        XCTAssertEqual(TimelineFormat.weekday(at(11, 3, 9), calendar: calendar), "Tuesday")
-    }
-
-    /// The dates are the Gregorian ones whatever the device's calendar;
-    /// only the weeks are grouped in it.
-    func testGalleryWeekTitleOnANonGregorianCalendar() {
-        for identifier in [Calendar.Identifier.buddhist, .islamicUmmAlQura] {
-            var calendar = Calendar(identifier: identifier)
-            calendar.timeZone = TimeZone(identifier: "Europe/London")!
-            calendar.firstWeekday = 2
-            let thisWeek = calendar.dateInterval(of: .weekOfYear, for: D.now)!.start
-            let older = calendar.date(byAdding: .day, value: -14, to: thisWeek)!
-            XCTAssertEqual(TimelineFormat.galleryWeekTitle(weekStart: older, thisWeekStart: thisWeek, calendar: calendar),
-                           "19 – 25 Oct", "\(identifier)")
-        }
+        let tuesday = calendar.date(from: DateComponents(year: 2026, month: 11, day: 3, hour: 9))!
+        XCTAssertEqual(TimelineFormat.weekday(tuesday, calendar: calendar), "Tuesday")
     }
 
     // MARK: Snapshots
@@ -441,27 +330,6 @@ final class TimelineSnapshotTests: XCTestCase {
     func testFinishedEmpty() {
         assertVariants(of: phone(FinishedListView(rows: [], now: D.now, onOpenProject: { _ in }, onLoadMore: nil)),
                        named: "timeline-finished-empty-phone")
-    }
-
-    private func storyPage(_ page: ProjectPageModel) -> some View {
-        ProjectStoryView(page: page, now: D.now, images: Self.images, onOpenItem: { _ in }, onOpenFile: { _ in },
-                         onAllDetails: {}) {
-            Button("Rename…") {}
-        }
-    }
-
-    /// The sentence, "Coming up", what waits on you, and the pictures and
-    /// videos by week under their captions and days.
-    func testProjectStory() {
-        assertVariants(of: storyPage(D.docsProjectPage).frame(width: 1_280, height: 800), named: "project-story-mac")
-        assertVariants(of: phone(storyPage(D.docsProjectPage)), named: "project-story-phone")
-    }
-
-    /// Nothing to show beyond the words: no gallery, no "Coming up", no
-    /// waiting card; the newest milestone stands in for a status.
-    func testProjectStoryNoMedia() {
-        assertVariants(of: storyPage(D.quietProjectPage).frame(width: 1_280, height: 800), named: "project-story-nomedia-mac")
-        assertVariants(of: phone(storyPage(D.quietProjectPage)), named: "project-story-nomedia-phone")
     }
 
     // MARK: Project page

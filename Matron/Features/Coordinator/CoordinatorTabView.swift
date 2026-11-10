@@ -169,7 +169,7 @@ struct CoordinatorTabView: View {
                                                  coordinatorConvoID: convoID)
                             },
                             onOpenItem: { path.append(ItemRoute(id: $0).pathValue) })
-                    } else if let project = ProjectRoute(pathValue: value) {
+                    } else if let project = ProjectPageTarget(pathValue: value) {
                         ProjectRouteDestination(
                             route: project, session: session, deps: deps, vmCache: vmCache,
                             onOpenConversation: { target in

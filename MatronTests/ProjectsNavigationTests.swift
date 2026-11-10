@@ -120,6 +120,89 @@ final class ProjectsNavigationTests: XCTestCase {
         XCTAssertNotEqual(nav.tab, .missions)
     }
 
+    // MARK: With the timeline shown
+
+    /// With the Projects switch on and a journal that has the timeline,
+    /// every way of opening a project pushes its new page, never today's.
+    func testWithTheTimelineShownAProjectOpensItsNewPage() {
+        let nav = AppShellNavigation()
+        nav.projectsOpenAsStories = true
+        nav.tab = .missions
+        nav.handleProjectsHome(.openProject("pj_1"))
+        XCTAssertEqual(nav.missionsPath, ["story/pj_1"])
+        nav.handleProjectsHome(.openProject("pj_1"))
+        XCTAssertEqual(nav.missionsPath, ["story/pj_1"], "a double tap never stacks two pages")
+        nav.pushProject("pj_2")
+        nav.openPageLink(.project(id: "pj_3"))
+        XCTAssertEqual(nav.missionsPath, ["story/pj_1", "story/pj_2", "story/pj_3"])
+
+        // A link in a chat, a mission page's chip on another tab's stack.
+        nav.tab = .conversations
+        nav.chatPath = ["c1", "mission/ms_1"]
+        nav.openPageLink(.project(id: "pj_4"))
+        XCTAssertEqual(nav.tab, .conversations)
+        XCTAssertEqual(nav.chatPath, ["c1", "mission/ms_1", "story/pj_4"], "Back pops to the mission page")
+        for tab in [AppTab.decisions, .search, .coordinator] {
+            nav.pushProject("pj_5", on: tab)
+            XCTAssertEqual(nav.path(of: tab), ["story/pj_5"], "\(tab)")
+        }
+        let every = nav.missionsPath + nav.chatPath + nav.decisionsPath + nav.searchPath + nav.coordinatorPath
+        XCTAssertFalse(every.contains { ProjectRoute(pathValue: $0) != nil }, "today's project page is never pushed")
+    }
+
+    /// The mission page's project chip is still a breadcrumb: the page
+    /// below is popped back to, past its sections and what they opened.
+    func testWithTheTimelineShownAProjectAlreadyOnTheStackIsPoppedBackTo() {
+        let nav = AppShellNavigation()
+        nav.projectsOpenAsStories = true
+        nav.tab = .missions
+        nav.missionsPath = ["story/pj_1", "story-section/missions/pj_1", "mission/ms_1"]
+        nav.pushProject("pj_1")
+        XCTAssertEqual(nav.missionsPath, ["story/pj_1"])
+
+        // A page pushed before the journal answered is the same page.
+        nav.missionsPath = ["project/pj_1", "mission/ms_1"]
+        nav.pushProject("pj_1")
+        XCTAssertEqual(nav.missionsPath, ["project/pj_1"], "no second copy of the project")
+
+        nav.missionsPath = ["story/pj_1", "story-section/missions/pj_1", "mission/ms_1"]
+        nav.pushProject("pj_2")
+        XCTAssertEqual(nav.missionsPath, ["story/pj_1", "story-section/missions/pj_1", "mission/ms_1", "story/pj_2"])
+    }
+
+    /// Switch off, or a journal without the timeline: today's page, as before.
+    func testWithTheTimelineHiddenAProjectOpensTodaysPage() {
+        let nav = AppShellNavigation()
+        XCTAssertFalse(nav.projectsOpenAsStories, "off until the shell says the timeline is shown")
+        nav.tab = .missions
+        nav.pushProject("pj_1")
+        nav.openPageLink(.project(id: "pj_2"))
+        XCTAssertEqual(nav.missionsPath, ["project/pj_1", "project/pj_2"])
+        XCTAssertEqual(AppShellNavigation.projectRoute("pj_1", asStory: false), "project/pj_1")
+        XCTAssertEqual(AppShellNavigation.projectRoute("pj_1", asStory: true), "story/pj_1")
+    }
+
+    /// A project on any stack has the shell ask for the timeline, so a
+    /// project opened from a chat needs no visit to Projects first.
+    func testAProjectPageOnAnyStackIsNoticed() {
+        let nav = AppShellNavigation()
+        XCTAssertFalse(nav.showsAProjectPage)
+        nav.chatPath = ["c1", "mission/ms_1", "item/it_1"]
+        nav.missionsPath = ["timeline/quiet", MemoriesRoute.list]
+        XCTAssertFalse(nav.showsAProjectPage)
+        nav.chatPath = ["c1", "project/pj_1"]
+        XCTAssertTrue(nav.showsAProjectPage)
+        nav.chatPath = []
+        for value in ["project/pj_1", "story/pj_1", "story-section/files/pj_1"] {
+            for tab in [AppTab.coordinator, .decisions, .conversations, .missions, .search] {
+                nav.setPath([value], on: tab)
+                XCTAssertTrue(nav.showsAProjectPage, "\(value) on \(tab)")
+                nav.setPath([], on: tab)
+                XCTAssertFalse(nav.showsAProjectPage)
+            }
+        }
+    }
+
     func testProjectRouteIsARouteNotAChat() {
         XCTAssertEqual(ProjectRoute(pathValue: "project/pj_1")?.id, "pj_1")
         XCTAssertTrue(isAnyPathPrefixedRoute("project/pj_1"))

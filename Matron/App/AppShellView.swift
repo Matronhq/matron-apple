@@ -138,6 +138,16 @@ struct AppShellView: View {
                 deps.makeTimelineViewModel(for: session, coordinatorConvoID: { nav.coordinatorConvoID })
             }
         }
+        // A project opened on any stack asks once too, so its page is the
+        // new one without a visit to Projects first.
+        .onChange(of: nav.showsAProjectPage, initial: true) { _, shown in
+            guard shown, timeline.viewModel == nil else { return }
+            timeline.projectsShown { [deps, session, nav] in
+                deps.makeTimelineViewModel(for: session, coordinatorConvoID: { nav.coordinatorConvoID })
+            }
+        }
+        // While the timeline is shown a project opens as its new page.
+        .onChange(of: timeline.isShown, initial: true) { _, shown in nav.projectsOpenAsStories = shown }
     }
 
     /// The iPhone's tab bar, also an iPad window's at compact width.
@@ -186,6 +196,8 @@ struct AppShellView: View {
         // Project pages pushed on the other tabs' stacks read their
         // mission rows from the shell's Projects view model.
         .environment(missionsVM)
+        // And whether that page is the new one, from the Projects timeline.
+        .environment(timeline)
         .conversationLinks(conversationLinkHost) { nav.openConversationLink($0) }
         .pageLinks(pageLinkRelay, resolve: { await deps.pageLinkOutcome($0, session: session) },
                    open: { nav.openPageLink($0) })
@@ -551,7 +563,7 @@ struct AppShellView: View {
             MissionRouteDestination(route: mission, session: session, deps: deps, vmCache: vmCache,
                                     onOpenConversation: { nav.openConversation(fromDecisions: $0) },
                                     onOpenItem: { nav.pushDecision($0) })
-        } else if let project = ProjectRoute(pathValue: value) {
+        } else if let project = ProjectPageTarget(pathValue: value) {
             ProjectRouteDestination(route: project, session: session, deps: deps, vmCache: vmCache,
                                     onOpenConversation: { nav.openConversation(fromDecisions: $0) },
                                     onOpenItem: { nav.pushDecision($0) },
@@ -600,17 +612,10 @@ struct AppShellView: View {
             MemoryEditorHost(viewModel: memoriesVM, name: MemoryRoute(pathValue: value)?.id,
                              onSaved: { nav.memorySaved(name: $0, wasNew: $1) }, onDeleted: { nav.memoryDeleted() })
                 .tabBarFollowsTheSelectedTab(otherwise: .hidden)
-        } else if let story = ProjectStoryRoute(pathValue: value) {
-            TimelineStoryHost(projectID: story.id, session: session, missionsViewModel: missionsVM,
-                              onAllDetails: { nav.pushProject($0) }, onOpenItem: { nav.pushMissionItem($0) },
-                              onOpenMilestone: openMilestone)
         } else if let list = TimelineListRoute(pathValue: value) {
             timelineListDestination(list)
-        } else if let project = ProjectRoute(pathValue: value) {
-            ProjectDetailHost(projectID: project.id, session: session, missionsViewModel: missionsVM,
-                              onOpenMission: { nav.pushMission($0) }, onOpenItem: { nav.pushMissionItem($0) },
-                              onOpenSession: { nav.openConversation(fromMissions: $0) },
-                              onOpenMilestone: openMilestone)
+        } else if let project = ProjectPageTarget(pathValue: value) {
+            projectPage(project)
         } else if let mission = MissionRoute(pathValue: value) {
             MissionDetailHost(missionID: mission.id, session: session, onOpenMilestone: openMilestone,
                               onOpenItem: { nav.pushMissionItem($0) },
@@ -627,10 +632,32 @@ struct AppShellView: View {
         }
     }
 
+    /// A project on the Projects stack: its new page, or a section of it,
+    /// while the timeline is shown; else the project page there is today.
+    @ViewBuilder private func projectPage(_ target: ProjectPageTarget) -> some View {
+        switch target.page(timelineShown: timeline.isShown) {
+        case .summary(let section):
+            TimelineStoryHost(projectID: target.projectID, section: section, session: session,
+                              missionsViewModel: missionsVM,
+                              onOpenSection: {
+                                  nav.pushTimelinePage(ProjectSectionRoute(projectID: target.projectID,
+                                                                           section: $0).pathValue)
+                              },
+                              onOpenMission: { nav.pushMission($0) }, onOpenItem: { nav.pushMissionItem($0) },
+                              onOpenSession: { nav.openConversation(fromMissions: $0) },
+                              onOpenMilestone: openMilestone)
+        case .todaysPage:
+            ProjectDetailHost(projectID: target.projectID, session: session, missionsViewModel: missionsVM,
+                              onOpenMission: { nav.pushMission($0) }, onOpenItem: { nav.pushMissionItem($0) },
+                              onOpenSession: { nav.openConversation(fromMissions: $0) },
+                              onOpenMilestone: openMilestone)
+        }
+    }
+
     /// What the timeline's pages open, on the Projects stack.
     var timelineActions: ProjectsTabRoot.TimelineActions {
         ProjectsTabRoot.TimelineActions(
-            onOpenStory: { nav.pushTimelinePage(ProjectStoryRoute(id: $0).pathValue) },
+            onOpenStory: { nav.pushProject($0) },
             onOpenList: { place in
                 guard let route = TimelineListRoute(place: place) else { return }
                 nav.pushTimelinePage(route.pathValue)
@@ -663,7 +690,8 @@ struct AppShellView: View {
         case .quiet: return TimelineFormat.wentQuiet
         case .long: return TimelineFormat.openLong
         case .finished: return TimelineFormat.finished
-        case .week, .projects: return "Projects"
+        case .projects: return TimelineFormat.allProjects
+        case .week: return "Projects"
         }
     }
 
@@ -793,7 +821,7 @@ struct AppShellView: View {
             MissionRouteDestination(route: mission, session: session, deps: deps, vmCache: vmCache,
                                     onOpenConversation: { nav.openConversationLink($0) },
                                     onOpenItem: { nav.push(ItemRoute(id: $0).pathValue, on: .search) })
-        } else if let project = ProjectRoute(pathValue: value) {
+        } else if let project = ProjectPageTarget(pathValue: value) {
             ProjectRouteDestination(route: project, session: session, deps: deps, vmCache: vmCache,
                                     onOpenConversation: { nav.openConversationLink($0) },
                                     onOpenItem: { nav.push(ItemRoute(id: $0).pathValue, on: .search) },

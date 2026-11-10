@@ -66,12 +66,17 @@ public struct ProjectFilesGridView: View {
     }
 
     @ViewBuilder private func tile(_ file: ProjectFile) -> some View {
-        if ProjectGallery.media(file).isVideo {
+        if Self.media(file).isVideo {
             videoTile(file)
         } else {
             ProjectFileTile(file: file, image: images[file.blobID], now: now,
                             nameFont: M.tileNameFont, metaFont: M.tileMetaFont)
         }
+    }
+
+    /// The file as the timeline's media: a video gets the dark ▶ panel.
+    private static func media(_ file: ProjectFile) -> TimelineMedia {
+        TimelineMedia(blobID: file.blobID, contentType: file.contentType ?? "", name: file.name ?? "")
     }
 
     /// A video has no poster frame: the timeline's dark ▶ panel, in the
@@ -80,7 +85,7 @@ public struct ProjectFilesGridView: View {
         let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
         let meta = ProjectFeedFormat.fileMeta(file, now: now)
         return VStack(alignment: .leading, spacing: 4) {
-            TimelineMediaView(media: ProjectGallery.media(file), image: nil, aspectRatio: Self.tileAspectRatio)
+            TimelineMediaView(media: Self.media(file), image: nil, aspectRatio: Self.tileAspectRatio)
                 .clipShape(shape)
                 .overlay(shape.strokeBorder(Color.primary.opacity(0.10)))
             Text(ProjectFeedFormat.fileName(file)).font(M.tileNameFont).foregroundStyle(Color.primary).lineLimit(1)
