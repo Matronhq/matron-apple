@@ -205,8 +205,13 @@ final class SyncScopeEngineTests: XCTestCase {
         socket.sent.compactMap { (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any] }
     }
 
-    private func until(_ what: String, _ condition: () throws -> Bool) async throws {
-        for _ in 0..<300 {
+    /// Polls until `condition` holds. The limit is wall-clock time, not a
+    /// count of 10 ms naps: on a loaded runner each nap overruns, and the
+    /// stubbed fetches themselves take longer.
+    private func until(_ what: String, within seconds: Double = 20,
+                       _ condition: () throws -> Bool) async throws {
+        let deadline = ContinuousClock.now + .seconds(seconds)
+        while ContinuousClock.now < deadline {
             if (try? condition()) == true { return }
             try await Task.sleep(for: .milliseconds(10))
         }
