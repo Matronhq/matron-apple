@@ -558,6 +558,8 @@ final class ProjectDetailViewModelTests: XCTestCase {
     func testProjectActionsWords() {
         XCTAssertEqual(ProjectActionsFormat.addMission, "Add a mission")
         XCTAssertEqual(ProjectActionsFormat.ask, "Ask the Coordinator about this")
+        XCTAssertEqual(ProjectActionsFormat.askLabel(asked: false), "Ask the Coordinator about this")
+        XCTAssertEqual(ProjectActionsFormat.askLabel(asked: true), "Asked the Coordinator")
         XCTAssertEqual(ProjectActionsFormat.rename, "Rename…")
         XCTAssertEqual(ProjectActionsFormat.mergeInto, "Merge into…")
         XCTAssertEqual(ProjectActionsFormat.close, "Close project…")

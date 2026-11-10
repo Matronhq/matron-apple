@@ -6,12 +6,14 @@ import MatronModels
 /// this", "Rename…", "Merge into…" (the other open projects) and "Close
 /// project…". The writes are dimmed on a project that is not open and
 /// until its missions and projects have loaded
-/// (`ProjectActionsAvailability`). The menu only says what was chosen: the
+/// (`ProjectActionsAvailability`). Once the question was sent the Ask
+/// entry says "Asked the Coordinator" and is dimmed. The menu only says what was chosen: the
 /// host asks before a merge or a close, and shows the sheet that takes the
 /// new name.
 public struct ProjectActionsMenu: View {
     let isOpen: Bool
     let isLoaded: Bool
+    let asked: Bool
     let unfiled: [Mission]
     let mergeTargets: [Project]
     let onAddMission: (String) -> Void
@@ -21,14 +23,15 @@ public struct ProjectActionsMenu: View {
     let onClose: () -> Void
 
     /// `isOpen` is the page's own word on the project; `isLoaded` is
-    /// whether `unfiled` and `mergeTargets` have been read. `onAddMission`
-    /// is given the mission's id, `onMerge` the id of the project to merge
+    /// whether `unfiled` and `mergeTargets` have been read; `asked` is
+    /// whether this page has already sent its question. `onAddMission` is
+    /// given the mission's id, `onMerge` the id of the project to merge
     /// into.
-    public init(isOpen: Bool, isLoaded: Bool, unfiled: [Mission], mergeTargets: [Project],
+    public init(isOpen: Bool, isLoaded: Bool, asked: Bool = false, unfiled: [Mission], mergeTargets: [Project],
                 onAddMission: @escaping (String) -> Void,
                 onAsk: @escaping () -> Void, onRename: @escaping () -> Void,
                 onMerge: @escaping (String) -> Void, onClose: @escaping () -> Void) {
-        self.isOpen = isOpen; self.isLoaded = isLoaded
+        self.isOpen = isOpen; self.isLoaded = isLoaded; self.asked = asked
         self.unfiled = unfiled; self.mergeTargets = mergeTargets; self.onAddMission = onAddMission
         self.onAsk = onAsk; self.onRename = onRename; self.onMerge = onMerge; self.onClose = onClose
     }
@@ -54,7 +57,8 @@ public struct ProjectActionsMenu: View {
             }
         }
         .accessibilityIdentifier("projects.actions.addMission")
-        Button(ProjectActionsFormat.ask, action: onAsk)
+        Button(ProjectActionsFormat.askLabel(asked: asked), action: onAsk)
+            .disabled(asked)
             .accessibilityIdentifier("projects.actions.ask")
         Divider()
         Button(ProjectActionsFormat.rename, action: onRename)

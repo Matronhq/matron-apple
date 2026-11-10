@@ -279,6 +279,8 @@ struct MacTimelineProjectHost: View {
     @State private var renameShown = false
     /// "Ask the Coordinator" could not be sent.
     @State private var askError: String?
+    /// "Ask the Coordinator" was sent from this page: its entry says so.
+    @State private var asked = false
     @State private var imagePreview: GalleryPreview?
     @State private var mediaPreview: MediaPlayerPreview?
 
@@ -417,7 +419,7 @@ struct MacTimelineProjectHost: View {
         ProjectSummaryView(page: page, image: page.media.flatMap { images.images[$0.blobID] },
                            pixelSize: page.media.flatMap { images.sizes[$0.blobID] },
                            onOpenItem: actions.onOpenItem, onOpenSection: { onOpenSection($0) }) {
-            ProjectActionsMenu(isOpen: page.isOpen, isLoaded: detail?.page != nil,
+            ProjectActionsMenu(isOpen: page.isOpen, isLoaded: detail?.page != nil, asked: asked,
                                unfiled: detail?.page?.unfiledMissions ?? [],
                                mergeTargets: detail?.page?.mergeTargets ?? [],
                                onAddMission: { id in act { await $0.addMission(id) } },
@@ -541,13 +543,18 @@ struct MacTimelineProjectHost: View {
     }
 
     private func ask() {
-        guard let deps, !title.isEmpty else { return }
+        guard let deps, !title.isEmpty, !asked else { return }
         let send = deps.coordinatorAsk(for: session, coordinatorConvoID: { [weak missionsViewModel] in
             missionsViewModel?.coordinatorConvoID
         })
         let message = ProjectActionsFormat.askMessage(title: title)
         Task {
-            do { try await send(message) } catch { askError = error.localizedDescription }
+            do {
+                try await send(message)
+                asked = true
+            } catch {
+                askError = error.localizedDescription
+            }
         }
     }
 

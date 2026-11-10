@@ -105,6 +105,8 @@ struct TimelineStoryHost: View {
     /// Something asked of this page could not be done: "Ask the
     /// Coordinator" not sent, a file that would not open.
     @State private var actionError: String?
+    /// "Ask the Coordinator" was sent from this page: its entry says so.
+    @State private var asked = false
     /// One `.sheet` for the three (`ProjectsTabRoot.sheet` says why).
     @State private var sheet: Sheet?
     /// Videos being fetched for the player: a second tap starts no second fetch.
@@ -187,6 +189,7 @@ struct TimelineStoryHost: View {
             detail?.stop()
             detail = nil
             summary = nil
+            asked = false
             loadedProjectID = projectID
         }
         detail?.start()
@@ -298,7 +301,7 @@ struct TimelineStoryHost: View {
         ProjectSummaryView(page: page, image: page.media.flatMap { images.images[$0.blobID] },
                            pixelSize: page.media.flatMap { images.sizes[$0.blobID] },
                            onOpenItem: onOpenItem, onOpenSection: onOpenSection) {
-            ProjectActionsMenu(isOpen: page.isOpen, isLoaded: detail?.page != nil,
+            ProjectActionsMenu(isOpen: page.isOpen, isLoaded: detail?.page != nil, asked: asked,
                                unfiled: detail?.page?.unfiledMissions ?? [],
                                mergeTargets: detail?.page?.mergeTargets ?? [],
                                onAddMission: { id in act { await $0.addMission(id) } },
@@ -458,13 +461,18 @@ struct TimelineStoryHost: View {
     }
 
     private func ask() {
-        guard let deps, !title.isEmpty else { return }
+        guard let deps, !title.isEmpty, !asked else { return }
         let send = deps.coordinatorAsk(for: session, coordinatorConvoID: { [weak missionsViewModel] in
             missionsViewModel?.coordinatorConvoID
         })
         let message = ProjectActionsFormat.askMessage(title: title)
         Task {
-            do { try await send(message) } catch { actionError = error.localizedDescription }
+            do {
+                try await send(message)
+                asked = true
+            } catch {
+                actionError = error.localizedDescription
+            }
         }
     }
 

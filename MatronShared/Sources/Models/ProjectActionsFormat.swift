@@ -4,9 +4,14 @@ import Foundation
 public enum ProjectActionsFormat {
     public static let addMission = "Add a mission"
     public static let ask = "Ask the Coordinator about this"
+    /// The entry once the question was sent from this page.
+    public static let asked = "Asked the Coordinator"
     public static let rename = "Rename…"
     public static let mergeInto = "Merge into…"
     public static let close = "Close project…"
+
+    /// The Ask entry's words: what it offers, or that it was sent.
+    public static func askLabel(asked: Bool) -> String { asked ? Self.asked : ask }
 
     /// What "Ask the Coordinator about this" sends.
     public static func askMessage(title: String) -> String {
