@@ -76,7 +76,8 @@ public struct TimelineWeekView<Footer: View>: View {
                 ForEach(rows.indices, id: \.self) { index in
                     // Cards in a row share the tallest one's height.
                     HStack(alignment: .top, spacing: TimelinePage.cardSpacing) {
-                        ForEach(rows[index], id: \.project.id) { story in card(story) }
+                        // By position: two written stories may share a main project.
+                        ForEach(Array(rows[index].enumerated()), id: \.offset) { _, story in card(story) }
                         if rows[index].count < columns { Color.clear.frame(maxWidth: .infinity) }
                     }
                     .fixedSize(horizontal: false, vertical: true)
