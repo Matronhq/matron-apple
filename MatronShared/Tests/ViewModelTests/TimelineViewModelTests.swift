@@ -16,6 +16,7 @@ private final class FakeTimeline: TimelineProviding, @unchecked Sendable {
         var finishedPages: [String?: (rows: [FinishedProject], nextBefore: String?)] = [:]
         var weeksError: Error?
         var weekError: Error?
+        var finishedError: Error?
         var failsLists = false
         var weeksCalls: [String?] = []
         var weekCalls: [String] = []
@@ -46,6 +47,8 @@ private final class FakeTimeline: TimelineProviding, @unchecked Sendable {
     }
     var weeksError: Error? { get { read(\.weeksError) } set { write { $0.weeksError = newValue } } }
     var weekError: Error? { get { read(\.weekError) } set { write { $0.weekError = newValue } } }
+    /// What every finished read throws, when set.
+    var finishedError: Error? { get { read(\.finishedError) } set { write { $0.finishedError = newValue } } }
     /// The went-quiet and open-a-long-time reads throw.
     var failsLists: Bool { get { read(\.failsLists) } set { write { $0.failsLists = newValue } } }
     var weeksCalls: [String?] { read(\.weeksCalls) }
@@ -122,11 +125,12 @@ private final class FakeTimeline: TimelineProviding, @unchecked Sendable {
     }
 
     func finishedProjects(before: String?, limit: Int?) async throws -> (rows: [FinishedProject], nextBefore: String?) {
-        let page = lock.withLock { () -> (rows: [FinishedProject], nextBefore: String?) in
+        let (page, failure) = lock.withLock { () -> ((rows: [FinishedProject], nextBefore: String?), Error?) in
             state.finishedCalls.append(before)
-            return state.finishedPages[before] ?? ([], nil)
+            return (state.finishedPages[before] ?? ([], nil), state.finishedError)
         }
         await holdIfGated("finished:\(before ?? "nil")")
+        if let failure { throw failure }
         return page
     }
 
@@ -610,6 +614,51 @@ final class TimelineViewModelTests: XCTestCase {
         await vm.loadMoreProjects()
         XCTAssertNil(vm.error)
         XCTAssertTrue(vm.hasMoreProjects, "the page can be asked for again")
+    }
+
+    /// The same for the weeks, an earlier page of them, a week, and a
+    /// page of the finished list: each can be asked for again.
+    func testACancelledWeeksOrFinishedReadSetsNoError() async {
+        let cancelled = JournalAPIError.transport("cancelled")
+        let (vm, fake, _) = make()
+        fake.weeksError = cancelled
+        await vm.start()
+        XCTAssertNil(vm.error, "the first page of weeks")
+        XCTAssertNil(vm.isSupported)
+
+        fake.weeksError = nil
+        await vm.start()
+        fake.weeksError = cancelled
+        await vm.loadEarlierWeeks()
+        XCTAssertNil(vm.error, "an earlier page of weeks")
+        XCTAssertTrue(vm.hasEarlierWeeks)
+        await vm.refresh()
+        XCTAssertNil(vm.error, "the weeks again")
+        XCTAssertEqual(vm.weeks.map(\.week), ["2026-11-02", "2026-10-26"], "what loaded stays")
+
+        fake.weeksError = nil
+        fake.weekError = cancelled
+        await vm.select(.week("2026-10-26"))
+        XCTAssertNil(vm.error, "a week")
+        fake.weekError = nil
+
+        let finish = { (n: Int) in FinishedProject(project: self.project(n), finishedAt: self.now) }
+        fake.finishedPages[nil] = ([finish(1)], "cursor")
+        fake.finishedPages["cursor"] = ([finish(2)], nil)
+        fake.finishedError = cancelled
+        await vm.select(.finished)
+        XCTAssertNil(vm.error, "the finished list")
+        fake.finishedError = nil
+        await vm.select(.week("2026-11-02"))
+        await vm.select(.finished)
+        XCTAssertEqual(vm.finished.map(\.project.num), [1], "the next visit reads it")
+        fake.finishedError = cancelled
+        await vm.loadMoreFinished()
+        XCTAssertNil(vm.error, "a later page of the finished list")
+        XCTAssertTrue(vm.hasMoreFinished)
+        fake.finishedError = JournalAPIError.transport("offline")
+        await vm.loadMoreFinished()
+        XCTAssertNotNil(vm.error, "a read that failed still says so")
     }
 
     func testPagingAllProjectsDuringAReloadIsRefused() async {

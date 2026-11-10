@@ -8,6 +8,8 @@ import MatronJournal
 /// all-projects lists page.
 /// A journal without the timeline routes (404 on the weeks list) leaves
 /// `isSupported` false so the host falls back to the plain Projects list.
+///
+/// A read that was called off sets no `error`: nothing failed.
 @MainActor @Observable
 public final class TimelineViewModel {
     /// The remote flag that turns the timeline on.
@@ -136,7 +138,7 @@ public final class TimelineViewModel {
             weeks += page.weeks
             weeksNextBefore = page.nextBefore
         } catch {
-            if generation == weeksGeneration { self.error = error.localizedDescription }
+            if generation == weeksGeneration, !error.isReadCancellation { self.error = error.localizedDescription }
         }
     }
 
@@ -151,7 +153,7 @@ public final class TimelineViewModel {
             finished += page.rows
             finishedNextBefore = page.nextBefore
         } catch {
-            if generation == finishedGeneration { self.error = error.localizedDescription }
+            if generation == finishedGeneration, !error.isReadCancellation { self.error = error.localizedDescription }
         }
     }
 
@@ -185,7 +187,8 @@ public final class TimelineViewModel {
     // MARK: - Loading
 
     /// Reads the first page of weeks. False when there is nothing to build on
-    /// (unsupported journal, or a failed read, which sets `error`).
+    /// (unsupported journal, a read called off, or a failed read, which
+    /// sets `error`).
     private func loadWeeks() async -> Bool {
         weeksGeneration += 1
         let generation = weeksGeneration
@@ -202,7 +205,7 @@ public final class TimelineViewModel {
             if generation == weeksGeneration { isSupported = false }
             return false
         } catch {
-            if generation == weeksGeneration { self.error = error.localizedDescription }
+            if generation == weeksGeneration, !error.isReadCancellation { self.error = error.localizedDescription }
             return false
         }
     }
