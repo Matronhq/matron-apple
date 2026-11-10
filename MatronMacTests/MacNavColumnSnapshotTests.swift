@@ -42,7 +42,7 @@ final class MacNavColumnSnapshotTests: XCTestCase {
     }
 
     func testEntriesInBarOrder() {
-        XCTAssertEqual(MacNav.allCases, [.coordinator, .missions, .decisions, .conversations, .memories])
+        XCTAssertEqual(MacNav.allCases, [.coordinator, .missions, .decisions, .conversations, .memories, .boxes])
         XCTAssertEqual(MacNav.decisions.title, "For you")
         XCTAssertEqual(MacNav.decisions.symbol, "tray")
         XCTAssertEqual(MacNavColumn.width, 72)

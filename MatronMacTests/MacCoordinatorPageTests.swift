@@ -22,11 +22,11 @@ final class MacCoordinatorPageTests: XCTestCase {
     /// its own bus command. Memories is last, so ⌘1…⌘4 kept their entries.
     func test_viewMenuShortcuts_areCmd1To5_topToBottom() {
         let shortcuts = ChatCommands.navShortcuts
-        XCTAssertEqual(shortcuts.map(\.nav), [.coordinator, .missions, .decisions, .conversations, .memories])
+        XCTAssertEqual(shortcuts.map(\.nav), [.coordinator, .missions, .decisions, .conversations, .memories, .boxes])
         XCTAssertEqual(shortcuts.map(\.nav), MacNav.allCases)
-        XCTAssertEqual(shortcuts.map(\.key), ["1", "2", "3", "4", "5"])
+        XCTAssertEqual(shortcuts.map(\.key), ["1", "2", "3", "4", "5", "6"])
         XCTAssertEqual(shortcuts.map(\.command),
-                       [.showCoordinator, .showMissions, .showDecisions, .showConversations, .showMemories])
+                       [.showCoordinator, .showMissions, .showDecisions, .showConversations, .showMemories, .showBoxes])
         XCTAssertEqual(shortcuts.map(\.title), shortcuts.map(\.nav.title), "menu titles are the nav entries' titles")
     }
 

@@ -5,8 +5,8 @@ import MatronJournal
 
 /// Top-level Mac navigation entries (app shell, spec §5), top to bottom.
 /// The Coordinator is an entry here (its own page, ⌘1) —
-/// and the only way to it. Memories (spec 2026-09-27 memories) is last so
-/// ⌘1…⌘4 keep their entries. The user's pinned desk
+/// and the only way to it. Memories (spec 2026-09-27 memories) and Boxes
+/// come last so ⌘1…⌘4 keep their entries. The user's pinned desk
 /// chats (journal "Pinned desk chats") are `.desk` entries drawn under the
 /// Coordinator, each a full-width page like the Coordinator's.
 enum MacNav: Hashable {
@@ -15,12 +15,13 @@ enum MacNav: Hashable {
     case decisions
     case conversations
     case memories
+    case boxes
     /// A pinned desk chat's page, by its conversation id.
     case desk(String)
 
     /// The fixed entries, top to bottom (desks are drawn among them, under
     /// the Coordinator).
-    static let allCases: [MacNav] = [.coordinator, .missions, .decisions, .conversations, .memories]
+    static let allCases: [MacNav] = [.coordinator, .missions, .decisions, .conversations, .memories, .boxes]
 
     var deskID: String? {
         if case .desk(let id) = self { return id }
@@ -37,6 +38,7 @@ enum MacNav: Hashable {
         case .decisions: return "For you"
         case .conversations: return "Conversations"
         case .memories: return "Memories"
+        case .boxes: return "Boxes"
         case .desk: return "Pinned chat"
         }
     }
@@ -48,6 +50,7 @@ enum MacNav: Hashable {
         case .decisions: return "tray"
         case .conversations: return "bubble.left.and.bubble.right"
         case .memories: return "brain"
+        case .boxes: return "server.rack"
         case .desk: return "pin"
         }
     }
