@@ -4,8 +4,8 @@ import MatronModels
 import MatronViewModels
 
 /// The iPhone's Projects root with the timeline shown: the week picked in
-/// the title's menu, then "Worth a look", three rows that push their
-/// lists. A story pushes the project's story. Its alert is
+/// the title's menu, then "All projects" (on a journal that has the list)
+/// and "Worth a look", rows that push their lists. A card pushes the project's page. Its alert is
 /// `ProjectsTabRoot`'s one.
 struct TimelinePhoneRoot: View {
     let state: TimelineHostState
@@ -13,7 +13,6 @@ struct TimelinePhoneRoot: View {
     let session: UserSession
     let onOpenStory: (String) -> Void
     let onOpenList: (TimelinePlace) -> Void
-    let onOpenItem: (String) -> Void
 
     /// One entry of the week menu.
     struct WeekChoice: Identifiable, Equatable {
@@ -27,6 +26,15 @@ struct TimelinePhoneRoot: View {
         weeks.enumerated().map { WeekChoice(week: $1.week, title: TimelineFormat.sidebarTitle(index: $0, week: $1.week)) }
     }
 
+    /// The lists under "Worth a look", top to bottom.
+    static let worthALookPlaces: [TimelinePlace] = [.quiet, .long, .finished]
+
+    /// The rows at the foot of the week page: every project first, unless
+    /// the journal has no all-projects list.
+    static func footPlaces(showsAllProjects: Bool) -> [TimelinePlace] {
+        (showsAllProjects ? [.projects] : []) + worthALookPlaces
+    }
+
     /// The week page's place: the week the menu shows.
     static func place(_ state: TimelineHostState) -> TimelinePlace? {
         state.week.map { .week($0) }
@@ -34,8 +42,8 @@ struct TimelinePhoneRoot: View {
 
     var body: some View {
         TimelinePlacePage(host: state, viewModel: viewModel, place: Self.place(state), session: session,
-                          onOpenProject: onOpenStory, onOpenItem: onOpenItem) {
-            worthALook
+                          onOpenProject: onOpenStory) {
+            footRows
         }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
@@ -64,24 +72,47 @@ struct TimelinePhoneRoot: View {
         if viewModel.hasEarlierWeeks {
             Button("Earlier weeks") { Task { await viewModel.loadEarlierWeeks() } }
         }
+        if viewModel.showsAllProjects {
+            Divider()
+            Button { onOpenList(.projects) } label: { Label(TimelineFormat.allProjects, systemImage: ProjectGlyph.symbol) }
+        }
     }
 
-    /// "Worth a look": each row pushes its list, with its count when known.
-    private var worthALook: some View {
+    /// "All projects", then "Worth a look": each row pushes its list, with
+    /// its count when known.
+    private var footRows: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(TimelineFormat.worthALook)
-                .font(.footnote.weight(.semibold)).tracking(0.8).foregroundStyle(.secondary)
-                .padding(.bottom, 6)
-                .accessibilityAddTraits(.isHeader)
-            row(.quiet, symbol: "circle.lefthalf.filled", TimelineFormat.wentQuiet, count: viewModel.quiet?.total)
-            Divider()
-            row(.long, symbol: "hourglass", TimelineFormat.openLong, count: viewModel.long?.total)
-            Divider()
-            // The journal sends no finished total; a count of the rows
-            // loaded so far would read as one.
-            row(.finished, symbol: "checkmark", TimelineFormat.finished, count: nil)
+            let places = Self.footPlaces(showsAllProjects: viewModel.showsAllProjects)
+            ForEach(places, id: \.self) { place in
+                if place == Self.worthALookPlaces.first {
+                    Text(TimelineFormat.worthALook)
+                        .font(.footnote.weight(.semibold)).tracking(0.8).foregroundStyle(.secondary)
+                        .padding(.top, 18).padding(.bottom, 6)
+                        .accessibilityAddTraits(.isHeader)
+                } else if place != places.first {
+                    Divider()
+                }
+                row(place)
+            }
         }
         .padding(.top, 8)
+    }
+
+    @ViewBuilder private func row(_ place: TimelinePlace) -> some View {
+        switch place {
+        case .projects:
+            row(place, symbol: ProjectGlyph.symbol, TimelineFormat.allProjects, count: viewModel.allProjects?.total)
+        case .quiet:
+            row(place, symbol: "circle.lefthalf.filled", TimelineFormat.wentQuiet, count: viewModel.quiet?.total)
+        case .long:
+            row(place, symbol: "hourglass", TimelineFormat.openLong, count: viewModel.long?.total)
+        case .finished:
+            // The journal sends no finished total; a count of the rows
+            // loaded so far would read as one.
+            row(place, symbol: "checkmark", TimelineFormat.finished, count: nil)
+        case .week:
+            EmptyView()
+        }
     }
 
     private func row(_ place: TimelinePlace, symbol: String, _ title: String, count: Int?) -> some View {

@@ -258,6 +258,179 @@ final class TimelineAPITests: XCTestCase {
         XCTAssertNil(page.nextBefore)
     }
 
+    // MARK: marks
+
+    func testAStoryDecodesItsMarks() throws {
+        let story = try XCTUnwrap(week(stories: [[
+            "project": project(), "sentence": "x", "next": NSNull(), "needs_you": [],
+            "marks": ["for_you": 2, "done": 3, "next": true],
+        ]]).stories.first)
+        XCTAssertEqual(story.marks, TimelineMarks(forYou: 2, done: 3, next: true))
+        XCTAssertFalse(story.marks.isEmpty)
+    }
+
+    func testMarksMissingFieldsAreZeroAndFalse() throws {
+        let marks = try XCTUnwrap(TimelineMarks(json: ["done": 1]))
+        XCTAssertEqual(marks, TimelineMarks(forYou: 0, done: 1, next: false))
+        XCTAssertTrue(try XCTUnwrap(TimelineMarks(json: [:])).isEmpty)
+        XCTAssertNil(TimelineMarks(json: nil))
+    }
+
+    func testAStoryWithoutMarksDerivesThemFromWhatItCarries() throws {
+        let stories = try week(stories: [
+            ["project": project(), "sentence": "x", "next": "Order brakes",
+             "needs_you": [["id": "it_1", "num": 41, "title": "Pick a colour", "done": false],
+                           ["id": "it_2", "num": 42, "title": "Order brakes", "done": true]]],
+            ["project": project("pj_b", num: 9, title: "Bike"), "sentence": "y", "next": NSNull(),
+             "needs_you": [], "marks": NSNull()],
+        ]).stories
+        XCTAssertEqual(stories[0].marks, TimelineMarks(forYou: 1, done: 0, next: true),
+                       "only the items still waiting count, and nothing is known done")
+        XCTAssertEqual(stories[1].marks, TimelineMarks(forYou: 0, done: 0, next: false))
+        XCTAssertTrue(stories[1].marks.isEmpty)
+    }
+
+    // MARK: all projects
+
+    func testProjectsDecodeTotalRowsAndCursor() throws {
+        let list = try JournalAPI.decodeTimelineProjects([
+            "total": 14,
+            "rows": [
+                ["project": project("pj_a", num: 7, title: "Promo launch"), "last_moved_at": 1_760_000_000_000,
+                 "open_missions": 3],
+                ["project": ["num": 3, "title": "No id"], "last_moved_at": 1_760_000_000_000, "open_missions": 1],
+                ["project": project("pj_b", num: 9, title: "Docs site"), "last_moved_at": NSNull()],
+            ],
+            "next_before": "1759000000000:pj_b",
+        ])
+        XCTAssertEqual(list.total, 14)
+        XCTAssertEqual(list.rows.map(\.project.id), ["pj_a", "pj_b"], "the row without a project id is dropped")
+        XCTAssertEqual(list.rows[0].project, TimelineProjectRef(id: "pj_a", num: 7, title: "Promo launch"))
+        XCTAssertEqual(list.rows[0].lastMovedAt, date(1_760_000_000_000))
+        XCTAssertEqual(list.rows[0].openMissions, 3)
+        XCTAssertNil(list.rows[1].lastMovedAt, "a project with no recorded move")
+        XCTAssertEqual(list.rows[1].openMissions, 0)
+        XCTAssertEqual(list.nextBefore, "1759000000000:pj_b")
+    }
+
+    func testProjectsNullCursorIsNilAndAMalformedListIsATransportError() throws {
+        let list = try JournalAPI.decodeTimelineProjects(["total": 0, "rows": [], "next_before": NSNull()])
+        XCTAssertEqual(list.rows, [])
+        XCTAssertNil(list.nextBefore)
+        XCTAssertThrowsError(try JournalAPI.decodeTimelineProjects(["total": 1])) { error in
+            guard case JournalAPIError.transport = error else { return XCTFail("got \(error)") }
+        }
+    }
+
+    // MARK: project page
+
+    private func pageJSON(_ extra: [String: Any] = [:]) -> [String: Any] {
+        var json: [String: Any] = [
+            "project": ["id": "pj_a", "num": 7, "title": "Promo launch", "state": "open", "live": true],
+            "sentence": "The landing page is up", "sentence_source": "milestone", "next": "Write the email",
+            "needs_you": [["id": "it_1", "num": 41, "title": "Pick a headline"], ["num": 42, "title": "No id"]],
+            "needs_you_total": 5,
+            "media": ["blob_id": "bl_1", "content_type": "image/png", "name": "landing.png"],
+            "counts": ["weeks": 6, "missions_open": 2, "missions_done": 9, "files": 4],
+        ]
+        json.merge(extra) { $1 }
+        return json
+    }
+
+    func testAProjectPageDecodes() throws {
+        let page = try JournalAPI.decodeTimelineProject(pageJSON())
+        XCTAssertEqual(page.project, TimelineProjectRef(id: "pj_a", num: 7, title: "Promo launch"))
+        XCTAssertTrue(page.isLive)
+        XCTAssertEqual(page.state, "open")
+        XCTAssertEqual(page.sentence, "The landing page is up")
+        XCTAssertEqual(page.next, "Write the email")
+        XCTAssertEqual(page.needsYou, [TimelineItemRef(id: "it_1", num: 41, title: "Pick a headline")],
+                       "an item without an id is dropped")
+        XCTAssertEqual(page.needsYouTotal, 5)
+        XCTAssertEqual(page.media, TimelineMedia(blobID: "bl_1", contentType: "image/png", name: "landing.png"))
+        XCTAssertEqual(page.weeks, 6)
+        XCTAssertEqual(page.missionsOpen, 2)
+        XCTAssertEqual(page.missionsDone, 9)
+        XCTAssertEqual(page.files, 4)
+        XCTAssertNil(page.mergedFromID)
+    }
+
+    func testAProjectPageReachedThroughAMergedProjectSaysWhich() throws {
+        let page = try JournalAPI.decodeTimelineProject(pageJSON(["merged_from": ["id": "pj_old", "num": 3]]))
+        XCTAssertEqual(page.mergedFromID, "pj_old")
+        XCTAssertEqual(page.project.id, "pj_a")
+    }
+
+    func testAQuietFinishedProjectPageFallsBack() throws {
+        let page = try JournalAPI.decodeTimelineProject([
+            "project": ["id": "pj_b", "num": 9, "title": "Docs site", "state": "closed", "live": false],
+            "sentence": NSNull(), "sentence_source": NSNull(), "next": NSNull(),
+            "needs_you": [], "media": NSNull(),
+        ])
+        XCTAssertFalse(page.isLive)
+        XCTAssertEqual(page.state, "closed")
+        XCTAssertNil(page.sentence)
+        XCTAssertNil(page.next)
+        XCTAssertEqual(page.needsYou, [])
+        XCTAssertEqual(page.needsYouTotal, 0, "a missing total counts the items sent")
+        XCTAssertNil(page.media)
+        XCTAssertEqual([page.weeks, page.missionsOpen, page.missionsDone, page.files], [0, 0, 0, 0])
+    }
+
+    func testAProjectPageWithoutAProjectIsATransportError() {
+        XCTAssertThrowsError(try JournalAPI.decodeTimelineProject(["sentence": "x"])) { error in
+            guard case JournalAPIError.transport = error else { return XCTFail("got \(error)") }
+        }
+    }
+
+    // MARK: project history
+
+    private func milestone(_ id: String, title: String) -> [String: Any] {
+        ["id": id, "mission_id": "ms_1", "num": 1, "kind": "progress", "title": title, "convo_id": "cv_1",
+         "seq": 12, "created_at": 1_762_100_000_000, "mission_num": 31]
+    }
+
+    func testProjectHistoryDecodesWeeksCardsAndMilestones() throws {
+        let page = try JournalAPI.decodeTimelineProjectHistory([
+            "weeks": [
+                ["week": "2026-11-02", "start": 1_762_041_600_000, "end": 1_762_646_400_000,
+                 "card": ["sentence": "The landing page is up",
+                          "media": ["blob_id": "bl_1", "content_type": "image/png", "name": "landing.png"]],
+                 "milestones": [milestone("ml_1", title: "Landing page live"), ["id": "ml_bad"]],
+                 "more_milestones": 4],
+                ["week": "2026-10-26", "start": 1_761_436_800_000, "end": 1_762_041_600_000,
+                 "card": NSNull(), "milestones": [milestone("ml_2", title: "Copy drafted")]],
+                ["start": 1, "end": 2, "card": NSNull(), "milestones": []],
+            ],
+            "next_before": "2026-10-26",
+        ])
+        XCTAssertEqual(page.weeks.map(\.week), ["2026-11-02", "2026-10-26"], "the week without a key is dropped")
+        let first = page.weeks[0]
+        XCTAssertEqual(first.start, date(1_762_041_600_000))
+        XCTAssertEqual(first.end, date(1_762_646_400_000))
+        XCTAssertEqual(first.sentence, "The landing page is up")
+        XCTAssertEqual(first.media, TimelineMedia(blobID: "bl_1", contentType: "image/png", name: "landing.png"))
+        XCTAssertEqual(first.milestones.map(\.id), ["ml_1"], "a malformed milestone is dropped")
+        XCTAssertEqual(first.milestones[0].milestone.title, "Landing page live")
+        XCTAssertEqual(first.milestones[0].missionNum, 31)
+        XCTAssertEqual(first.moreMilestones, 4)
+        let second = page.weeks[1]
+        XCTAssertNil(second.sentence, "a week with no card has no sentence")
+        XCTAssertNil(second.media)
+        XCTAssertEqual(second.milestones.map(\.id), ["ml_2"])
+        XCTAssertEqual(second.moreMilestones, 0)
+        XCTAssertEqual(page.nextBefore, "2026-10-26")
+    }
+
+    func testProjectHistoryNullCursorIsNilAndAMalformedAnswerIsATransportError() throws {
+        let page = try JournalAPI.decodeTimelineProjectHistory(["weeks": [], "next_before": NSNull()])
+        XCTAssertEqual(page.weeks, [])
+        XCTAssertNil(page.nextBefore)
+        XCTAssertThrowsError(try JournalAPI.decodeTimelineProjectHistory(["foo": 1])) { error in
+            guard case JournalAPIError.transport = error else { return XCTFail("got \(error)") }
+        }
+    }
+
     // MARK: requests
 
     func testTimelineWeeksSendsBeforeAndLimit() async throws {
@@ -308,5 +481,41 @@ final class TimelineAPITests: XCTestCase {
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         XCTAssertEqual(items.first { $0.name == "before" }?.value, "1759000000000:pj_b")
         XCTAssertEqual(items.first { $0.name == "limit" }?.value, "30")
+    }
+
+    func testTimelineProjectsSendsTheCursorAndLimit() async throws {
+        let (api, recorder) = makeStubbedAPI(body: ["total": 0, "rows": [], "next_before": NSNull()])
+        let list = try await api.timelineProjects(before: "1759000000000:pj_b", limit: 50)
+        XCTAssertEqual(list.total, 0)
+        let url = try XCTUnwrap(recorder.lastRequest?.url)
+        XCTAssertEqual(url.path, "/timeline/projects")
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        XCTAssertEqual(items.first { $0.name == "before" }?.value, "1759000000000:pj_b")
+        XCTAssertEqual(items.first { $0.name == "limit" }?.value, "50")
+    }
+
+    func testTimelineProjectGetsTheProjectPath() async throws {
+        let (api, recorder) = makeStubbedAPI(body: pageJSON())
+        let page = try await api.timelineProject("pj_a")
+        XCTAssertEqual(page.project.id, "pj_a")
+        let url = try XCTUnwrap(recorder.lastRequest?.url)
+        XCTAssertEqual(url.path, "/timeline/projects/pj_a")
+        XCTAssertNil(url.query)
+    }
+
+    func testTimelineProject404IsNotFound() async {
+        let (api, _) = makeStubbedAPI(status: 404, body: ["error": "not_found"])
+        do { _ = try await api.timelineProject("pj_a"); XCTFail("expected a throw") }
+        catch { XCTAssertEqual(error as? JournalAPIError, .notFound) }
+    }
+
+    func testTimelineProjectHistorySendsTheWeekCursorAndLimit() async throws {
+        let (api, recorder) = makeStubbedAPI(body: ["weeks": [], "next_before": NSNull()])
+        _ = try await api.timelineProjectHistory("pj_a", before: "2026-10-26", limit: 8)
+        let url = try XCTUnwrap(recorder.lastRequest?.url)
+        XCTAssertEqual(url.path, "/timeline/projects/pj_a/history")
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        XCTAssertEqual(items.first { $0.name == "before" }?.value, "2026-10-26")
+        XCTAssertEqual(items.first { $0.name == "limit" }?.value, "8")
     }
 }

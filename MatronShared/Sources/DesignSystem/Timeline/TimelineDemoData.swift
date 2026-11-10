@@ -3,7 +3,7 @@ import SwiftUI
 import CoreGraphics
 import MatronModels
 
-/// Made-up weeks, stories and lists for previews and snapshot tests, with
+/// Made-up weeks, cards and lists for previews and snapshot tests, with
 /// pictures drawn in code. Nothing here comes from a real account.
 public enum TimelineDemoData {
     /// Thursday 5 November 2026, 15:00 in London.
@@ -32,65 +32,70 @@ public enum TimelineDemoData {
 
     public static let thisWeek = week(
         "2026-11-02", final: false,
-        lede: "The docs site got search and is on course for Wednesday. Themes gained sepia and high contrast, and "
-            + "offline mode went into beta. **Three things are waiting on you.**",
         stories: [
-            TimelineStory(project: docs, sentence: "Search is live on staging, and pages now load in under a second.",
-                          next: "a rehearsal on Monday, then launch on Wednesday.",
-                          needsYou: [item(11, "Approve the getting-started copy")], media: image("docs", "docs-search.png")),
+            TimelineStory(project: mobileSearch, sentence: "Search works in both apps now, with recent searches kept on the phone.",
+                          media: image("phone", "search-phone.png"), marks: TimelineMarks(forYou: 2)),
             TimelineStory(project: themes, sentence: "All fifteen themes now come in sepia and high contrast.",
-                          next: "the filled icon set, then accent colours.", media: image("themes", "theme-grid.png")),
+                          media: image("strip", "theme-strip.png"), marks: TimelineMarks(forYou: 1, done: 1, next: true)),
+            TimelineStory(project: docs, sentence: "Search is live on staging, and pages now load in under a second.",
+                          media: image("docs", "docs-search.png"), marks: TimelineMarks(done: 4, next: true)),
             TimelineStory(project: offline, sentence: "You can now read everything with no signal. It’s in the beta build.",
-                          next: "editing offline, and syncing it back safely.",
-                          needsYou: [item(12, "Retry limits for uploads on slow networks"), item(13, "Cache size caps"),
-                                     item(14, "Eviction order"), item(15, "Attachment policy")],
-                          media: TimelineMedia(blobID: "offline-video", contentType: "video/mp4", name: "offline-reading.mp4")),
-            TimelineStory(project: cropper, sentence: "Smart crop now handles rounded corners.",
-                          next: "nothing, unless you want changes.",
-                          needsYou: [item(16, "Approve it, or ask for more")], media: image("cropper", "rounded-corners.png")),
+                          media: TimelineMedia(blobID: "offline-video", contentType: "video/mp4", name: "offline-reading.mp4"),
+                          marks: TimelineMarks(forYou: 4)),
         ],
         also: [project(20, "Release notes"), project(21, "Crash reporting"), project(22, "Settings search"),
                project(23, "Font picker"), project(24, "Keyboard shortcuts")])
 
     public static let lastWeek = week(
         "2026-10-26", final: true,
-        lede: "Themes and the image cropper both made big steps, and the docs site got much faster. "
-            + "Billing export started, then stopped.",
         stories: [
             TimelineStory(project: themes, sentence: "Sepia variants rendered for the first eight themes.",
-                          next: "high contrast for all fifteen.", media: image("themes", "sepia.png")),
+                          media: image("themes", "sepia.png"), marks: TimelineMarks(done: 2, next: true)),
             TimelineStory(project: cropper, sentence: "It passed the full sample set for the first time.",
-                          next: "rounded corners.", media: image("cropper", "samples.png")),
+                          media: image("cropper", "samples.png"), marks: TimelineMarks(forYou: 1, next: true)),
             TimelineStory(project: docs, sentence: "Pages got faster: 2.1 s down to 0.8 s.",
-                          next: "search.", media: image("chart", "load-times.png")),
+                          media: image("chart", "load-times.png"), marks: TimelineMarks(done: 3)),
             TimelineStory(project: billing, sentence: "The CSV export works for one account type.",
-                          next: "the other two account types. *It went quiet after this.*",
-                          media: image("billing", "export.png")),
+                          media: image("billing", "export.png"), marks: TimelineMarks()),
         ],
         also: [project(21, "Crash reporting"), project(25, "Onboarding emails")])
 
     /// A new user's first week: nothing has moved.
-    public static let emptyWeek = week("2026-11-02", final: false, lede: nil, stories: [], also: [])
+    public static let emptyWeek = week("2026-11-02", final: false, stories: [], also: [])
 
-    /// A story with no picture or video that week.
+    /// A busy week: ten projects with something to say and five more that
+    /// moved. The page shows eight cards; the rest sit behind its foot line.
+    public static let crowdedWeek = week(
+        "2026-11-02", final: false,
+        stories: thisWeek.stories + [
+            TimelineStory(project: cropper, sentence: "Smart crop now handles rounded corners.",
+                          media: image("cropper", "rounded-corners.png"), marks: TimelineMarks(forYou: 1)),
+            noMediaStory,
+            TimelineStory(project: billing, sentence: "The CSV export works for one account type.",
+                          media: image("billing", "export.png"), marks: TimelineMarks(done: 1)),
+            TimelineStory(project: onboarding, sentence: "Copy was drafted for all six steps.",
+                          media: image("chart", "steps.png"), marks: TimelineMarks(next: true)),
+            TimelineStory(project: project(9, "Push notifications"), sentence: "The pilot went out to the beta group.",
+                          marks: TimelineMarks(done: 2)),
+            TimelineStory(project: project(10, "Sign in with a passkey"), sentence: "Passkeys work on the web.",
+                          marks: TimelineMarks()),
+        ],
+        also: thisWeek.also)
+
+    /// A card with no picture or video that week.
     public static let noMediaStory = TimelineStory(
         project: audit, sentence: "The report was written and two fixes went in.",
-        next: "the rest of the fixes, planned for the next release.")
+        marks: TimelineMarks(done: 2, next: true))
 
-    /// A Coordinator-written story: its own title, two projects, and one
-    /// open question.
-    public static let writtenStory = TimelineStory(
-        project: docs, title: "Launch week is shaping up", projects: [docs, themes],
-        sentence: "Search is live on staging, and the new themes are ready for it.",
-        next: "a rehearsal on Monday, then launch on Wednesday.",
-        needsYou: [item(11, "Approve the getting-started copy")])
+    /// A card with every mark: items waiting, items done, a next step.
+    public static let allMarksStory = TimelineStory(
+        project: docs, sentence: "Search is live on staging, and pages now load in under a second.",
+        media: image("docs", "docs-search.png"), marks: TimelineMarks(forYou: 2, done: 5, next: true))
 
-    /// A story whose only named item has since been answered: a quiet
-    /// "Done:" line instead of the red one.
-    public static let sortedOutStory = TimelineStory(
-        project: cropper, sentence: "Smart crop now handles rounded corners.",
-        next: "nothing, unless you want changes.",
-        needsYou: [TimelineItemRef(id: "it_16", num: 16, title: "Approve it, or ask for more", done: true)])
+    /// A card with nothing to mark: it ends at its sentence.
+    public static let noMarksStory = TimelineStory(
+        project: billing, sentence: "The CSV export works for one account type.",
+        media: image("billing", "export.png"), marks: TimelineMarks())
 
     // MARK: Lists
 
@@ -111,6 +116,13 @@ public enum TimelineDemoData {
         StalledProject(project: billing, lastMovedAt: daysAgo(19), createdAt: daysAgo(35), weekly: [0, 1, 2, 3, 2, 0, 0, 0]),
     ])
 
+    /// Every project, the most recently moved first: one page of many.
+    public static let allProjects = TimelineProjectList(total: 34, rows: [
+        (docs, 0.1), (themes, 0.5), (offline, 1), (mobileSearch, 1), (cropper, 3), (project(20, "Release notes"), 4),
+        (project(21, "Crash reporting"), 6), (onboarding, 15), (billing, 19), (audit, 24),
+    ].map { TimelineProjectRow(project: $0.0, lastMovedAt: daysAgo($0.1), openMissions: 1) }
+        + [TimelineProjectRow(project: project(26, "Printable invoices"))], nextBefore: "demo")
+
     public static let finished: [FinishedProject] = [
         ("Push notifications pilot", 2), ("Sign in with a passkey", 4), ("Dark mode for the web app", 9),
         ("Faster app launch", 13), ("Export to PDF", 21), ("New onboarding screens", 30),
@@ -119,10 +131,82 @@ public enum TimelineDemoData {
         FinishedProject(project: project(40 + index, row.0), finishedAt: daysAgo(row.1))
     }
 
-    // MARK: A project's story
+    // MARK: A project's page
 
-    /// "Docs site launch" as its own page: a status, three tasks coming
-    /// up, one question waiting, and pictures and a video over three weeks.
+    /// "Docs site launch" as its page: a picture, where it stands, what is
+    /// next, one question waiting, and something behind each of its rows.
+    public static let summaryPage = TimelineProjectPage(
+        project: docs, isLive: true,
+        sentence: "Search is live on staging, pages load in under a second, and the getting-started guide is drafted.",
+        next: "A rehearsal on Monday, then the switch-over and launch on Wednesday 11 November.",
+        needsYou: [TimelineItemRef(id: "it_demo_11", num: 11, title: "Approve the getting-started copy")],
+        media: image("docs", "docs-search.png"), weeks: 6, missionsOpen: 3, missionsDone: 4, files: 7)
+
+    /// A project with only its name to show: no picture, no sentence, no
+    /// next step, nothing waiting, and no files.
+    public static let summaryPageBare = TimelineProjectPage(
+        project: audit, isLive: true, weeks: 2, missionsOpen: 1, missionsDone: 0, files: 0)
+
+    /// Five items wait and the page lists three; its picture is a very
+    /// wide strip.
+    public static let summaryPageManyWaiting = TimelineProjectPage(
+        project: themes, isLive: true,
+        sentence: "All fifteen themes now come in sepia and high contrast.",
+        next: "Once you pick the default, the themes go out in the next build.",
+        needsYou: [TimelineItemRef(id: "it_demo_51", num: 51, title: "Pick the default theme"),
+                   TimelineItemRef(id: "it_demo_52", num: 52, title: "Approve the high-contrast palette"),
+                   TimelineItemRef(id: "it_demo_53", num: 53, title: "Should sepia follow the system’s night mode?")],
+        needsYouTotal: 5, media: image("strip", "theme-strip.png"), weeks: 9, missionsOpen: 2, missionsDone: 11, files: 24)
+
+    /// Every item waiting on `summaryPageManyWaiting`: the three it lists
+    /// and the two it only counts.
+    public static let summaryAllWaiting: [TimelineItemRef] = summaryPageManyWaiting.needsYou + [
+        TimelineItemRef(id: "it_demo_54", num: 54, title: "Name the high-contrast theme"),
+        TimelineItemRef(id: "it_demo_55", num: 55, title: "Which three themes go in the screenshots?")]
+
+    /// Three weeks of "Docs site launch": this week with its card and more
+    /// milestones than it lists, last week with a sentence and no picture,
+    /// and an older week the project moved in without a card.
+    public static let history: [TimelineHistoryWeek] = [
+        historyWeek("2026-11-02", sentence: "Search is live on staging, and pages now load in under a second.",
+                    media: image("docs", "docs-search.png"),
+                    milestones: [(61, "Search page live on staging", day(11, 4, 11)),
+                                 (60, "Pages load in 0.8 s, down from 2.1 s", day(11, 3, 16)),
+                                 (59, "Launch checklist written", day(11, 2, 10))],
+                    more: 4),
+        historyWeek("2026-10-26", sentence: "The getting-started guide was drafted and the themes page filmed.",
+                    milestones: [(52, "Getting-started guide drafted", day(10, 30, 12)),
+                                 (51, "Themes walkthrough recorded", day(10, 29, 14))]),
+        historyWeek("2026-10-19",
+                    milestones: [(44, "Docs colour palette chosen", day(10, 21, 9))]),
+    ]
+
+    private static func historyWeek(_ key: String, sentence: String? = nil, media: TimelineMedia? = nil,
+                                    milestones: [(num: Int, title: String, at: Date)], more: Int = 0) -> TimelineHistoryWeek {
+        let bounds = monday(key)
+        return TimelineHistoryWeek(
+            week: key, start: bounds.start, end: bounds.end, sentence: sentence, media: media,
+            milestones: milestones.map {
+                ProjectMilestone(milestone: Milestone(id: "ms_demo_\($0.num)", missionID: "mi_demo_1", num: $0.num,
+                                                      kind: .progress, title: $0.title, convoID: "c_demo_1",
+                                                      seq: Int64($0.num), createdAt: $0.at),
+                                 missionNum: 71)
+            },
+            moreMilestones: more)
+    }
+
+    private static func mission(_ num: Int, _ title: String, status: String? = nil, closed summary: String? = nil,
+                                closedDaysAgo: Double? = nil) -> Mission {
+        Mission(id: "mi_demo_\(num)", num: num, state: closedDaysAgo == nil ? .open : .closed, title: title,
+                closeSummary: summary, originConvoID: "c_demo_\(num)", createdAt: daysAgo(30), updatedAt: daysAgo(1),
+                closedAt: closedDaysAgo.map(daysAgo), status: status, projectID: docs.id, projectNum: docs.num)
+    }
+
+    // MARK: A project's missions and files
+
+    /// "Docs site launch" in full: a status, open tasks, one question
+    /// waiting, open and finished missions, and pictures, a video and a
+    /// document over three weeks.
     public static let docsProjectPage: ProjectPageModel = {
         let tasks = [task(31, "A rehearsal on Monday at 07:00"), task(32, "The CDN switch-over"), task(33, "Launch"),
                      task(34, "Write the launch post")]
@@ -137,33 +221,25 @@ public enum TimelineDemoData {
             file("themes", "palette.png", day(10, 21, 9), source: .item(num: palette.num)),
             file("not-loaded-yet", "IMG_0412.png", day(10, 20, 17)),
         ]
+        let open = [
+            mission(71, "Search on the docs site", status: "Live on staging; the index rebuilds on every publish."),
+            mission(72, "Getting-started guide", status: "Drafted. The copy waits on your approval."),
+            mission(73, "Launch day"),
+        ]
+        let closed = [
+            mission(64, "Faster pages", closed: "Pages load in 0.8 s, down from 2.1 s.", closedDaysAgo: 3),
+            mission(58, "Docs colour palette", closed: "The palette was chosen and applied.", closedDaysAgo: 14),
+            mission(55, "Move the old pages across", closedDaysAgo: 20),
+        ]
         return ProjectPageModel(
             project: Project(id: docs.id, num: docs.num, title: docs.title,
                              body: "Ship a new docs site with search.",
                              status: "A new docs site with search, live on Wednesday 11 November. It’s on track: "
                                  + "search works, pages are fast, and the getting-started guide is drafted."),
+            missions: open.map { MissionRowModel(mission: $0, activity: .idle, lastActivity: daysAgo(1)) },
+            closedMissions: closed,
             needsYou: waiting, openItems: waiting + tasks + [palette],
             files: ProjectFeedPage(total: files.count, rows: files), hasFeed: true)
-    }()
-
-    /// A project with nothing to show beyond words: no status or goal (the
-    /// newest milestone speaks for it), nothing coming up or waiting, and
-    /// only a document among its files.
-    public static let quietProjectPage: ProjectPageModel = {
-        let milestones = [
-            Milestone(id: "ms_demo_2", missionID: "mi_demo_6", num: 2, kind: .progress,
-                      title: "The report was written and two fixes went in.", convoID: "c_demo_6", seq: 2,
-                      createdAt: day(10, 22, 10)),
-            Milestone(id: "ms_demo_1", missionID: "mi_demo_6", num: 1, kind: .progress,
-                      title: "Audit started.", convoID: "c_demo_6", seq: 1, createdAt: day(10, 12, 10)),
-        ]
-        return ProjectPageModel(
-            project: Project(id: audit.id, num: audit.num, title: audit.title),
-            openItems: [task(41, "Should we cover the web app too?", kind: .question)],
-            recentMilestones: milestones,
-            files: ProjectFeedPage(total: 1, rows: [file("report", "audit-report.pdf", day(10, 22, 9),
-                                                         type: "application/pdf")]),
-            hasFeed: true)
     }()
 
     private static func task(_ num: Int, _ title: String, kind: ItemKind = .task) -> TrackerItem {
@@ -184,20 +260,30 @@ public enum TimelineDemoData {
 
     // MARK: Pictures
 
-    /// The pictures the stories name, by blob id, drawn in code.
+    /// The pictures the stories name, by blob id, drawn in code; with
+    /// them a very wide strip and a tall phone shot.
     public static var images: [String: Image] {
         var images: [String: Image] = [:]
-        for (id, draw) in [("docs", drawDocs), ("themes", drawThemes), ("cropper", drawCropper),
-                           ("chart", drawChart), ("billing", drawBilling)] as [(String, (CGContext, CGSize) -> Void)] {
-            if let cgImage = picture(draw) { images[id] = Image(decorative: cgImage, scale: 2) }
+        for (id, size, draw) in pictures {
+            if let cgImage = picture(size, draw) { images[id] = Image(decorative: cgImage, scale: 2) }
         }
         return images
     }
 
+    /// Each picture's size in pixels, by blob id.
+    public static var sizes: [String: CGSize] {
+        Dictionary(uniqueKeysWithValues: pictures.map { ($0.id, $0.size) })
+    }
+
     private static let pictureSize = CGSize(width: 960, height: 400)
 
-    private static func picture(_ draw: (CGContext, CGSize) -> Void) -> CGImage? {
-        let size = pictureSize
+    private static var pictures: [(id: String, size: CGSize, draw: (CGContext, CGSize) -> Void)] {
+        [("docs", pictureSize, drawDocs), ("themes", pictureSize, drawThemes), ("cropper", pictureSize, drawCropper),
+         ("chart", pictureSize, drawChart), ("billing", pictureSize, drawBilling),
+         ("strip", CGSize(width: 2_000, height: 300), drawStrip), ("phone", CGSize(width: 600, height: 1_300), drawPhone)]
+    }
+
+    private static func picture(_ size: CGSize, _ draw: (CGContext, CGSize) -> Void) -> CGImage? {
         guard let context = CGContext(data: nil, width: Int(size.width), height: Int(size.height), bitsPerComponent: 8,
                                       bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
@@ -282,6 +368,33 @@ public enum TimelineDemoData {
         }
     }
 
+    /// A very wide strip: a toolbar of coloured tabs end to end.
+    private static func drawStrip(_ context: CGContext, _ size: CGSize) {
+        fill(context, CGRect(origin: .zero, size: size), 0x1F2937)
+        let colors: [UInt32] = [0x2F7CF6, 0xF0C374, 0x86EFAC, 0xFCA5A5, 0xA78BFA, 0x5EEAD4, 0xFDE68A, 0x93C5FD]
+        let gap: CGFloat = 24
+        let width = (size.width - CGFloat(colors.count + 1) * gap) / CGFloat(colors.count)
+        for (index, color) in colors.enumerated() {
+            let x = gap + CGFloat(index) * (width + gap)
+            fill(context, CGRect(x: x, y: 40, width: width, height: size.height - 80), color, radius: 18)
+            fill(context, CGRect(x: x + 28, y: size.height / 2 - 10, width: width - 56, height: 20), 0xFFFFFF, radius: 6)
+        }
+    }
+
+    /// A tall phone shot: a coloured header over a list of rows.
+    private static func drawPhone(_ context: CGContext, _ size: CGSize) {
+        fill(context, CGRect(origin: .zero, size: size), 0xFFFFFF)
+        gradient(context, [0x312E81, 0x2F7CF6], from: .zero, to: CGPoint(x: size.width, y: 0))
+        fill(context, CGRect(x: 0, y: 260, width: size.width, height: size.height - 260), 0xFFFFFF)
+        fill(context, CGRect(x: 48, y: 150, width: 300, height: 40), 0xFFFFFF, radius: 10)
+        for row in 0..<7 {
+            let y = 320 + CGFloat(row) * 136
+            fill(context, CGRect(x: 48, y: y, width: 88, height: 88), row % 2 == 0 ? 0xFDE68A : 0x86EFAC, radius: 20)
+            fill(context, CGRect(x: 168, y: y + 12, width: 340, height: 24), 0x1F2937, radius: 6)
+            fill(context, CGRect(x: 168, y: y + 54, width: 240, height: 18), 0xD1D5DB, radius: 6)
+        }
+    }
+
     // MARK: Builders
 
     private static let londonCalendar: Calendar = {
@@ -305,19 +418,15 @@ public enum TimelineDemoData {
         return TimelineWeekSummary(week: key, start: bounds.start, end: bounds.end, sentence: sentence, moved: moved)
     }
 
-    private static func week(_ key: String, final: Bool, lede: String?, stories: [TimelineStory],
+    private static func week(_ key: String, final: Bool, stories: [TimelineStory],
                              also: [TimelineProjectRef]) -> TimelineWeek {
         let bounds = monday(key)
-        return TimelineWeek(week: key, start: bounds.start, end: bounds.end, final: final, lede: lede,
+        return TimelineWeek(week: key, start: bounds.start, end: bounds.end, final: final,
                             stories: stories, also: also)
     }
 
     private static func project(_ num: Int, _ title: String) -> TimelineProjectRef {
         TimelineProjectRef(id: "pj_demo_\(num)", num: num, title: title)
-    }
-
-    private static func item(_ num: Int, _ title: String) -> TimelineItemRef {
-        TimelineItemRef(id: "it_demo_\(num)", num: num, title: title)
     }
 
     private static func image(_ blobID: String, _ name: String) -> TimelineMedia {

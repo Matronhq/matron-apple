@@ -1,4 +1,5 @@
 import XCTest
+import MatronDesignSystem
 import MatronJournal
 import MatronModels
 import MatronViewModels
@@ -119,7 +120,7 @@ final class TimelineShellTests: XCTestCase {
         XCTAssertEqual(ProjectStoryRoute(id: "pj_a").pathValue, "story/pj_a")
         XCTAssertEqual(ProjectStoryRoute(pathValue: "story/pj_a")?.id, "pj_a")
         XCTAssertNil(ProjectRoute(pathValue: "story/pj_a"))
-        for place in [TimelinePlace.quiet, .long, .finished] {
+        for place in [TimelinePlace.projects, .quiet, .long, .finished] {
             let value = try XCTUnwrap(TimelineListRoute(place: place)).pathValue
             XCTAssertEqual(TimelineListRoute(pathValue: value)?.place, place)
             XCTAssertTrue(isAnyPathPrefixedRoute(value), value)
@@ -129,14 +130,149 @@ final class TimelineShellTests: XCTestCase {
         XCTAssertTrue(isAnyPathPrefixedRoute("story/pj_a"))
     }
 
+    /// A section of a project's page carries the project and the section.
+    func testASectionRouteRoundTripsItsPath() {
+        for section in ProjectSection.allCases {
+            let route = ProjectSectionRoute(projectID: "pj_a", section: section)
+            XCTAssertEqual(route.pathValue, "story-section/\(section.rawValue)/pj_a")
+            XCTAssertEqual(ProjectSectionRoute(pathValue: route.pathValue), route)
+            XCTAssertTrue(isAnyPathPrefixedRoute(route.pathValue), route.pathValue)
+            XCTAssertNil(ProjectStoryRoute(pathValue: route.pathValue), "not the page itself")
+            XCTAssertNil(ProjectRoute(pathValue: route.pathValue))
+        }
+        // A project id keeps whatever it holds.
+        XCTAssertEqual(ProjectSectionRoute(pathValue: "story-section/files/pj/a")?.projectID, "pj/a")
+        for junk in ["story-section/", "story-section/files", "story-section/files/", "story-section/elsewhere/pj_a",
+                     "story-section//pj_a", "story/pj_a", "project/pj_a", "pj_a"] {
+            XCTAssertNil(ProjectSectionRoute(pathValue: junk), junk)
+        }
+    }
+
+    /// Whichever route carries it, a stack entry names a project's page or
+    /// one of its sections.
+    func testAProjectPageTargetReadsEveryProjectRoute() {
+        XCTAssertEqual(ProjectPageTarget(pathValue: "project/pj_a"), ProjectPageTarget(projectID: "pj_a", section: nil))
+        XCTAssertEqual(ProjectPageTarget(pathValue: "story/pj_a"), ProjectPageTarget(projectID: "pj_a", section: nil))
+        XCTAssertEqual(ProjectPageTarget(pathValue: "story-section/history/pj_a"),
+                       ProjectPageTarget(projectID: "pj_a", section: .history))
+        for other in ["mission/ms_1", "item/it_1", "timeline/quiet", "story-section/elsewhere/pj_a", "c1", ""] {
+            XCTAssertNil(ProjectPageTarget(pathValue: other), other)
+        }
+    }
+
+    /// The page a stack entry shows, on every stack: the new page (or its
+    /// section) only while the timeline is shown, else the project page
+    /// there is today, whatever route was pushed before the answer came.
+    func testAProjectShowsItsNewPageOnlyWhileTheTimelineIsShown() throws {
+        let page = try XCTUnwrap(ProjectPageTarget(pathValue: "project/pj_a"))
+        let story = try XCTUnwrap(ProjectPageTarget(pathValue: "story/pj_a"))
+        let files = try XCTUnwrap(ProjectPageTarget(pathValue: "story-section/files/pj_a"))
+        XCTAssertEqual(page.page(timelineShown: true), .summary(section: nil))
+        XCTAssertEqual(story.page(timelineShown: true), .summary(section: nil))
+        XCTAssertEqual(files.page(timelineShown: true), .summary(section: .files))
+        for target in [page, story, files] {
+            XCTAssertEqual(target.page(timelineShown: false), .todaysPage)
+        }
+    }
+
+    /// Where a merged project's page goes: either of its two reads can
+    /// say the project moved, and both lead to the one surviving project.
+    /// Reads made for another project say nothing about this page.
+    func testEitherReadOfAMergedProjectLeadsToTheSurvivor() {
+        typealias Host = TimelineStoryHost
+        XCTAssertNil(Host.redirectTarget(pageProjectID: "pj_1", readsBuiltFor: "pj_1", summaryRedirect: nil,
+                                         detailProjectID: "pj_1"))
+        XCTAssertNil(Host.redirectTarget(pageProjectID: "pj_1", readsBuiltFor: "pj_1", summaryRedirect: nil,
+                                         detailProjectID: nil), "nothing read yet")
+        XCTAssertEqual(Host.redirectTarget(pageProjectID: "pj_1", readsBuiltFor: "pj_1", summaryRedirect: "pj_2",
+                                           detailProjectID: "pj_1"), "pj_2", "the page read says so")
+        XCTAssertEqual(Host.redirectTarget(pageProjectID: "pj_1", readsBuiltFor: "pj_1", summaryRedirect: nil,
+                                           detailProjectID: "pj_2"), "pj_2", "the project's own read says so")
+        XCTAssertEqual(Host.redirectTarget(pageProjectID: "pj_1", readsBuiltFor: "pj_1", summaryRedirect: "pj_2",
+                                           detailProjectID: "pj_2"), "pj_2")
+        XCTAssertEqual(Host.redirectTarget(pageProjectID: "pj_1", readsBuiltFor: "pj_1", summaryRedirect: "pj_3",
+                                           detailProjectID: "pj_2"), "pj_3", "the journal's answer first")
+        XCTAssertNil(Host.redirectTarget(pageProjectID: "pj_2", readsBuiltFor: "pj_2", summaryRedirect: "pj_2",
+                                         detailProjectID: "pj_2"), "already there")
+        // A screen reused for another project, before its own reads begin.
+        XCTAssertNil(Host.redirectTarget(pageProjectID: "pj_5", readsBuiltFor: "pj_1", summaryRedirect: "pj_2",
+                                         detailProjectID: "pj_2"))
+        XCTAssertNil(Host.redirectTarget(pageProjectID: "pj_5", readsBuiltFor: nil, summaryRedirect: nil,
+                                         detailProjectID: "pj_1"))
+    }
+
+    /// What the new page draws: a journal without the project-page route
+    /// shows the project page it has, before anything else.
+    func testAJournalWithoutThePageRouteFallsBackToTodaysPage() {
+        typealias Host = TimelineStoryHost
+        XCTAssertEqual(Host.content(hasPage: false, isMissing: false, isUnsupported: true, loadFailed: false, section: nil),
+                       .todaysPage)
+        XCTAssertEqual(Host.content(hasPage: false, isMissing: false, isUnsupported: true, loadFailed: true,
+                                    section: .files), .todaysPage)
+        XCTAssertEqual(Host.content(hasPage: true, isMissing: false, isUnsupported: false, loadFailed: false, section: nil),
+                       .summary)
+        XCTAssertEqual(Host.content(hasPage: true, isMissing: false, isUnsupported: false, loadFailed: false,
+                                    section: .history), .section(.history))
+        // A failed re-read keeps the page on screen.
+        XCTAssertEqual(Host.content(hasPage: true, isMissing: false, isUnsupported: false, loadFailed: true, section: nil),
+                       .summary)
+        XCTAssertEqual(Host.content(hasPage: false, isMissing: true, isUnsupported: false, loadFailed: false, section: nil),
+                       .missing)
+        XCTAssertEqual(Host.content(hasPage: false, isMissing: false, isUnsupported: false, loadFailed: true, section: nil),
+                       .loadFailed)
+        XCTAssertEqual(Host.content(hasPage: false, isMissing: false, isUnsupported: false, loadFailed: false,
+                                    section: .missions), .loading)
+    }
+
+    /// A picture opens the image viewer over the project's pictures, a
+    /// video the player, anything else where it was posted.
+    func testHowAFileOfTheFilesSectionOpens() {
+        let picture = Self.file(1, blob: "b1", type: "image/png")
+        let again = Self.file(2, blob: "b1", type: "image/png")
+        let video = Self.file(3, blob: "b2", type: "Video/MP4")
+        let other = Self.file(4, blob: "b3", type: "application/pdf")
+        let untyped = Self.file(5, blob: "b4", type: nil)
+        let second = Self.file(6, blob: "b5", type: "image/jpeg")
+        XCTAssertEqual(TimelineStoryHost.fileOpening(picture), .picture)
+        XCTAssertEqual(TimelineStoryHost.fileOpening(video), .video)
+        XCTAssertEqual(TimelineStoryHost.fileOpening(other), .source)
+        XCTAssertEqual(TimelineStoryHost.fileOpening(untyped), .source)
+        XCTAssertEqual(TimelineStoryHost.pictureBlobIDs([picture, video, again, other, untyped, second]), ["b1", "b5"],
+                       "the grid's order, a picture attached twice once")
+    }
+
     func testOpeningAStoryOrAListTwiceStacksItOnce() {
         let nav = AppShellNavigation()
         nav.tab = .missions
         nav.pushTimelinePage(ProjectStoryRoute(id: "pj_a").pathValue)
         nav.pushTimelinePage(ProjectStoryRoute(id: "pj_a").pathValue)
         XCTAssertEqual(nav.missionsPath, ["story/pj_a"])
-        nav.pushProject("pj_a")
-        XCTAssertEqual(nav.missionsPath, ["story/pj_a", "project/pj_a"], "All details goes on top of the story")
+        let files = ProjectSectionRoute(projectID: "pj_a", section: .files).pathValue
+        nav.pushTimelinePage(files)
+        nav.pushTimelinePage(files)
+        XCTAssertEqual(nav.missionsPath, ["story/pj_a", "story-section/files/pj_a"], "a section is one level down")
+    }
+
+    // MARK: iPhone, all projects
+
+    /// The week page's foot rows: all projects first, then "Worth a look".
+    func testThePhoneRootOffersAllProjects() throws {
+        XCTAssertEqual(TimelinePhoneRoot.footPlaces(showsAllProjects: true), [.projects, .quiet, .long, .finished])
+        XCTAssertEqual(TimelinePhoneRoot.worthALookPlaces, [.quiet, .long, .finished])
+        for place in TimelinePhoneRoot.footPlaces(showsAllProjects: true) {
+            XCTAssertNotNil(TimelineListRoute(place: place), "\(place) pushes a list")
+        }
+        XCTAssertEqual(AppShellView.timelineListTitle(.projects), "All projects")
+        XCTAssertEqual(AppShellView.timelineListTitle(.quiet), "Went quiet")
+    }
+
+    /// A journal without the all-projects list: only "Worth a look".
+    func testThePhoneRootOffersNoAllProjectsWithoutTheList() {
+        XCTAssertEqual(TimelinePhoneRoot.footPlaces(showsAllProjects: false), [.quiet, .long, .finished])
+    }
+
+    private static func file(_ seq: Int64, blob: String, type: String?) -> ProjectFile {
+        ProjectFile(blobID: blob, contentType: type, source: .chat(convoID: "c1", seq: seq), postedAt: nil)
     }
 
     private static func viewModel(_ timeline: StubTimeline = StubTimeline()) -> TimelineViewModel {
@@ -165,4 +301,8 @@ private final class StubTimeline: TimelineProviding, @unchecked Sendable {
     func finishedProjects(before: String?, limit: Int?) async throws -> (rows: [FinishedProject], nextBefore: String?) {
         ([], nil)
     }
+    func timelineProjects(before: String?, limit: Int?) async throws -> TimelineProjectList { throw JournalAPIError.notFound }
+    func timelineProject(_ id: String) async throws -> TimelineProjectPage { throw JournalAPIError.notFound }
+    func timelineProjectHistory(_ id: String, before: String?, limit: Int?) async throws
+        -> (weeks: [TimelineHistoryWeek], nextBefore: String?) { throw JournalAPIError.notFound }
 }

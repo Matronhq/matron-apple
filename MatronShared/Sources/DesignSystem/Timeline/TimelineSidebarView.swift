@@ -1,11 +1,15 @@
 import SwiftUI
 import MatronModels
 
-/// The timeline's list: the weeks newest first, each with its sentence,
-/// "Earlier weeks ›" when there are more, then "Worth a look": Went quiet,
-/// Open a long time and Finished, each with one count. Text only.
+/// The timeline's list: the weeks newest first, by their dates alone,
+/// "Earlier weeks ›" when there are more, "All projects" with its count
+/// (unless the journal has no such list), then "Worth a look": Went quiet, Open a long time and Finished, each
+/// with one count. Text only.
 public struct TimelineSidebarView: View {
     let weeks: [TimelineWeekSummary]
+    /// False on a journal without the all-projects list: no row for it.
+    let showsProjects: Bool
+    let projectsCount: Int?
     let quietCount: Int?
     let longCount: Int?
     let finishedCount: Int?
@@ -13,23 +17,22 @@ public struct TimelineSidebarView: View {
     /// nil when there are no earlier weeks to load.
     let onLoadEarlier: (() -> Void)?
 
-    public init(weeks: [TimelineWeekSummary], quietCount: Int?, longCount: Int?, finishedCount: Int?,
-                selection: Binding<TimelinePlace?>, onLoadEarlier: (() -> Void)?) {
-        self.weeks = weeks; self.quietCount = quietCount; self.longCount = longCount
-        self.finishedCount = finishedCount; self._selection = selection; self.onLoadEarlier = onLoadEarlier
+    public init(weeks: [TimelineWeekSummary], showsProjects: Bool = true, projectsCount: Int?, quietCount: Int?,
+                longCount: Int?, finishedCount: Int?, selection: Binding<TimelinePlace?>,
+                onLoadEarlier: (() -> Void)?) {
+        self.weeks = weeks; self.showsProjects = showsProjects
+        self.projectsCount = projectsCount; self.quietCount = quietCount
+        self.longCount = longCount; self.finishedCount = finishedCount
+        self._selection = selection; self.onLoadEarlier = onLoadEarlier
     }
 
     #if os(macOS)
     private static let titleFont = Font.system(size: 14, weight: .semibold)
-    private static let datesFont = Font.system(size: 14)
-    private static let sentenceFont = Font.system(size: 13)
     private static let entryFont = Font.system(size: 14)
     private static let smallFont = Font.system(size: 12)
     private static let rowInsets = EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12)
     #else
     private static let titleFont = Font.subheadline.weight(.semibold)
-    private static let datesFont = Font.subheadline
-    private static let sentenceFont = Font.subheadline
     private static let entryFont = Font.body
     private static let smallFont = Font.footnote
     private static let rowInsets = EdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14)
@@ -52,6 +55,10 @@ public struct TimelineSidebarView: View {
                     .accessibilityLabel(TimelineFormat.earlierWeeks)
                     .accessibilityIdentifier("timeline.sidebar.earlier")
                 }
+                if showsProjects {
+                    entry(.projects, symbol: ProjectGlyph.symbol, TimelineFormat.allProjects, count: projectsCount)
+                        .padding(.top, 10)
+                }
                 Text(TimelineFormat.worthALook)
                     .font(Self.smallFont.weight(.semibold)).tracking(0.8).foregroundStyle(.secondary)
                     .padding(.horizontal, Self.rowInsets.leading)
@@ -67,18 +74,9 @@ public struct TimelineSidebarView: View {
     }
 
     private func weekRow(_ week: TimelineWeekSummary, index: Int) -> some View {
-        let title = TimelineFormat.sidebarTitle(index: index, week: week.week)
-        let dates = index < 2 ? TimelineFormat.shortRange(week.week) : nil
-        return row(.week(week.week), id: "week.\(week.week)") {
-            VStack(alignment: .leading, spacing: 3) {
-                (Text(title).font(Self.titleFont).foregroundStyle(Color.primary)
-                    + Text(dates.map { " · \($0)" } ?? "").font(Self.datesFont).foregroundStyle(.secondary))
-                    .lineLimit(1)
-                if !week.sentence.isEmpty {
-                    Text(week.sentence).font(Self.sentenceFont).foregroundStyle(.secondary).lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
+        row(.week(week.week), id: "week.\(week.week)") {
+            Text(TimelineFormat.sidebarTitle(index: index, week: week.week))
+                .font(Self.titleFont).foregroundStyle(Color.primary).lineLimit(1)
         }
     }
 

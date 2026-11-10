@@ -1,8 +1,8 @@
 import Foundation
 import MatronModels
 
-/// The Projects timeline's words: week names, ledes and the lines on a
-/// story or a list row. Sentences, not counts.
+/// The Projects timeline's words: week names, a card's sentence and marks,
+/// and the lines on a list row.
 public enum TimelineFormat {
     public static let worthALook = "WORTH A LOOK"
     public static let earlierWeeks = "Earlier weeks"
@@ -14,15 +14,20 @@ public enum TimelineFormat {
     public static let finished = "Finished"
     public static let quietLede = "These were moving, then stopped without being finished."
     public static let longLede = "These have been open for three weeks or more."
-    public static let emptyLede = "Nothing moved this week."
+    public static let allProjects = "All projects"
+    /// A week's page when no project moved in it.
+    public static let nothingMoved = "Nothing moved this week."
+    /// The all-projects list, read and empty.
+    public static let noProjects = "No projects yet."
     /// The finished list, read and empty.
     public static let nothingFinished = "Nothing finished yet."
     public static let askAction = "Ask the Coordinator what to do with it"
     /// Replaces `askAction` on a row once the Ask has gone.
     public static let askedAction = "Asked the Coordinator"
-    public static let needsYouPrefix = "Needs you: "
-    /// Leads the line for items a story named that are no longer waiting.
-    public static let sortedOutPrefix = "Done: "
+    /// The mark of a card whose project says what comes next.
+    public static let nextMark = "→ Next"
+    /// Cards on a week's page; projects beyond them sit behind the foot line.
+    public static let maxCards = 8
     /// A story the journal gave no sentence (the project moved without a milestone).
     public static let movedSentence = "Moved this week."
     public static let chartCaption = "last 7 weeks"
@@ -69,17 +74,25 @@ public enum TimelineFormat {
         week.final && now < week.end.addingTimeInterval(7 * 86_400)
     }
 
-    /// The week's written lede, else the sidebar's sentence; a week where
-    /// nothing moved says so calmly.
-    public static func lede(_ week: TimelineWeek, sentence: String?) -> String? {
-        if let lede = week.lede?.trimmingCharacters(in: .whitespacesAndNewlines), !lede.isEmpty { return lede }
-        if week.stories.isEmpty && week.also.isEmpty { return emptyLede }
-        guard let sentence = sentence?.trimmingCharacters(in: .whitespacesAndNewlines), !sentence.isEmpty else { return nil }
-        return sentence
+    /// The week's cards: its first `maxCards` stories.
+    public static func cards(_ week: TimelineWeek) -> [TimelineStory] {
+        Array(week.stories.prefix(maxCards))
     }
 
-    public static func alsoLine(_ count: Int) -> String {
-        "Also this week: \(count) smaller job\(count == 1 ? "" : "s")"
+    /// The projects behind the foot line: those of the stories past the
+    /// last card, then the ones the journal lists as also moving.
+    public static func alsoMovedProjects(_ week: TimelineWeek) -> [TimelineProjectRef] {
+        week.stories.dropFirst(maxCards).map(\.project) + week.also
+    }
+
+    /// No project moved that week.
+    public static func movedNothing(_ week: TimelineWeek) -> Bool {
+        week.stories.isEmpty && week.also.isEmpty
+    }
+
+    /// "Also moved: 7 projects": the foot line; nil when there are none.
+    public static func alsoMoved(_ count: Int) -> String? {
+        count > 0 ? "Also moved: \(count) project\(count == 1 ? "" : "s")" : nil
     }
 
     // MARK: Stories
@@ -91,43 +104,22 @@ public enum TimelineFormat {
         return sentence
     }
 
-    /// The card's title: the Coordinator's, else the main project's name.
-    public static func storyTitle(_ story: TimelineStory) -> String {
-        story.title ?? story.project.title
-    }
+    // MARK: Marks
 
-    /// "Also: B and C": the story's other projects; nil for a story about
-    /// one project.
-    public static func alsoProjects(_ story: TimelineStory) -> String? {
-        let others = story.projects.dropFirst().map(\.title)
-        guard let last = others.last else { return nil }
-        let head = others.dropLast().joined(separator: ", ")
-        return "Also: " + (head.isEmpty ? last : "\(head) and \(last)")
-    }
+    /// "2 for you": follows the red dot.
+    public static func forYouMark(_ count: Int) -> String { "\(count) for you" }
 
-    /// What follows "Needs you: ": the first item still waiting, and how
-    /// many more. Items already done don't count.
-    public static func needsYou(_ story: TimelineStory) -> String? {
-        titles(story.needsYou.filter { !$0.done })
-    }
+    /// "✓ 5 done".
+    public static func doneMark(_ count: Int) -> String { "✓ \(count) done" }
 
-    /// What follows "Done: ": when nothing waits any more but the story
-    /// named items that did, the first of them and how many more; nil
-    /// while anything is still open.
-    public static func sortedOut(_ story: TimelineStory) -> String? {
-        guard !story.needsYou.contains(where: { !$0.done }) else { return nil }
-        return titles(story.needsYou.filter(\.done))
-    }
-
-    /// The first title, and how many more. A title that ends its own
-    /// sentence ("…uploads?") is followed by a new one ("And 1 more"),
-    /// not a comma.
-    private static func titles(_ items: [TimelineItemRef]) -> String? {
-        guard let first = items.first else { return nil }
-        let more = items.count - 1
-        guard more > 0 else { return first.title }
-        if let last = first.title.last, "?!.".contains(last) { return "\(first.title) And \(more) more" }
-        return "\(first.title), and \(more) more"
+    /// The marks as they are spoken: "2 waiting for you, 5 done, has a
+    /// next step", only those that apply; nil when there are none.
+    public static func marksLabel(_ marks: TimelineMarks) -> String? {
+        var parts: [String] = []
+        if marks.forYou > 0 { parts.append("\(marks.forYou) waiting for you") }
+        if marks.done > 0 { parts.append("\(marks.done) done") }
+        if marks.next { parts.append("has a next step") }
+        return parts.isEmpty ? nil : parts.joined(separator: ", ")
     }
 
     // MARK: Lists
@@ -136,6 +128,12 @@ public enum TimelineFormat {
     public static func lastMoved(_ date: Date?, now: Date) -> String? {
         guard let date else { return nil }
         return "Last moved \(daysAgo(date, now: now))"
+    }
+
+    /// "Moved 3 days ago": a row of the all-projects list.
+    public static func moved(_ date: Date?, now: Date) -> String? {
+        guard let date else { return nil }
+        return "Moved \(daysAgo(date, now: now))"
     }
 
     /// "19 days ago", "yesterday", under a day "3h ago".
@@ -159,114 +157,90 @@ public enum TimelineFormat {
         count > 0 ? "And \(count) more." : nil
     }
 
-    // MARK: Project story
+    // MARK: Project page
 
-    public static let comingUpPrefix = "Coming up:"
-    public static let allDetails = "All details"
-    public static let openItem = "Open"
-    /// The gallery's first two week headings; older weeks are their dates.
+    public static let nextHeading = "Next"
+    public static let needsYouHeading = "Needs you"
+    /// Over a project's finished missions.
+    public static let doneHeading = "Done"
+
+    /// The row that opens a section, and that section's own title.
+    public static func sectionTitle(_ section: ProjectSection) -> String {
+        switch section {
+        case .history: return "This week and before"
+        case .missions: return "Missions"
+        case .files: return "Files"
+        }
+    }
+
+    /// What a section's row says is behind it: "6 weeks", "3 open, 4 done", "7".
+    public static func sectionCount(_ section: ProjectSection, page: TimelineProjectPage) -> String {
+        switch section {
+        case .history: return weeksCount(page.weeks)
+        case .missions: return missionsCount(open: page.missionsOpen, done: page.missionsDone)
+        case .files: return "\(page.files)"
+        }
+    }
+
+    /// Nothing is behind the row, so it can't be opened.
+    public static func sectionIsEmpty(_ section: ProjectSection, page: TimelineProjectPage) -> Bool {
+        switch section {
+        case .history: return page.weeks <= 0
+        case .missions: return page.missionsOpen + page.missionsDone <= 0
+        case .files: return page.files <= 0
+        }
+    }
+
+    public static func weeksCount(_ count: Int) -> String {
+        "\(count) week\(count == 1 ? "" : "s")"
+    }
+
+    public static func missionsCount(open: Int, done: Int) -> String {
+        "\(open) open, \(done) done"
+    }
+
+    /// "and 2 more": the items waiting beyond the rows the page lists; nil
+    /// when they are all listed.
+    public static func moreWaiting(_ page: TimelineProjectPage) -> String? {
+        let more = page.needsYouTotal - page.needsYou.count
+        return more > 0 ? "and \(more) more" : nil
+    }
+
+    /// What "Needs you" lists. The page carries the newest waiting items
+    /// and a count of them all; `all` is every one, once the host has
+    /// them. Closed, the list is the page's rows and "and N more", which
+    /// can open when `all` has an item the page doesn't list. Open, the
+    /// page's rows keep their places, the rest of `all` follow, and the
+    /// row counting more goes.
+    public static func waitingList(_ page: TimelineProjectPage, all: [TimelineItemRef]?,
+                                   expanded: Bool) -> ProjectWaitingList {
+        let listed = Set(page.needsYou.map(\.id))
+        let rest = (all ?? []).filter { !listed.contains($0.id) }
+        guard let more = moreWaiting(page), !rest.isEmpty else {
+            return ProjectWaitingList(rows: page.needsYou, more: moreWaiting(page), canExpand: false)
+        }
+        if expanded { return ProjectWaitingList(rows: page.needsYou + rest, more: nil, canExpand: false) }
+        return ProjectWaitingList(rows: page.needsYou, more: more, canExpand: true)
+    }
+
+    /// A week of a project's history: the week `now` falls in is this
+    /// week, the one that ended within the last seven days last week, any
+    /// other its dates ("19 – 25 Oct").
+    public static func historyWeekTitle(_ week: TimelineHistoryWeek, now: Date) -> String {
+        if now < week.end { return thisWeek }
+        if now < week.end.addingTimeInterval(7 * 86_400) { return lastWeek }
+        return shortRange(week.week) ?? week.week
+    }
+
+    /// "4 more": a week's milestones beyond the ones listed; nil when none.
+    public static func moreMilestones(_ count: Int) -> String? {
+        count > 0 ? "\(count) more" : nil
+    }
+
     public static let thisWeek = "This week"
     public static let lastWeek = "Last week"
 
-    /// The story page's sentence, and the lines it may take (nil: all).
-    public struct StorySentence: Equatable, Sendable {
-        public let text: String
-        public let lineLimit: Int?
-
-        public init(text: String, lineLimit: Int?) {
-            self.text = text; self.lineLimit = lineLimit
-        }
-    }
-
-    /// Lines a goal standing in for the status may take.
-    public static let goalLineLimit = 3
-
-    /// The page's one sentence: the Coordinator's status, else the goal's
-    /// first paragraph (a few lines at most), else the newest milestone's
-    /// title; nil when there is none.
-    public static func storySentence(_ page: ProjectPageModel) -> StorySentence? {
-        if let status = trimmed(page.project.status) { return StorySentence(text: status, lineLimit: nil) }
-        if let goal = firstParagraph(page.project.body) { return StorySentence(text: goal, lineLimit: goalLineLimit) }
-        let newest = (page.recentMilestones + page.milestonesPage.rows.map(\.milestone))
-            .max { $0.createdAt < $1.createdAt }?.title
-        return trimmed(newest).map { StorySentence(text: $0, lineLimit: nil) }
-    }
-
-    /// A markdown text's first paragraph as one line, without the marks
-    /// that start a heading, a list item or a quote; inline marks stay
-    /// for the renderer. nil when it has no words.
-    static func firstParagraph(_ markdown: String) -> String? {
-        var lines: [String] = []
-        for raw in markdown.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            if line.isEmpty {
-                if lines.isEmpty { continue } else { break }
-            }
-            let words = line.replacingOccurrences(of: blockMark, with: "", options: .regularExpression)
-                .trimmingCharacters(in: .whitespaces)
-            if !words.isEmpty { lines.append(words) }
-        }
-        return lines.isEmpty ? nil : lines.joined(separator: " ")
-    }
-
-    /// "# ", "- ", "* ", "+ ", "> ", "1. " at the start of a line (a lone
-    /// mark too). "#tag" and "-5" are words, so they stay.
-    private static let blockMark = #"^(#{1,6}|[-*+]|>|\d+[.)])(\s+|$)"#
-
-    private static func trimmed(_ text: String?) -> String? {
-        guard let text = text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
-        return text
-    }
-
-    /// What follows "Coming up:": the first three open tasks as one
-    /// sentence ("a rehearsal, the switch-over, then launch."), leaving out
-    /// what already waits on the user; nil when there are none.
-    public static func comingUp(_ page: ProjectPageModel) -> String? {
-        let waiting = Set(page.needsYou.map(\.id))
-        let titles = page.openItems
-            .filter { $0.kind == .task && $0.state == .open && !waiting.contains($0.id) }
-            .prefix(3)
-            .map { phrase($0.title) }
-            .filter { !$0.isEmpty }
-        guard let last = titles.last else { return nil }
-        let head = titles.dropLast().joined(separator: ", ")
-        return (head.isEmpty ? last : "\(head), then \(last)") + "."
-    }
-
-    /// A title as part of a sentence: one line, no closing full stop, and
-    /// otherwise as written.
-    static func phrase(_ title: String) -> String {
-        var text = ProjectsFormat.oneLine(title).trimmingCharacters(in: .whitespaces)
-        while text.hasSuffix(".") { text.removeLast() }
-        return text
-    }
-
-    /// A gallery tile's caption: the file's own caption, else the title of
-    /// the item it was posted on; nil when neither is known. Never the
-    /// file's name, which is rarely words.
-    public static func galleryCaption(_ file: ProjectFile, items: [TrackerItem]) -> String? {
-        if let caption = trimmed(file.caption) { return ProjectsFormat.oneLine(caption) }
-        guard case .item(let num) = file.source,
-              let title = trimmed(items.first(where: { $0.num == num })?.title) else { return nil }
-        return ProjectsFormat.oneLine(title)
-    }
-
-    /// "This week", "Last week", else "19 – 25 Oct", for the week starting
-    /// `weekStart` in `calendar`'s zone. The weeks are `calendar`'s; the
-    /// dates are always Gregorian, whatever the device's calendar.
-    public static func galleryWeekTitle(weekStart: Date, thisWeekStart: Date, calendar: Calendar) -> String {
-        if weekStart == thisWeekStart { return thisWeek }
-        if let previous = calendar.date(byAdding: .day, value: -7, to: thisWeekStart), weekStart == previous {
-            return lastWeek
-        }
-        var gregorian = Calendar(identifier: .gregorian)
-        gregorian.timeZone = calendar.timeZone
-        let day = gregorian.dateComponents([.year, .month, .day], from: weekStart)
-        let key = String(format: "%04d-%02d-%02d", day.year ?? 0, day.month ?? 0, day.day ?? 0)
-        return shortRange(key) ?? key
-    }
-
-    /// "Tuesday": the day under a gallery tile's caption.
+    /// "Tuesday": the day beside a milestone of a project's history.
     public static func weekday(_ date: Date, calendar: Calendar = .current) -> String {
         let formatter = DateFormatter()
         formatter.calendar = calendar

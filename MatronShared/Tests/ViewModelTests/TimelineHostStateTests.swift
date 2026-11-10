@@ -83,6 +83,25 @@ final class TimelineHostStateTests: XCTestCase {
         XCTAssertEqual(timeline.quietReads, 2)
     }
 
+    /// A rename on the project's page: All projects, read before it, is
+    /// read again and shows the new name.
+    func testAChangedProjectIsReadAgainInTheListsThatNameIt() async {
+        let state = TimelineHostState()
+        let timeline = StubTimeline()
+        timeline.projectTitle = "Alpha"
+        await state.projectsShown(flagOn: true) { Self.viewModel(timeline) }?.value
+        state.select(.projects)
+        await state.viewModel?.select(.projects)
+        XCTAssertEqual(state.viewModel?.allProjects?.rows.map(\.project.title), ["Alpha"])
+        timeline.projectTitle = "Alpha, renamed"
+        await state.viewModel?.select(.projects)
+        XCTAssertEqual(state.viewModel?.allProjects?.rows.map(\.project.title), ["Alpha"],
+                       "a visit alone shows the list as read")
+        await state.projectChanged()
+        XCTAssertEqual(state.viewModel?.allProjects?.rows.map(\.project.title), ["Alpha, renamed"])
+        XCTAssertEqual(timeline.quietReads, 2, "and the other lists' counts")
+    }
+
     /// Back onto an older week before the view model existed (after an
     /// account switch): that week, not the newest, is read and shown.
     func testAPlacePickedBeforeTheViewModelExistsIsTheOneLoaded() async {
@@ -131,7 +150,7 @@ final class TimelineHostStateTests: XCTestCase {
         let vm = Self.viewModel(timeline)
         XCTAssertEqual(vm.content(for: .week("2026-11-02")), .loading)
         await vm.start()
-        XCTAssertEqual(vm.content(for: .week("2026-11-02")), .week(StubTimeline.week("2026-11-02"), sentence: "Moved."))
+        XCTAssertEqual(vm.content(for: .week("2026-11-02")), .week(StubTimeline.week("2026-11-02")))
         XCTAssertEqual(vm.content(for: .week("2026-10-26")), .loading, "another week waits for its own read")
         XCTAssertEqual(vm.content(for: .quiet), .loading)
         await vm.loadCounts()
@@ -191,6 +210,7 @@ private final class StubTimeline: TimelineProviding, @unchecked Sendable {
     private var weeks = 0
     private var quiet = 0
     private var routes: Bool
+    private var title: String?
 
     init(supported: Bool = true, weeks: [String] = ["2026-11-02", "2026-10-26"]) {
         self.routes = supported
@@ -201,6 +221,12 @@ private final class StubTimeline: TimelineProviding, @unchecked Sendable {
     var supported: Bool {
         get { lock.withLock { routes } }
         set { lock.withLock { routes = newValue } }
+    }
+
+    /// The one live project's name; nil: the journal has no all-projects route.
+    var projectTitle: String? {
+        get { lock.withLock { title } }
+        set { lock.withLock { title = newValue } }
     }
 
     var weeksReads: Int { lock.withLock { weeks } }
@@ -232,4 +258,11 @@ private final class StubTimeline: TimelineProviding, @unchecked Sendable {
     func finishedProjects(before: String?, limit: Int?) async throws -> (rows: [FinishedProject], nextBefore: String?) {
         ([], nil)
     }
+    func timelineProjects(before: String?, limit: Int?) async throws -> TimelineProjectList {
+        guard let title = projectTitle else { throw JournalAPIError.notFound }
+        return TimelineProjectList(total: 1, rows: [TimelineProjectRow(project: TimelineProjectRef(id: "pj_a", num: 1, title: title))])
+    }
+    func timelineProject(_ id: String) async throws -> TimelineProjectPage { throw JournalAPIError.notFound }
+    func timelineProjectHistory(_ id: String, before: String?, limit: Int?) async throws
+        -> (weeks: [TimelineHistoryWeek], nextBefore: String?) { throw JournalAPIError.notFound }
 }

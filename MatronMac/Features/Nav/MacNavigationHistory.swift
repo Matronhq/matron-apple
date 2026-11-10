@@ -1,4 +1,5 @@
 import Foundation
+import MatronDesignSystem
 import MatronModels
 import Observation
 import SwiftUI
@@ -106,8 +107,9 @@ struct MacPlace: Equatable {
         /// A project page (spec 2026-09-30 §2), under the Projects entry.
         case project(id: String)
         /// The Projects timeline (behind its flag): the week or list the
-        /// list column has selected, and the project story open over it.
-        case timeline(place: TimelinePlace?, story: String?)
+        /// list column has selected, the project open over it, and the
+        /// section of that project's page (nil: the page itself).
+        case timeline(place: TimelinePlace?, story: String?, section: ProjectSection? = nil)
         case decision(id: String?)
         case memory(MacMemorySelection?)
         case boxes

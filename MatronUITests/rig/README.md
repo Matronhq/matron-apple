@@ -203,3 +203,42 @@ xcodebuild test-without-building -project Matron.xcodeproj -scheme Matron \
 
 Each test taps a row's button and expects its sheet; one taps all three in
 a row. `SHOT_DIR` (as `TEST_RUNNER_SHOT_DIR`) keeps the pictures.
+
+## Projects rig (the Projects screens, by hand)
+
+`seed-projects.mjs` fills a fresh demo journal with a made-up user's
+projects: about a dozen, with missions, milestones over the last six
+weeks, items (some waiting on the user, some closed this week), pictures
+and a short video drawn by the script, two finished projects and one that
+went quiet. It then writes this week and last week as the user's
+Coordinator, one entry per project. It needs a journal that has the
+timeline routes, Node 22 and the `sqlite3` command (it moves the rows back
+in time in the database, so it runs on the machine that holds it), and
+`ffmpeg` for the video (a placeholder file without it).
+
+It runs beside any other rig: its own folder and port.
+
+```bash
+RIG=/tmp/matron-projects-demo; PORT=9847; mkdir -p $RIG
+cd <a matron-journal checkout with the timeline routes>
+export MATRON_DB=$RIG/matron.db MATRON_PORT=$PORT
+(nohup node src/server.js > $RIG/journal.log 2>&1 &); sleep 2
+MATRON_PASSWORD=matron-demo-2026 node bin/matron-admin.js user add demo
+node bin/matron-admin.js agent add demo mac-studio > $RIG/agent-mac-studio.txt
+curl -s -X POST http://127.0.0.1:$PORT/login -H 'content-type: application/json' \
+  -d '{"username":"demo","password":"matron-demo-2026","device_name":"seed-client"}' > $RIG/login-client.json
+RIG_DIR=$RIG RIG_PORT=$PORT node <this folder>/seed-projects.mjs
+```
+
+Give each app its own login (`device_name`) and write the session file as
+`rebuild-rig.sh` does, with `homeserverURL` on the rig's port. The
+Projects screens are behind a setting; a launch argument turns it on for
+one run without writing it anywhere:
+
+```bash
+# Mac (Debug build), in a throwaway container:
+MATRON_APP_SUPPORT_OVERRIDE=$RIG/mac-support <Debug MatronMac binary> \
+  -projects.timeline YES -ApplePersistenceIgnoreState YES
+# Simulator:
+xcrun simctl launch <udid> chat.matron.app -projects.timeline YES
+```

@@ -1461,10 +1461,13 @@ struct MacChatListView: View {
         Self.record(place, in: history)
     }
 
-    /// A pane closed or popped back to exactly the previous place is a
-    /// step back (Forward reopens it); anything else is a new visit.
+    /// A pane closed or popped back, or a project page's section closed,
+    /// to exactly the previous place is a step back (Forward reopens it);
+    /// anything else is a new visit.
     static func record(_ place: MacPlace, in history: MacNavigationHistory) {
-        if MacTimelineNav.fillsInHome(from: history.current, to: place) { return history.replaceCurrent(place) }
+        if MacTimelineNav.fillsIn(from: history.current, to: place) { return history.replaceCurrent(place) }
+        if let current = history.current, MacTimelineNav.closesSection(from: current, to: place),
+           history.retreat(to: place) { return }
         if let current = history.current, current.isRetreat(to: place), history.retreat(to: place) { return }
         history.visit(place)
     }
@@ -1546,20 +1549,21 @@ struct MacChatListView: View {
             missionBackConvoID = nil
             selectedMissionID = id
             selectedProjectID = Self.projectAfterRestoring(place.detail, current: selectedProjectID)
-            // The home: no story left open over the timeline.
-            if id == nil { timeline.storyProjectID = nil }
+            // The home: no project left open over the timeline.
+            if id == nil { timeline.openStory(nil) }
             nav = .missions
         case .project(let id):
             missionBackConvoID = nil
             selectedMissionID = nil
             selectedProjectID = id
+            timeline.openStory(nil)
             nav = .missions
-        case .timeline(let place, let story):
+        case .timeline(let place, let story, let section):
             missionBackConvoID = nil
             selectedMissionID = nil
             selectedProjectID = nil
             timeline.select(place)
-            timeline.storyProjectID = story
+            timeline.openStory(story, section: section)
             nav = .missions
         case .decision(let id):
             if id == nil {
@@ -1595,13 +1599,14 @@ struct MacChatListView: View {
                              refresh: refreshesTimeline ? { refreshTimeline() } : nil)
     }
 
-    /// The Projects timeline is on screen: ⌘R and coming back to the app read it again.
+    /// The Projects timeline is on screen: ⌘R and coming back to the app
+    /// read it again, and the page of a project open over it.
     private var refreshesTimeline: Bool {
         MacTimelineNav.refreshesTimeline(nav: nav, timelineShown: timeline.isShown, selectedMissionID: selectedMissionID)
     }
 
     private func refreshTimeline() {
-        Task { await timeline.host.refresh() }
+        Task { await timeline.refresh() }
     }
 
     /// Go ▸ Search… (⌘K), Go ▸ Go to Number… (⌘J) and the nav column's
@@ -1893,8 +1898,8 @@ struct MacChatListView: View {
         } else if timeline.isShown, let missionsVM, let session {
             MacTimelineDetail(state: timeline, session: session, missionsViewModel: missionsVM, slot: $projectPageSlot,
                               selectedProjectID: selectedProjectID, actions: projectPageActions,
-                              onOpenStory: openStory, onAllDetails: showProject,
-                              onRedirect: redirectProject, onRedirectStory: redirectStory)
+                              onOpenStory: openStory, onOpenSection: { timeline.storySection = $0 },
+                              onRedirectStory: redirectStory)
                 .id(ObjectIdentifier(missionsVM))
         } else if let missionsVM {
             projectsDetail(missionsVM)
@@ -1987,7 +1992,7 @@ struct MacChatListView: View {
         missionBackConvoID = landing.missionBackConvoID
         selectedMissionID = landing.selectedMissionID
         selectedProjectID = landing.selectedProjectID
-        if entry == .missions { timeline.storyProjectID = nil }
+        if entry == .missions { timeline.openStory(nil) }
         nav = landing.nav
     }
 
@@ -2020,7 +2025,7 @@ struct MacChatListView: View {
         missionBackConvoID = nil
         selectedMissionID = nil
         selectedProjectID = nil
-        timeline.storyProjectID = nil
+        timeline.openStory(nil)
     }
 
     /// A pick in the timeline's list column: that week or list, with no
@@ -2031,19 +2036,20 @@ struct MacChatListView: View {
         timeline.select(place)
     }
 
-    /// A story card or list row: the project's story over the timeline.
+    /// A week card or list row: the project's page over the timeline.
     private func openStory(_ projectID: String) {
         missionBackConvoID = nil
         selectedMissionID = nil
         selectedProjectID = nil
-        timeline.storyProjectID = projectID
+        timeline.openStory(projectID)
     }
 
-    /// `redirectProject` for a story: the merged-into project takes the
-    /// place in history rather than adding one.
+    /// `redirectProject` for a project over the timeline: the merged-into
+    /// project's page takes the place in history rather than adding one.
     private func redirectStory(_ projectID: String) {
-        history.replaceCurrent(MacPlace(detail: .timeline(place: timeline.place, story: projectID)))
-        timeline.storyProjectID = projectID
+        history.replaceCurrent(MacPlace(detail: .timeline(place: timeline.place, story: projectID, section: nil)))
+        selectedProjectID = nil
+        timeline.openStory(projectID)
     }
 
     /// Projects came on screen: the timeline's first read (flag on), or a re-read.
@@ -2056,11 +2062,20 @@ struct MacChatListView: View {
     }
 
     /// A project page — from a home card, a mission page's chip or
-    /// breadcrumb, or the header menu's "Open project".
+    /// breadcrumb, the header menu's "Open project", a link or search.
+    /// While the timeline is shown that is the project's page over it.
+    /// Before the journal has answered it is today's page, and the place
+    /// turns into the new one if the timeline then shows
+    /// (`MacTimelineNav.projectsDetail`).
     private func showProject(_ projectID: String) {
-        missionBackConvoID = nil
-        selectedMissionID = nil
-        selectedProjectID = projectID
+        if timeline.isShown {
+            openStory(projectID)
+        } else {
+            missionBackConvoID = nil
+            selectedMissionID = nil
+            selectedProjectID = projectID
+            timeline.openStory(nil)
+        }
         nav = .missions
     }
 

@@ -16,6 +16,14 @@ public protocol TimelineProviding: Sendable {
     func openLong() async throws -> StalledList
     /// Finished projects, newest finish first; `before` is a page's `nextBefore`.
     func finishedProjects(before: String?, limit: Int?) async throws -> (rows: [FinishedProject], nextBefore: String?)
+    /// Every project, the most recently moved first; `before` is a page's `nextBefore`.
+    func timelineProjects(before: String?, limit: Int?) async throws -> TimelineProjectList
+    /// One project's page. A journal without the route answers 404, as it
+    /// does for a project it doesn't have.
+    func timelineProject(_ id: String) async throws -> TimelineProjectPage
+    /// The project's weeks newest first; `before` is a week key (a page's `nextBefore`).
+    func timelineProjectHistory(_ id: String, before: String?, limit: Int?) async throws
+        -> (weeks: [TimelineHistoryWeek], nextBefore: String?)
 }
 
 extension JournalAPI: TimelineProviding {
@@ -60,6 +68,25 @@ extension JournalAPI: TimelineProviding {
         return (decodeRows(rows, "finished", FinishedProject.init(json:)), obj["next_before"] as? String)
     }
 
+    static func decodeTimelineProjects(_ obj: [String: Any]) throws -> TimelineProjectList {
+        guard let list = TimelineProjectList(json: obj) else { throw JournalAPIError.transport("malformed timeline projects response") }
+        let sent = (obj["rows"] as? [Any])?.count ?? 0
+        if list.rows.count < sent {
+            timelineAPILogger.error("dropped \(sent - list.rows.count, privacy: .public) malformed row(s) in timeline projects")
+        }
+        return list
+    }
+
+    static func decodeTimelineProject(_ obj: [String: Any]) throws -> TimelineProjectPage {
+        guard let page = TimelineProjectPage(json: obj) else { throw JournalAPIError.transport("malformed timeline project response") }
+        return page
+    }
+
+    static func decodeTimelineProjectHistory(_ obj: [String: Any]) throws -> (weeks: [TimelineHistoryWeek], nextBefore: String?) {
+        guard let rows = obj["weeks"] as? [[String: Any]] else { throw JournalAPIError.transport("malformed timeline history response") }
+        return (decodeRows(rows, "history week", TimelineHistoryWeek.init(json:)), obj["next_before"] as? String)
+    }
+
     private static func pageQuery(before: String?, limit: Int?) -> [URLQueryItem] {
         var query: [URLQueryItem] = []
         if let before { query.append(.init(name: "before", value: before)) }
@@ -87,5 +114,21 @@ extension JournalAPI: TimelineProviding {
     public func finishedProjects(before: String?, limit: Int?) async throws -> (rows: [FinishedProject], nextBefore: String?) {
         try Self.decodeFinishedProjects(
             try await request(path: "/timeline/finished", query: Self.pageQuery(before: before, limit: limit)))
+    }
+
+    public func timelineProjects(before: String?, limit: Int?) async throws -> TimelineProjectList {
+        try Self.decodeTimelineProjects(
+            try await request(path: "/timeline/projects", query: Self.pageQuery(before: before, limit: limit)))
+    }
+
+    public func timelineProject(_ id: String) async throws -> TimelineProjectPage {
+        try Self.decodeTimelineProject(try await request(path: "/timeline/projects/\(Self.pathSegment(id))"))
+    }
+
+    public func timelineProjectHistory(_ id: String, before: String?, limit: Int?) async throws
+        -> (weeks: [TimelineHistoryWeek], nextBefore: String?) {
+        try Self.decodeTimelineProjectHistory(
+            try await request(path: "/timeline/projects/\(Self.pathSegment(id))/history",
+                              query: Self.pageQuery(before: before, limit: limit)))
     }
 }

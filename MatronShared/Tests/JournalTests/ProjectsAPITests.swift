@@ -167,6 +167,46 @@ final class ProjectsAPITests: XCTestCase {
         XCTAssertEqual(try sentBody(recorder)["into"] as? String, "pj_2")
     }
 
+    func testRenamePatchesTheTitle() async throws {
+        let (api, recorder) = makeStubbedAPI(status: 200, body: ["project": ProjectModelTests.projectJSON])
+        try await api.renameProject(id: "pj_1", title: "Docs site launch")
+        let req = try XCTUnwrap(recorder.lastRequest)
+        XCTAssertEqual(req.httpMethod, "PATCH")
+        XCTAssertEqual(req.url?.path, "/projects/pj_1")
+        let sent = try sentBody(recorder)
+        XCTAssertEqual(sent["title"] as? String, "Docs site launch")
+        XCTAssertEqual(sent.count, 1, "the title and nothing else")
+    }
+
+    func testClosePostsTheSummary() async throws {
+        let (api, recorder) = makeStubbedAPI(status: 200, body: ["project": ProjectModelTests.projectJSON])
+        try await api.closeProject(id: "pj_1", summary: "Closed from the app.")
+        let req = try XCTUnwrap(recorder.lastRequest)
+        XCTAssertEqual(req.httpMethod, "POST")
+        XCTAssertEqual(req.url?.path, "/projects/pj_1/close")
+        let sent = try sentBody(recorder)
+        XCTAssertEqual(sent["summary"] as? String, "Closed from the app.")
+        XCTAssertEqual(sent.count, 1)
+    }
+
+    /// The journal refuses a close with its reason in `blocked_by`.
+    func testCloseRefusals() async throws {
+        func refusal(_ body: [String: Any]) async -> Error? {
+            let (api, _) = makeStubbedAPI(status: 409, body: body)
+            do { try await api.closeProject(id: "pj_1", summary: "Closed from the app."); return nil } catch { return error }
+        }
+        let open = await refusal(["error": "conflict", "blocked_by": "open_missions", "missions": [["id": "ms_1"]]])
+        XCTAssertEqual(open as? ProjectCloseError, .openMissions)
+        XCTAssertEqual(open?.localizedDescription, "This project still has open missions. Close or move them first.")
+        let closed = await refusal(["error": "conflict", "blocked_by": "closed"])
+        XCTAssertEqual(closed as? ProjectCloseError, .alreadyClosed)
+        let other = await refusal(["error": "conflict"])
+        XCTAssertEqual(other as? JournalAPIError, .conflict())
+        let (api, _) = makeStubbedAPI(status: 404, body: ["error": "not_found"])
+        do { try await api.closeProject(id: "pj_1", summary: "s"); XCTFail("expected a throw") }
+        catch { XCTAssertEqual(error as? JournalAPIError, .notFound) }
+    }
+
     func testSetMissionProjectPatchesAnIdOrNull() async throws {
         let (api, recorder) = makeStubbedAPI(status: 200, body: ["mission": MissionModelTests.missionJSON])
         _ = try await api.setMissionProject(missionID: "ms_a1", project: "pj_1")

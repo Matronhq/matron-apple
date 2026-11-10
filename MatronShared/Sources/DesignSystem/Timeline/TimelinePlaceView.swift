@@ -1,37 +1,44 @@
 import SwiftUI
 import MatronModels
 
-/// One place of the timeline as `content` says it stands: a week, one of
-/// the three lists, progress, the retry, or the empty state. `footer`
-/// follows the week's cards and the empty state (the iPhone's "Worth a
-/// look" rows). A pure leaf: hosts pass the content, the loaded pictures
-/// and the actions, and own the reads, the image loading and the alert.
+/// One place of the timeline as `content` says it stands: a week, every
+/// project, one of the three lists, progress, the retry, or the empty
+/// state. `footer` follows the week's cards and the empty state (the
+/// iPhone's "Worth a look" rows). A pure leaf: hosts pass the content, the
+/// loaded pictures with their pixel sizes and the actions, and own the
+/// reads, the image loading and the alert.
 public struct TimelinePlaceView<Footer: View>: View {
     let content: TimelinePlaceContent
     let now: Date
     let images: [String: Image]
+    let sizes: [String: CGSize]
     let asked: Set<String>
     let onOpenProject: (String) -> Void
-    let onOpenItem: (String) -> Void
     let onAsk: (StalledProject) -> Void
     let onLoadMoreFinished: () -> Void
+    let onLoadMoreProjects: () -> Void
     let onRetry: () -> Void
     let footer: Footer
 
-    public init(content: TimelinePlaceContent, now: Date, images: [String: Image], asked: Set<String>,
-                onOpenProject: @escaping (String) -> Void, onOpenItem: @escaping (String) -> Void,
+    public init(content: TimelinePlaceContent, now: Date, images: [String: Image], sizes: [String: CGSize] = [:],
+                asked: Set<String>, onOpenProject: @escaping (String) -> Void,
                 onAsk: @escaping (StalledProject) -> Void, onLoadMoreFinished: @escaping () -> Void,
+                onLoadMoreProjects: @escaping () -> Void = {},
                 onRetry: @escaping () -> Void, @ViewBuilder footer: () -> Footer) {
-        self.content = content; self.now = now; self.images = images; self.asked = asked
-        self.onOpenProject = onOpenProject; self.onOpenItem = onOpenItem; self.onAsk = onAsk
-        self.onLoadMoreFinished = onLoadMoreFinished; self.onRetry = onRetry; self.footer = footer()
+        self.content = content; self.now = now; self.images = images; self.sizes = sizes; self.asked = asked
+        self.onOpenProject = onOpenProject; self.onAsk = onAsk
+        self.onLoadMoreFinished = onLoadMoreFinished; self.onLoadMoreProjects = onLoadMoreProjects
+        self.onRetry = onRetry; self.footer = footer()
     }
 
     public var body: some View {
         switch content {
-        case .week(let week, let sentence):
-            TimelineWeekView(week: week, sentence: sentence, now: now, images: images,
-                             onOpenProject: onOpenProject, onOpenItem: onOpenItem) { footer }
+        case .week(let week):
+            TimelineWeekView(week: week, now: now, images: images, sizes: sizes,
+                             onOpenProject: onOpenProject) { footer }
+        case .projects(let list, let hasMore):
+            AllProjectsListView(list: list, now: now, onOpenProject: onOpenProject,
+                                onLoadMore: hasMore ? onLoadMoreProjects : nil)
         case .quiet(let list):
             StalledListView(title: TimelineFormat.wentQuiet, lede: TimelineFormat.quietLede, list: list, now: now,
                             onOpenProject: onOpenProject, onAsk: onAsk, asked: asked)
@@ -69,12 +76,12 @@ public struct TimelinePlaceView<Footer: View>: View {
 }
 
 public extension TimelinePlaceView where Footer == EmptyView {
-    init(content: TimelinePlaceContent, now: Date, images: [String: Image], asked: Set<String>,
-         onOpenProject: @escaping (String) -> Void, onOpenItem: @escaping (String) -> Void,
+    init(content: TimelinePlaceContent, now: Date, images: [String: Image], sizes: [String: CGSize] = [:],
+         asked: Set<String>, onOpenProject: @escaping (String) -> Void,
          onAsk: @escaping (StalledProject) -> Void, onLoadMoreFinished: @escaping () -> Void,
-         onRetry: @escaping () -> Void) {
-        self.init(content: content, now: now, images: images, asked: asked, onOpenProject: onOpenProject,
-                  onOpenItem: onOpenItem, onAsk: onAsk, onLoadMoreFinished: onLoadMoreFinished,
-                  onRetry: onRetry) { EmptyView() }
+         onLoadMoreProjects: @escaping () -> Void = {}, onRetry: @escaping () -> Void) {
+        self.init(content: content, now: now, images: images, sizes: sizes, asked: asked, onOpenProject: onOpenProject,
+                  onAsk: onAsk, onLoadMoreFinished: onLoadMoreFinished,
+                  onLoadMoreProjects: onLoadMoreProjects, onRetry: onRetry) { EmptyView() }
     }
 }

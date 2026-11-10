@@ -46,6 +46,7 @@ func isAnyPathPrefixedRoute(_ value: String) -> Bool {
     ItemRoute(pathValue: value) != nil || MissionRoute(pathValue: value) != nil
         || ProjectRoute(pathValue: value) != nil || MemoriesRoute.isMemoriesRoute(value)
         || ProjectStoryRoute(pathValue: value) != nil || TimelineListRoute(pathValue: value) != nil
+        || ProjectSectionRoute(pathValue: value) != nil
         || value == ArchivedRoute.list
 
 }

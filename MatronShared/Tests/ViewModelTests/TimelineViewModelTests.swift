@@ -16,12 +16,16 @@ private final class FakeTimeline: TimelineProviding, @unchecked Sendable {
         var finishedPages: [String?: (rows: [FinishedProject], nextBefore: String?)] = [:]
         var weeksError: Error?
         var weekError: Error?
+        var finishedError: Error?
         var failsLists = false
         var weeksCalls: [String?] = []
         var weekCalls: [String] = []
         var quietCalls = 0
         var longCalls = 0
         var finishedCalls: [String?] = []
+        var projectPages: [String?: TimelineProjectList] = [:]
+        var projectsError: Error?
+        var projectsCalls: [String?] = []
         var gated: Set<String> = []
         var held: [String: CheckedContinuation<Void, Never>] = [:]
     }
@@ -43,6 +47,8 @@ private final class FakeTimeline: TimelineProviding, @unchecked Sendable {
     }
     var weeksError: Error? { get { read(\.weeksError) } set { write { $0.weeksError = newValue } } }
     var weekError: Error? { get { read(\.weekError) } set { write { $0.weekError = newValue } } }
+    /// What every finished read throws, when set.
+    var finishedError: Error? { get { read(\.finishedError) } set { write { $0.finishedError = newValue } } }
     /// The went-quiet and open-a-long-time reads throw.
     var failsLists: Bool { get { read(\.failsLists) } set { write { $0.failsLists = newValue } } }
     var weeksCalls: [String?] { read(\.weeksCalls) }
@@ -50,10 +56,18 @@ private final class FakeTimeline: TimelineProviding, @unchecked Sendable {
     var quietCalls: Int { read(\.quietCalls) }
     var longCalls: Int { read(\.longCalls) }
     var finishedCalls: [String?] { read(\.finishedCalls) }
+    /// All-projects pages by `before`; a page not scripted answers 404, as
+    /// a journal without the route does.
+    var projectPages: [String?: TimelineProjectList] {
+        get { read(\.projectPages) } set { write { $0.projectPages = newValue } }
+    }
+    /// What every all-projects read throws, when set.
+    var projectsError: Error? { get { read(\.projectsError) } set { write { $0.projectsError = newValue } } }
+    var projectsCalls: [String?] { read(\.projectsCalls) }
 
     // MARK: Gates
 
-    /// Hold the next call at `key` ("weeks:<before>", "week:<key>", "quiet", "long", "finished:<before>").
+    /// Hold the next call at `key` ("weeks:<before>", "week:<key>", "quiet", "long", "finished:<before>", "projects:<before>").
     func gate(_ key: String) { write { $0.gated.insert(key) } }
 
     func waitUntilHeld(_ key: String) async {
@@ -111,13 +125,29 @@ private final class FakeTimeline: TimelineProviding, @unchecked Sendable {
     }
 
     func finishedProjects(before: String?, limit: Int?) async throws -> (rows: [FinishedProject], nextBefore: String?) {
-        let page = lock.withLock { () -> (rows: [FinishedProject], nextBefore: String?) in
+        let (page, failure) = lock.withLock { () -> ((rows: [FinishedProject], nextBefore: String?), Error?) in
             state.finishedCalls.append(before)
-            return state.finishedPages[before] ?? ([], nil)
+            return (state.finishedPages[before] ?? ([], nil), state.finishedError)
         }
         await holdIfGated("finished:\(before ?? "nil")")
+        if let failure { throw failure }
         return page
     }
+
+    func timelineProjects(before: String?, limit: Int?) async throws -> TimelineProjectList {
+        let (page, failure) = lock.withLock { () -> (TimelineProjectList?, Error?) in
+            state.projectsCalls.append(before)
+            return (state.projectPages[before], state.projectsError)
+        }
+        await holdIfGated("projects:\(before ?? "nil")")
+        if let failure { throw failure }
+        guard let page else { throw JournalAPIError.notFound }
+        return page
+    }
+
+    func timelineProject(_ id: String) async throws -> TimelineProjectPage { throw JournalAPIError.notFound }
+    func timelineProjectHistory(_ id: String, before: String?, limit: Int?) async throws
+        -> (weeks: [TimelineHistoryWeek], nextBefore: String?) { throw JournalAPIError.notFound }
 }
 
 @MainActor
@@ -517,6 +547,238 @@ final class TimelineViewModelTests: XCTestCase {
         await older.value
         XCTAssertNil(vm.error)
         XCTAssertEqual(vm.week?.week, "2026-11-02")
+    }
+
+    // MARK: - All projects
+
+    private func row(_ n: Int) -> TimelineProjectRow { TimelineProjectRow(project: project(n), lastMovedAt: now, openMissions: 1) }
+
+    /// Two pages of three projects: 1 and 2, then 3.
+    private func scriptProjects(_ fake: FakeTimeline) {
+        fake.projectPages[nil] = TimelineProjectList(total: 3, rows: [row(1), row(2)], nextBefore: "cursor")
+        fake.projectPages["cursor"] = TimelineProjectList(total: 3, rows: [row(3)])
+    }
+
+    func testSelectingAllProjectsLoadsOnceAndPagesWithNextBefore() async {
+        let (vm, fake, _) = make()
+        scriptProjects(fake)
+        await vm.start()
+        XCTAssertNil(vm.allProjects)
+        XCTAssertEqual(vm.content(for: .projects), .loading)
+        XCTAssertFalse(vm.hasContent(for: .projects))
+        await vm.select(.projects)
+        XCTAssertEqual(vm.allProjects?.rows.map(\.project.num), [1, 2])
+        XCTAssertEqual(vm.allProjects?.total, 3)
+        XCTAssertTrue(vm.hasMoreProjects)
+        XCTAssertTrue(vm.hasContent(for: .projects))
+        XCTAssertEqual(vm.content(for: .projects),
+                       .projects(TimelineProjectList(total: 3, rows: [row(1), row(2)], nextBefore: "cursor"), hasMore: true))
+        await vm.loadMoreProjects()
+        XCTAssertEqual(vm.allProjects?.rows.map(\.project.num), [1, 2, 3])
+        XCTAssertEqual(vm.allProjects?.total, 3)
+        XCTAssertFalse(vm.hasMoreProjects)
+        XCTAssertEqual(vm.content(for: .projects),
+                       .projects(TimelineProjectList(total: 3, rows: [row(1), row(2), row(3)]), hasMore: false))
+        await vm.loadMoreProjects()
+        await vm.select(.week("2026-11-02"))
+        await vm.select(.projects)
+        XCTAssertEqual(fake.projectsCalls, [nil, "cursor"], "cached; no extra requests")
+        await vm.refresh()
+        XCTAssertEqual(fake.projectsCalls, [nil, "cursor", nil], "a refresh on the list re-reads its first page")
+        XCTAssertEqual(vm.allProjects?.rows.map(\.project.num), [1, 2])
+    }
+
+    func testAFailedAllProjectsReadSetsError() async {
+        let (vm, _, _) = make()
+        await vm.start()
+        await vm.select(.projects)
+        XCTAssertNil(vm.allProjects)
+        XCTAssertNotNil(vm.error)
+        XCTAssertEqual(vm.content(for: .projects), .failed)
+    }
+
+    /// A read called off is not a failure to tell the reader about.
+    func testACancelledAllProjectsReadSetsNoError() async {
+        let (vm, fake, _) = make()
+        scriptProjects(fake)
+        await vm.start()
+        fake.projectsError = JournalAPIError.transport("cancelled")
+        await vm.select(.projects)
+        XCTAssertNil(vm.error)
+        XCTAssertEqual(vm.content(for: .projects), .loading)
+        fake.projectsError = nil
+        await vm.select(.week("2026-11-02"))
+        await vm.select(.projects)
+        XCTAssertEqual(vm.allProjects?.rows.map(\.project.num), [1, 2], "the next visit reads it")
+        fake.projectsError = JournalAPIError.transport("cancelled")
+        await vm.loadMoreProjects()
+        XCTAssertNil(vm.error)
+        XCTAssertTrue(vm.hasMoreProjects, "the page can be asked for again")
+    }
+
+    /// The same for the weeks, an earlier page of them, a week, and a
+    /// page of the finished list: each can be asked for again.
+    func testACancelledWeeksOrFinishedReadSetsNoError() async {
+        let cancelled = JournalAPIError.transport("cancelled")
+        let (vm, fake, _) = make()
+        fake.weeksError = cancelled
+        await vm.start()
+        XCTAssertNil(vm.error, "the first page of weeks")
+        XCTAssertNil(vm.isSupported)
+
+        fake.weeksError = nil
+        await vm.start()
+        fake.weeksError = cancelled
+        await vm.loadEarlierWeeks()
+        XCTAssertNil(vm.error, "an earlier page of weeks")
+        XCTAssertTrue(vm.hasEarlierWeeks)
+        await vm.refresh()
+        XCTAssertNil(vm.error, "the weeks again")
+        XCTAssertEqual(vm.weeks.map(\.week), ["2026-11-02", "2026-10-26"], "what loaded stays")
+
+        fake.weeksError = nil
+        fake.weekError = cancelled
+        await vm.select(.week("2026-10-26"))
+        XCTAssertNil(vm.error, "a week")
+        fake.weekError = nil
+
+        let finish = { (n: Int) in FinishedProject(project: self.project(n), finishedAt: self.now) }
+        fake.finishedPages[nil] = ([finish(1)], "cursor")
+        fake.finishedPages["cursor"] = ([finish(2)], nil)
+        fake.finishedError = cancelled
+        await vm.select(.finished)
+        XCTAssertNil(vm.error, "the finished list")
+        fake.finishedError = nil
+        await vm.select(.week("2026-11-02"))
+        await vm.select(.finished)
+        XCTAssertEqual(vm.finished.map(\.project.num), [1], "the next visit reads it")
+        fake.finishedError = cancelled
+        await vm.loadMoreFinished()
+        XCTAssertNil(vm.error, "a later page of the finished list")
+        XCTAssertTrue(vm.hasMoreFinished)
+        fake.finishedError = JournalAPIError.transport("offline")
+        await vm.loadMoreFinished()
+        XCTAssertNotNil(vm.error, "a read that failed still says so")
+    }
+
+    func testPagingAllProjectsDuringAReloadIsRefused() async {
+        let (vm, fake, _) = make()
+        scriptProjects(fake)
+        await vm.start()
+        await vm.select(.projects)
+        fake.projectPages[nil] = TimelineProjectList(total: 3, rows: [row(1), row(2), row(3)])
+        fake.gate("projects:nil")
+        fake.gate("projects:cursor")
+        let reload = Task { await vm.refresh() }
+        await fake.waitUntilHeld("projects:nil")
+        let paging = Task { await vm.loadMoreProjects() }
+        await settle()
+        fake.release("projects:nil")
+        await reload.value
+        fake.release("projects:cursor")
+        await paging.value
+        XCTAssertEqual(vm.allProjects?.rows.map(\.project.num), [1, 2, 3])
+        XCTAssertEqual(fake.projectsCalls, [nil, nil], "no page was requested off the old cursor")
+    }
+
+    func testAnAllProjectsPageFetchedBeforeARefreshIsDropped() async {
+        let (vm, fake, _) = make()
+        scriptProjects(fake)
+        await vm.start()
+        await vm.select(.projects)
+        fake.gate("projects:cursor")
+        let paging = Task { await vm.loadMoreProjects() }
+        await fake.waitUntilHeld("projects:cursor")
+        fake.projectPages[nil] = TimelineProjectList(total: 3, rows: [row(1), row(2), row(3)])
+        await vm.refresh()
+        fake.release("projects:cursor")
+        await paging.value
+        XCTAssertEqual(vm.allProjects?.rows.map(\.project.num), [1, 2, 3], "no duplicate tail")
+        XCTAssertFalse(vm.hasMoreProjects)
+    }
+
+    func testLoadCountsReadsTheFirstAllProjectsPageForTheSidebar() async {
+        let (vm, fake, _) = make()
+        scriptProjects(fake)
+        await vm.start()
+        await vm.loadCounts()
+        XCTAssertEqual(vm.allProjects?.total, 3)
+        XCTAssertEqual(vm.allProjects?.rows.map(\.project.num), [1, 2])
+        await vm.select(.projects)
+        await vm.loadCounts()
+        XCTAssertEqual(fake.projectsCalls, [nil], "a visit after the counts, and fresh counts, read nothing again")
+        await vm.loadMoreProjects()
+        XCTAssertEqual(vm.allProjects?.rows.map(\.project.num), [1, 2, 3], "the counts' page pages on")
+        await vm.refresh()
+        await vm.loadCounts()
+        XCTAssertEqual(fake.projectsCalls, [nil, "cursor", nil], "after a refresh the counts re-read")
+        XCTAssertEqual(vm.allProjects?.rows.map(\.project.num), [1, 2])
+    }
+
+    func testAnAllProjectsCountFromBeforeARefreshIsDropped() async {
+        let (vm, fake, _) = make()
+        scriptProjects(fake)
+        await vm.start()
+        fake.gate("projects:nil")
+        let counts = Task { await vm.loadCounts() }
+        await fake.waitUntilHeld("projects:nil")
+        await vm.refresh()
+        fake.release("projects:nil")
+        await counts.value
+        XCTAssertNil(vm.allProjects, "the pre-refresh count is dropped")
+    }
+
+    func testCountsOnAJournalWithoutAllProjectsStayQuiet() async {
+        let (vm, fake, _) = make()
+        fake.quiet = StalledList(total: 5, rows: [])
+        await vm.start()
+        await vm.loadCounts()
+        XCTAssertNil(vm.allProjects)
+        XCTAssertNil(vm.error, "a count is a hint: no alert")
+        XCTAssertEqual(vm.quiet?.total, 5, "the other counts still land")
+    }
+
+    /// A journal with the weeks but no all-projects route: the hosts hide
+    /// the row, and nothing asks for the list again.
+    func testAJournalWithoutAllProjectsIsRecordedAndNotAskedAgain() async {
+        let (vm, fake, _) = make()
+        await vm.start()
+        XCTAssertNil(vm.projectsSupported, "not known before a read")
+        XCTAssertTrue(vm.showsAllProjects, "offered until the journal says otherwise")
+        await vm.loadCounts()
+        XCTAssertEqual(vm.projectsSupported, false)
+        XCTAssertFalse(vm.showsAllProjects)
+        await vm.refresh()
+        await vm.loadCounts()
+        XCTAssertEqual(fake.projectsCalls, [nil], "its 404 would only come again")
+        XCTAssertEqual(vm.projectsSupported, false)
+    }
+
+    func testAnAllProjectsListThatAnswersIsSupported() async {
+        let (vm, fake, _) = make()
+        scriptProjects(fake)
+        await vm.start()
+        await vm.loadCounts()
+        XCTAssertEqual(vm.projectsSupported, true)
+        XCTAssertTrue(vm.showsAllProjects)
+    }
+
+    func testAVisitThatFindsNoAllProjectsRouteRecordsIt() async {
+        let (vm, _, _) = make()
+        await vm.start()
+        await vm.select(.projects)
+        XCTAssertEqual(vm.projectsSupported, false)
+    }
+
+    func testAnotherAllProjectsFailureLeavesSupportUnknown() async {
+        let (vm, fake, _) = make()
+        fake.projectsError = JournalAPIError.forbidden
+        await vm.start()
+        await vm.loadCounts()
+        XCTAssertNil(vm.projectsSupported)
+        await vm.select(.projects)
+        XCTAssertNil(vm.projectsSupported)
+        XCTAssertTrue(vm.showsAllProjects)
     }
 
     func testFlagKey() {

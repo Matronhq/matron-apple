@@ -125,8 +125,9 @@ struct MacProjectPage: View {
     let actions: MacProjectPageActions
     let onRedirect: (String) -> Void
     /// False when a host starts and stops `slot` itself: the timeline's
-    /// project host keeps one view model across its story and this page,
-    /// and two pages' `onDisappear` / `.task` could run in either order.
+    /// project host keeps one view model across its own page and this one
+    /// (shown on a journal without the new page), and two pages'
+    /// `onDisappear` / `.task` could run in either order.
     var ownsSlot = true
 
     @Environment(\.appDependencies) private var deps

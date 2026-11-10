@@ -60,6 +60,18 @@ public enum JournalAPIError: Error, Equatable, Sendable {
     case transport(String)
 }
 
+extension JournalAPIError {
+    /// The detail of the `.transport` a called-off request throws.
+    static let cancelledDetail = "cancelled"
+
+    /// The request was called off (its task cancelled) rather than failed:
+    /// nothing to tell the reader about.
+    public var isCancellation: Bool {
+        if case .transport(let detail) = self { return detail == Self.cancelledDetail }
+        return false
+    }
+}
+
 /// Human-readable descriptions: these errors surface verbatim in UI banners
 /// via `error.localizedDescription` (chat error overlay, composer send
 /// error, sign-in form). Without this conformance Foundation renders the
@@ -981,6 +993,9 @@ public actor JournalAPI {
             return (data, http)
         } catch let error as JournalAPIError {
             throw error
+        } catch let error as URLError where error.code == .cancelled {
+            // Said the same in every language, so callers can tell it apart.
+            throw JournalAPIError.transport(JournalAPIError.cancelledDetail)
         } catch {
             throw JournalAPIError.transport(error.localizedDescription)
         }

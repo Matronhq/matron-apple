@@ -33,102 +33,50 @@ final class TimelineSnapshotTests: XCTestCase {
         XCTAssertNil(TimelineFormat.pageDates(older, now: D.now), "the title already says the dates")
     }
 
-    func testLedes() {
-        XCTAssertEqual(TimelineFormat.lede(D.thisWeek, sentence: "Sidebar line."), D.thisWeek.lede)
-        let noLede = TimelineWeek(week: "2026-10-19", start: D.now, end: D.now, final: true,
-                                  stories: [D.noMediaStory])
-        XCTAssertEqual(TimelineFormat.lede(noLede, sentence: "Sidebar line."), "Sidebar line.")
-        XCTAssertNil(TimelineFormat.lede(noLede, sentence: nil))
-        XCTAssertEqual(TimelineFormat.lede(D.emptyWeek, sentence: "A quiet week."), "Nothing moved this week.")
-        XCTAssertEqual(TimelineFormat.quietLede, "These were moving, then stopped without being finished.")
-        XCTAssertEqual(TimelineFormat.longLede, "These have been open for three weeks or more.")
-    }
-
+    /// The card's sentence, and the lines the lists and the sidebar say.
     func testStoryLines() {
         XCTAssertEqual(TimelineFormat.sentence(D.noMediaStory), D.noMediaStory.sentence)
         XCTAssertEqual(TimelineFormat.sentence(TimelineStory(project: D.noMediaStory.project)), "Moved this week.")
-        XCTAssertNil(TimelineFormat.needsYou(D.noMediaStory))
-        let one = TimelineStory(project: D.noMediaStory.project,
-                                needsYou: [TimelineItemRef(id: "it_a", num: 1, title: "Approve the copy")])
-        XCTAssertEqual(TimelineFormat.needsYou(one), "Approve the copy")
-        let three = TimelineStory(project: D.noMediaStory.project, needsYou: [
-            TimelineItemRef(id: "it_a", num: 1, title: "Approve the copy"),
-            TimelineItemRef(id: "it_b", num: 2, title: "B"), TimelineItemRef(id: "it_c", num: 3, title: "C"),
-        ])
-        XCTAssertEqual(TimelineFormat.needsYou(three), "Approve the copy, and 2 more")
-        XCTAssertEqual(TimelineFormat.needsYouPrefix, "Needs you: ")
-        XCTAssertEqual(TimelineFormat.alsoLine(1), "Also this week: 1 smaller job")
-        XCTAssertEqual(TimelineFormat.alsoLine(6), "Also this week: 6 smaller jobs")
+        XCTAssertEqual(TimelineFormat.nothingMoved, "Nothing moved this week.")
+        XCTAssertEqual(TimelineFormat.quietLede, "These were moving, then stopped without being finished.")
+        XCTAssertEqual(TimelineFormat.longLede, "These have been open for three weeks or more.")
         XCTAssertEqual(TimelineFormat.earlierWeeks, "Earlier weeks")
+        XCTAssertEqual(TimelineFormat.allProjects, "All projects")
         XCTAssertEqual(TimelineFormat.nothingFinished, "Nothing finished yet.")
     }
 
-    func testStoryTitleFallsBackToTheProjectName() {
-        let project = TimelineProjectRef(id: "pj_a", num: 1, title: "Docs site")
-        XCTAssertEqual(TimelineFormat.storyTitle(TimelineStory(project: project)), "Docs site")
-        XCTAssertEqual(TimelineFormat.storyTitle(TimelineStory(project: project, title: "Launch week")), "Launch week")
-        XCTAssertEqual(TimelineFormat.storyTitle(D.writtenStory), "Launch week is shaping up")
+    /// Counts and a word, in a fixed order, only those that apply.
+    func testMarksStrings() {
+        XCTAssertEqual(TimelineFormat.forYouMark(1), "1 for you")
+        XCTAssertEqual(TimelineFormat.forYouMark(4), "4 for you")
+        XCTAssertEqual(TimelineFormat.doneMark(1), "✓ 1 done")
+        XCTAssertEqual(TimelineFormat.doneMark(5), "✓ 5 done")
+        XCTAssertEqual(TimelineFormat.nextMark, "→ Next")
+        XCTAssertEqual(TimelineFormat.marksLabel(TimelineMarks(forYou: 2, done: 5, next: true)),
+                       "2 waiting for you, 5 done, has a next step")
+        XCTAssertEqual(TimelineFormat.marksLabel(TimelineMarks(forYou: 1)), "1 waiting for you")
+        XCTAssertEqual(TimelineFormat.marksLabel(TimelineMarks(done: 1, next: true)), "1 done, has a next step")
+        XCTAssertEqual(TimelineFormat.marksLabel(TimelineMarks(next: true)), "has a next step")
+        XCTAssertNil(TimelineFormat.marksLabel(TimelineMarks()))
     }
 
-    func testAlsoProjects() {
-        func story(_ titles: String...) -> TimelineStory {
-            let refs = titles.enumerated().map { TimelineProjectRef(id: "pj_\($0.offset)", num: $0.offset, title: $0.element) }
-            return TimelineStory(project: refs[0], projects: refs)
-        }
-        XCTAssertNil(TimelineFormat.alsoProjects(story("A")))
-        XCTAssertNil(TimelineFormat.alsoProjects(TimelineStory(project: D.noMediaStory.project)))
-        XCTAssertEqual(TimelineFormat.alsoProjects(story("A", "B")), "Also: B")
-        XCTAssertEqual(TimelineFormat.alsoProjects(story("A", "B", "C")), "Also: B and C")
-        XCTAssertEqual(TimelineFormat.alsoProjects(story("A", "B", "C", "D")), "Also: B, C and D")
-        XCTAssertEqual(TimelineFormat.alsoProjects(D.writtenStory), "Also: Themes")
+    func testAlsoMovedLine() {
+        XCTAssertNil(TimelineFormat.alsoMoved(0))
+        XCTAssertEqual(TimelineFormat.alsoMoved(1), "Also moved: 1 project")
+        XCTAssertEqual(TimelineFormat.alsoMoved(7), "Also moved: 7 projects")
     }
 
-    func testNeedsYouIgnoresDoneItems() {
-        func item(_ n: Int, _ title: String, done: Bool) -> TimelineItemRef {
-            TimelineItemRef(id: "it_\(n)", num: n, title: title, done: done)
-        }
-        let project = D.noMediaStory.project
-        let mixed = TimelineStory(project: project, needsYou: [item(1, "Old one", done: true), item(2, "Open one", done: false)])
-        XCTAssertEqual(TimelineFormat.needsYou(mixed), "Open one", "no \"and 1 more\" for a done item")
-        let allDone = TimelineStory(project: project, needsYou: [item(1, "Old one", done: true)])
-        XCTAssertNil(TimelineFormat.needsYou(allDone))
-        let two = TimelineStory(project: project, needsYou: [item(1, "A", done: false), item(2, "B", done: false),
-                                                            item(3, "C", done: true)])
-        XCTAssertEqual(TimelineFormat.needsYou(two), "A, and 1 more")
-    }
-
-    func testSortedOutOnlyWhenNothingIsOpen() {
-        func item(_ n: Int, _ title: String, done: Bool) -> TimelineItemRef {
-            TimelineItemRef(id: "it_\(n)", num: n, title: title, done: done)
-        }
-        let project = D.noMediaStory.project
-        XCTAssertEqual(TimelineFormat.sortedOutPrefix, "Done: ")
-        XCTAssertNil(TimelineFormat.sortedOut(TimelineStory(project: project)))
-        XCTAssertNil(TimelineFormat.sortedOut(TimelineStory(project: project, needsYou: [item(1, "A", done: false)])))
-        XCTAssertNil(TimelineFormat.sortedOut(TimelineStory(project: project, needsYou: [item(1, "A", done: true),
-                                                                                         item(2, "B", done: false)])),
-                     "something still waits: the red line shows, not this one")
-        XCTAssertEqual(TimelineFormat.sortedOut(TimelineStory(project: project, needsYou: [item(1, "A", done: true)])), "A")
-        XCTAssertEqual(TimelineFormat.sortedOut(TimelineStory(project: project, needsYou: [item(1, "A", done: true),
-                                                                                           item(2, "B", done: true)])),
-                       "A, and 1 more")
-        XCTAssertEqual(TimelineFormat.sortedOut(D.sortedOutStory), "Approve it, or ask for more")
-        XCTAssertNil(TimelineFormat.sortedOut(D.writtenStory))
-    }
-
-    /// A first title that ends a sentence starts a new one for the rest.
-    func testNeedsYouAfterAQuestion() {
-        func story(_ titles: String...) -> TimelineStory {
-            TimelineStory(project: D.noMediaStory.project, needsYou: titles.enumerated().map {
-                TimelineItemRef(id: "it_\($0.offset)", num: $0.offset, title: $0.element)
-            })
-        }
-        XCTAssertEqual(TimelineFormat.needsYou(story("Which retry policy for uploads?", "B")),
-                       "Which retry policy for uploads? And 1 more")
-        XCTAssertEqual(TimelineFormat.needsYou(story("Ship it now!", "B", "C")), "Ship it now! And 2 more")
-        XCTAssertEqual(TimelineFormat.needsYou(story("Approve the copy.", "B")), "Approve the copy. And 1 more")
-        XCTAssertEqual(TimelineFormat.needsYou(story("Approve the copy", "B")), "Approve the copy, and 1 more")
-        XCTAssertEqual(TimelineFormat.needsYou(story("Which retry policy for uploads?")), "Which retry policy for uploads?")
+    /// Eight cards at most; the stories beyond them join the projects
+    /// behind the foot line, ahead of the journal's own.
+    func testCardsStopAtEight() {
+        XCTAssertEqual(TimelineFormat.cards(D.thisWeek).count, D.thisWeek.stories.count)
+        XCTAssertEqual(TimelineFormat.alsoMovedProjects(D.thisWeek), D.thisWeek.also)
+        XCTAssertEqual(D.crowdedWeek.stories.count, 10)
+        XCTAssertEqual(TimelineFormat.cards(D.crowdedWeek), Array(D.crowdedWeek.stories.prefix(8)))
+        XCTAssertEqual(TimelineFormat.alsoMovedProjects(D.crowdedWeek),
+                       D.crowdedWeek.stories.suffix(2).map { $0.project } + D.crowdedWeek.also)
+        XCTAssertEqual(TimelineFormat.alsoMovedProjects(D.crowdedWeek).count, 7)
+        XCTAssertTrue(TimelineFormat.alsoMovedProjects(D.emptyWeek).isEmpty)
     }
 
     func testLastMoved() {
@@ -138,6 +86,10 @@ final class TimelineSnapshotTests: XCTestCase {
         XCTAssertEqual(TimelineFormat.lastMoved(ago(3 * 3_600), now: D.now), "Last moved 3h ago")
         XCTAssertEqual(TimelineFormat.lastMoved(ago(10), now: D.now), "Last moved just now")
         XCTAssertNil(TimelineFormat.lastMoved(nil, now: D.now))
+        XCTAssertEqual(TimelineFormat.moved(ago(3 * 86_400 + 600), now: D.now), "Moved 3 days ago")
+        XCTAssertEqual(TimelineFormat.moved(ago(86_400 + 60), now: D.now), "Moved yesterday")
+        XCTAssertEqual(TimelineFormat.moved(ago(3 * 3_600), now: D.now), "Moved 3h ago")
+        XCTAssertNil(TimelineFormat.moved(nil, now: D.now))
         XCTAssertEqual(TimelineFormat.askAction, "Ask the Coordinator what to do with it")
     }
 
@@ -156,122 +108,128 @@ final class TimelineSnapshotTests: XCTestCase {
         XCTAssertEqual(TimelineWeekView<EmptyView>.columnCount(pageWidth: 1_400), 2)
     }
 
-    // MARK: Project story
-
-    private static func file(_ name: String?, _ type: String, at date: Date, item: Int? = nil) -> ProjectFile {
-        ProjectFile(blobID: name ?? "blob", name: name, contentType: type,
-                    source: item.map { .item(num: $0) } ?? .chat(convoID: "c_demo", seq: 1), postedAt: date)
-    }
-
-    private static func task(_ num: Int, _ title: String, kind: ItemKind = .task, state: ItemState = .open) -> TrackerItem {
-        TrackerItem(id: "it_\(num)", num: num, kind: kind, state: state, title: title, originConvoID: "c_demo")
-    }
-
-    /// The Coordinator's status, else the goal, else the newest milestone.
-    /// Only the goal is held to a few lines: it can run to pages.
-    func testStorySentence() {
-        let milestone = { (title: String, hours: Double) in
-            Milestone(id: "ms_\(title)", missionID: "mi_demo", num: 1, kind: .progress, title: title,
-                      convoID: "c_demo", seq: 1, createdAt: D.now.addingTimeInterval(-hours * 3_600))
+    /// Whole only past the limits: a picture at a limit still fills.
+    func testMediaFit() {
+        func fit(_ width: CGFloat, _ height: CGFloat) -> TimelineMediaFit {
+            TimelineMediaFit.of(pixelSize: CGSize(width: width, height: height))
         }
-        var page = ProjectPageModel(project: Project(id: "pj", num: 1, title: "Docs", body: "The goal.",
-                                                     status: "Where it stands."))
-        XCTAssertEqual(TimelineFormat.storySentence(page), .init(text: "Where it stands.", lineLimit: nil))
-        page.project = Project(id: "pj", num: 1, title: "Docs", body: "The goal.", status: "  ")
-        XCTAssertEqual(TimelineFormat.storySentence(page), .init(text: "The goal.", lineLimit: 3))
-        page.project = Project(id: "pj", num: 1, title: "Docs")
-        XCTAssertNil(TimelineFormat.storySentence(page))
-        page.recentMilestones = [milestone("Older", 5), milestone("Newest", 1)]
-        XCTAssertEqual(TimelineFormat.storySentence(page), .init(text: "Newest", lineLimit: nil))
+        XCTAssertEqual(fit(240, 100), .fill)
+        XCTAssertEqual(fit(360, 100), .fill)
+        XCTAssertEqual(fit(361, 100), .whole)
+        XCTAssertEqual(fit(133, 100), .fill)
+        XCTAssertEqual(fit(132, 100), .whole)
+        XCTAssertEqual(fit(2_000, 300), .whole)
+        XCTAssertEqual(fit(600, 1_300), .whole)
+        XCTAssertEqual(TimelineMediaFit.of(pixelSize: nil), .fill)
+        XCTAssertEqual(fit(0, 0), .fill, "no size to go by")
+        XCTAssertEqual(fit(100, 0), .fill)
     }
 
-    /// A goal written as a document: its first paragraph, without the
-    /// heading, list and quote marks that start its lines.
-    func testStorySentenceFromAGoalIsItsFirstParagraph() {
-        func goal(_ body: String) -> String? {
-            TimelineFormat.storySentence(ProjectPageModel(project: Project(id: "pj", num: 1, title: "Docs", body: body)))?.text
-        }
-        XCTAssertEqual(goal("\n# Docs site\nShip a new docs site\nwith **search**.\n\n## Later\nMore."),
-                       "Docs site Ship a new docs site with **search**.")
-        XCTAssertEqual(goal("- Search\n* Fast pages\n+ A guide\n> Quoted\n1. First\n\nSecond paragraph."),
-                       "Search Fast pages A guide Quoted First")
-        XCTAssertEqual(goal("#hashtag stays, as does -5 °C and *emphasis*."), "#hashtag stays, as does -5 °C and *emphasis*.")
-        XCTAssertNil(goal("#\n- \n"))
+    func testDemoPicturesHaveTheirSizes() {
+        XCTAssertEqual(Set(D.sizes.keys), Set(D.images.keys))
+        XCTAssertEqual(D.sizes["strip"], CGSize(width: 2_000, height: 300))
+        XCTAssertEqual(D.sizes["phone"], CGSize(width: 600, height: 1_300))
+        XCTAssertEqual(TimelineMediaFit.of(pixelSize: D.sizes["docs"]), .fill)
     }
 
-    /// The first three open tasks, as one sentence; what already waits on
-    /// the user is in the card below, not here.
-    func testComingUp() {
-        var page = ProjectPageModel(project: Project(id: "pj", num: 1, title: "Docs"))
-        XCTAssertNil(TimelineFormat.comingUp(page))
-        page.openItems = [Self.task(1, "Launch")]
-        XCTAssertEqual(TimelineFormat.comingUp(page), "Launch.")
-        page.openItems = [Self.task(1, "A rehearsal on Monday at 07:00"), Self.task(2, "Pick a colour", kind: .question),
-                          Self.task(3, "The CDN switch-over."), Self.task(4, "Waits on you"),
-                          Self.task(5, "Launch"), Self.task(6, "Write the launch post")]
-        page.needsYou = [Self.task(4, "Waits on you")]
-        XCTAssertEqual(TimelineFormat.comingUp(page), "A rehearsal on Monday at 07:00, The CDN switch-over, then Launch.",
-                       "titles as written, less a closing full stop")
-        page.openItems = [Self.task(1, "CDN switch-over"), Self.task(2, "iOS build")]
-        XCTAssertEqual(TimelineFormat.comingUp(page), "CDN switch-over, then iOS build.")
-        XCTAssertEqual(TimelineFormat.comingUpPrefix, "Coming up:")
+    // MARK: Project page
+
+    /// The page's headings and its three rows, each with its count.
+    func testProjectPageLines() {
+        XCTAssertEqual(TimelineFormat.nextHeading, "Next")
+        XCTAssertEqual(TimelineFormat.needsYouHeading, "Needs you")
+        XCTAssertEqual(TimelineFormat.doneHeading, "Done")
+        XCTAssertEqual(ProjectSection.allCases.map(TimelineFormat.sectionTitle),
+                       ["This week and before", "Missions", "Files"])
+        XCTAssertEqual(ProjectSection.allCases.map { TimelineFormat.sectionCount($0, page: D.summaryPage) },
+                       ["6 weeks", "3 open, 4 done", "7"])
+        XCTAssertEqual(TimelineFormat.weeksCount(1), "1 week")
+        XCTAssertEqual(TimelineFormat.weeksCount(0), "0 weeks")
+        XCTAssertEqual(TimelineFormat.missionsCount(open: 0, done: 12), "0 open, 12 done")
     }
 
-    /// The file's caption, else the item it was posted on; never the
-    /// file's name, which is rarely words.
-    func testGalleryCaption() {
-        let items = [Self.task(30, "Pick the docs palette", kind: .decision)]
-        func file(_ name: String?, caption: String?, item: Int? = nil) -> ProjectFile {
-            ProjectFile(blobID: "blob", name: name, contentType: "image/png", caption: caption,
-                        source: item.map { .item(num: $0) } ?? .chat(convoID: "c_demo", seq: 1), postedAt: D.now)
-        }
-        XCTAssertEqual(TimelineFormat.galleryCaption(file("docs-1.png", caption: " Search page live\non staging "), items: items),
-                       "Search page live on staging")
-        XCTAssertEqual(TimelineFormat.galleryCaption(file("docs-1.png", caption: "Live", item: 30), items: items), "Live")
-        XCTAssertEqual(TimelineFormat.galleryCaption(file("docs-1.png", caption: "  ", item: 30), items: items),
-                       "Pick the docs palette")
-        XCTAssertNil(TimelineFormat.galleryCaption(file("docs-1.png", caption: nil), items: items))
-        XCTAssertNil(TimelineFormat.galleryCaption(file("docs-1.png", caption: nil, item: 99), items: items))
-        XCTAssertNil(TimelineFormat.galleryCaption(file(nil, caption: nil), items: items))
+    /// A row with nothing behind it can't be opened.
+    func testProjectSectionWithNothingBehindIt() {
+        let empty = TimelineProjectPage(project: D.summaryPage.project)
+        XCTAssertEqual(ProjectSection.allCases.map { TimelineFormat.sectionIsEmpty($0, page: empty) }, [true, true, true])
+        XCTAssertEqual(ProjectSection.allCases.map { TimelineFormat.sectionIsEmpty($0, page: D.summaryPage) },
+                       [false, false, false])
+        let finished = TimelineProjectPage(project: D.summaryPage.project, missionsDone: 2)
+        XCTAssertFalse(TimelineFormat.sectionIsEmpty(.missions, page: finished), "done missions are still missions")
+        XCTAssertEqual(ProjectSection.allCases.map { TimelineFormat.sectionIsEmpty($0, page: D.summaryPageBare) },
+                       [false, false, true])
     }
 
-    /// Images and videos only, grouped by Monday-based week, newest first:
-    /// "This week", "Last week", then the dates.
-    func testGalleryWeeks() {
+    /// "and 2 more" under the items shown; nothing when they are all there.
+    func testWaitingBeyondTheRowsShown() {
+        XCTAssertNil(TimelineFormat.moreWaiting(D.summaryPage))
+        XCTAssertEqual(D.summaryPageManyWaiting.needsYou.count, 3)
+        XCTAssertEqual(TimelineFormat.moreWaiting(D.summaryPageManyWaiting), "and 2 more")
+        let short = TimelineProjectPage(project: D.summaryPage.project, needsYou: D.summaryPage.needsYou, needsYouTotal: 0)
+        XCTAssertNil(TimelineFormat.moreWaiting(short), "a total below the rows sent")
+    }
+
+    /// "and 2 more" opens in place once every waiting item is known: the
+    /// rows the page lists stay where they are, the rest follow, and the
+    /// row itself goes. Until they are known it can't be opened.
+    func testAllWaitingOpensInPlace() {
+        let page = D.summaryPageManyWaiting, all = D.summaryAllWaiting
+        let unknown = TimelineFormat.waitingList(page, all: nil, expanded: false)
+        XCTAssertEqual(unknown.rows, page.needsYou)
+        XCTAssertEqual(unknown.more, "and 2 more")
+        XCTAssertFalse(unknown.canExpand, "the rest are not loaded yet")
+        XCTAssertEqual(TimelineFormat.waitingList(page, all: nil, expanded: true), unknown, "nothing to open onto")
+
+        let closed = TimelineFormat.waitingList(page, all: all, expanded: false)
+        XCTAssertEqual(closed.rows, page.needsYou, "the page as it was")
+        XCTAssertEqual(closed.more, "and 2 more")
+        XCTAssertTrue(closed.canExpand)
+
+        let open = TimelineFormat.waitingList(page, all: all, expanded: true)
+        XCTAssertEqual(open.rows.map(\.num), [51, 52, 53, 54, 55])
+        XCTAssertNil(open.more)
+        XCTAssertFalse(open.canExpand)
+
+        // The full list in another order, and without one the page lists:
+        // the page's rows keep their places and none is lost.
+        let shuffled = [all[4], all[1], all[3]]
+        XCTAssertEqual(TimelineFormat.waitingList(page, all: shuffled, expanded: true).rows.map(\.num), [51, 52, 53, 55, 54])
+
+        // A full list with nothing the page doesn't show opens onto nothing.
+        let same = TimelineFormat.waitingList(page, all: page.needsYou, expanded: true)
+        XCTAssertEqual(same.rows, page.needsYou)
+        XCTAssertEqual(same.more, "and 2 more")
+        XCTAssertFalse(same.canExpand)
+
+        // Everything listed: no row, opened or not.
+        let whole = TimelineFormat.waitingList(D.summaryPage, all: D.summaryPage.needsYou, expanded: false)
+        XCTAssertEqual(whole.rows, D.summaryPage.needsYou)
+        XCTAssertNil(whole.more)
+        XCTAssertFalse(whole.canExpand)
+    }
+
+    /// The week being lived is this week, the one before it last week,
+    /// any other its dates.
+    func testHistoryWeekTitles() {
+        XCTAssertEqual(D.history.map { TimelineFormat.historyWeekTitle($0, now: D.now) },
+                       ["This week", "Last week", "19 – 25 Oct"])
+        XCTAssertNil(TimelineFormat.moreMilestones(0))
+        XCTAssertEqual(TimelineFormat.moreMilestones(1), "1 more")
+        XCTAssertEqual(TimelineFormat.moreMilestones(4), "4 more")
+    }
+
+    func testFileColumnsFollowThePageWidth() {
+        XCTAssertEqual(ProjectFilesGridView.columnCount(pageWidth: 390), 2)
+        XCTAssertEqual(ProjectFilesGridView.columnCount(pageWidth: 699), 2)
+        XCTAssertEqual(ProjectFilesGridView.columnCount(pageWidth: 700), 3)
+        XCTAssertEqual(ProjectFilesGridView.columnCount(pageWidth: 1_280), 3)
+    }
+
+    func testWeekday() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "Europe/London")!
-        calendar.firstWeekday = 2
-        func at(_ month: Int, _ day: Int, _ hour: Int, _ minute: Int = 0) -> Date {
-            calendar.date(from: DateComponents(year: 2026, month: month, day: day, hour: hour, minute: minute))!
-        }
-        let files = [
-            Self.file("monday.png", "image/png", at: at(11, 2, 0, 30)),
-            Self.file("notes.pdf", "application/pdf", at: at(11, 3, 9)),
-            Self.file("sunday.mp4", "video/mp4", at: at(11, 1, 23)),
-            Self.file("older.jpg", "image/jpeg", at: at(10, 21, 12)),
-            Self.file("thursday.png", "image/png", at: at(11, 5, 9)),
-            ProjectFile(blobID: "undated", name: "undated.png", contentType: "image/png", source: .chat(convoID: "c", seq: 2),
-                        postedAt: nil),
-        ]
-        let weeks = ProjectGallery.weeks(files, now: D.now, calendar: calendar)
-        XCTAssertEqual(weeks.map(\.title), ["This week", "Last week", "19 – 25 Oct"])
-        XCTAssertEqual(weeks.map { $0.files.map(\.name) }, [["thursday.png", "monday.png"], ["sunday.mp4"], ["older.jpg"]])
-        XCTAssertTrue(ProjectGallery.weeks([files[1]], now: D.now, calendar: calendar).isEmpty)
-        XCTAssertEqual(TimelineFormat.weekday(at(11, 3, 9), calendar: calendar), "Tuesday")
-    }
-
-    /// The dates are the Gregorian ones whatever the device's calendar;
-    /// only the weeks are grouped in it.
-    func testGalleryWeekTitleOnANonGregorianCalendar() {
-        for identifier in [Calendar.Identifier.buddhist, .islamicUmmAlQura] {
-            var calendar = Calendar(identifier: identifier)
-            calendar.timeZone = TimeZone(identifier: "Europe/London")!
-            calendar.firstWeekday = 2
-            let thisWeek = calendar.dateInterval(of: .weekOfYear, for: D.now)!.start
-            let older = calendar.date(byAdding: .day, value: -14, to: thisWeek)!
-            XCTAssertEqual(TimelineFormat.galleryWeekTitle(weekStart: older, thisWeekStart: thisWeek, calendar: calendar),
-                           "19 – 25 Oct", "\(identifier)")
-        }
+        let tuesday = calendar.date(from: DateComponents(year: 2026, month: 11, day: 3, hour: 9))!
+        XCTAssertEqual(TimelineFormat.weekday(tuesday, calendar: calendar), "Tuesday")
     }
 
     // MARK: Snapshots
@@ -293,13 +251,23 @@ final class TimelineSnapshotTests: XCTestCase {
     }
 
     private func sidebar(_ place: TimelinePlace) -> TimelineSidebarView {
-        TimelineSidebarView(weeks: D.weeks, quietCount: D.quiet.total, longCount: D.long.total, finishedCount: 289,
-                            selection: .constant(place), onLoadEarlier: {})
+        TimelineSidebarView(weeks: D.weeks, projectsCount: D.allProjects.total, quietCount: D.quiet.total,
+                            longCount: D.long.total, finishedCount: 289, selection: .constant(place), onLoadEarlier: {})
     }
 
-    private func weekPage(_ week: TimelineWeek, sentence: String? = nil) -> TimelineWeekView<EmptyView> {
-        TimelineWeekView(week: week, sentence: sentence, now: D.now, images: Self.images,
-                         onOpenProject: { _ in }, onOpenItem: { _ in })
+    private func weekPage(_ week: TimelineWeek) -> TimelineWeekView<EmptyView> {
+        TimelineWeekView(week: week, now: D.now, images: Self.images, sizes: D.sizes, onOpenProject: { _ in })
+    }
+
+    /// A card at a Mac column's width and at the iPhone page's.
+    private func assertCard(_ story: TimelineStory, named name: String, file: StaticString = #file,
+                            testName: String = #function, line: UInt = #line) {
+        func card() -> TimelineStoryCard {
+            TimelineStoryCard(story: story, image: story.media.flatMap { Self.images[$0.blobID] },
+                              pixelSize: story.media.flatMap { D.sizes[$0.blobID] })
+        }
+        assertVariants(of: card().frame(width: 448), named: "\(name)-mac", file: file, testName: testName, line: line)
+        assertVariants(of: card().frame(width: 358), named: "\(name)-phone", file: file, testName: testName, line: line)
     }
 
     func testWeekWithStories() {
@@ -309,45 +277,69 @@ final class TimelineSnapshotTests: XCTestCase {
         assertVariants(of: macWindow(.week(D.lastWeek.week)) { weekPage(D.lastWeek) }, named: "timeline-lastweek-mac")
     }
 
+    /// Nothing moved: the title, the dates and one calm line.
     func testWeekEmpty() {
-        let sentence = D.weeks[0].sentence
-        assertVariants(of: macWindow(.week(D.emptyWeek.week)) { weekPage(D.emptyWeek, sentence: sentence) },
-                       named: "timeline-week-empty-mac")
-        assertVariants(of: phone(weekPage(D.emptyWeek, sentence: sentence)), named: "timeline-week-empty-phone")
+        assertVariants(of: macWindow(.week(D.emptyWeek.week)) { weekPage(D.emptyWeek) }, named: "timeline-week-empty-mac")
+        assertVariants(of: phone(weekPage(D.emptyWeek)), named: "timeline-week-empty-phone")
+    }
+
+    /// Ten stories: eight cards, and the other two counted with the five
+    /// projects behind "Also moved: 7 projects". Tall enough to show the foot.
+    func testWeekMoreThanEightCards() {
+        assertVariants(of: weekPage(D.crowdedWeek).frame(width: 980, height: 1_500), named: "timeline-week-crowded-mac")
+        assertVariants(of: weekPage(D.crowdedWeek).frame(width: 390, height: 2_900), named: "timeline-week-crowded-phone")
+    }
+
+    /// Waiting on you, done and a next step: all three marks, in that order.
+    func testCardAllMarks() {
+        assertCard(D.allMarksStory, named: "timeline-card-marks")
+    }
+
+    /// Where the three marks do not fit on a line (large text, a narrow
+    /// card) they stack, none cut short.
+    func testMarksStackWhereTheLineDoesNotFit() {
+        assertVariants(of: TimelineMarksLine(marks: D.allMarksStory.marks).padding(12)
+                        .frame(width: 150, alignment: .leading),
+                       named: "timeline-marks-narrow")
+    }
+
+    /// Nothing to mark: the card ends at its sentence, with no empty line.
+    func testCardNoMarks() {
+        assertCard(D.noMarksStory, named: "timeline-card-nomarks")
     }
 
     /// No picture that week: no media area at all, not a grey box.
-    func testStoryCardNoMedia() {
-        assertVariants(of: TimelineStoryCard(story: D.noMediaStory, image: nil).frame(width: 448),
-                       named: "timeline-card-nomedia-mac")
-        assertVariants(of: TimelineStoryCard(story: D.noMediaStory, image: nil).frame(width: 358),
-                       named: "timeline-card-nomedia-phone")
-    }
-
-    /// A written story: the Coordinator's title, the other projects under
-    /// it, and the red line for what is still open.
-    func testStoryCardWritten() {
-        assertVariants(of: TimelineStoryCard(story: D.writtenStory, image: nil).frame(width: 448),
-                       named: "timeline-card-written-mac")
-        assertVariants(of: TimelineStoryCard(story: D.writtenStory, image: nil).frame(width: 358),
-                       named: "timeline-card-written-phone")
-    }
-
-    /// Everything the story named is sorted out: a quiet "Done:" line.
-    func testStoryCardSortedOut() {
-        assertVariants(of: TimelineStoryCard(story: D.sortedOutStory, image: nil).frame(width: 448),
-                       named: "timeline-card-done-mac")
-        assertVariants(of: TimelineStoryCard(story: D.sortedOutStory, image: nil).frame(width: 358),
-                       named: "timeline-card-done-phone")
+    func testCardNoMedia() {
+        assertCard(D.noMediaStory, named: "timeline-card-nomedia")
     }
 
     /// A video has no poster frame yet: a dark panel with ▶ and its name.
-    func testStoryCardVideo() {
-        let story = D.thisWeek.stories.first { $0.media?.isVideo == true }!
-        assertVariants(of: TimelineStoryCard(story: story, image: nil).frame(width: 448),
-                       named: "timeline-card-video-mac")
-        assertVariants(of: TimelineStoryCard(story: story, image: nil).frame(width: 358),
-                       named: "timeline-card-video-phone")
+    func testCardVideo() {
+        assertCard(D.thisWeek.stories.first { $0.media?.isVideo == true }!, named: "timeline-card-video")
+    }
+
+    /// The media area at a Mac card's width, with the window showing round
+    /// it: a picture alone draws the same in light and dark.
+    private func mediaView(_ blobID: String) -> some View {
+        TimelineMediaView(media: TimelineMedia(blobID: blobID, contentType: "image/png", name: "\(blobID).png"),
+                          image: Self.images[blobID], pixelSize: D.sizes[blobID])
+            .frame(width: 448)
+            .padding(16)
+    }
+
+    /// A very wide picture: all of it, on a blurred, darkened copy of itself.
+    func testMediaWideShownWhole() {
+        assertVariants(of: mediaView("strip"), named: "timeline-media-wide")
+    }
+
+    /// A tall phone shot: all of it, centred on its own blur.
+    func testMediaTallShownWhole() {
+        assertVariants(of: mediaView("phone"), named: "timeline-media-tall")
+    }
+
+    /// A picture near the area's own shape fills it, cropped.
+    func testMediaNormalFills() {
+        assertVariants(of: mediaView("docs"), named: "timeline-media-normal")
     }
 
     func testSidebar() {
@@ -364,6 +356,15 @@ final class TimelineSnapshotTests: XCTestCase {
         assertVariants(of: phone(page()), named: "timeline-quiet-phone")
     }
 
+    /// Every project, the most recently moved first, with when it moved.
+    func testAllProjects() {
+        func page() -> AllProjectsListView {
+            AllProjectsListView(list: D.allProjects, now: D.now, onOpenProject: { _ in }, onLoadMore: {})
+        }
+        assertVariants(of: macWindow(.projects) { page() }, named: "timeline-projects-mac")
+        assertVariants(of: phone(page()), named: "timeline-projects-phone")
+    }
+
     func testFinished() {
         func page() -> FinishedListView {
             FinishedListView(rows: D.finished, now: D.now, onOpenProject: { _ in }, onLoadMore: {})
@@ -378,24 +379,80 @@ final class TimelineSnapshotTests: XCTestCase {
                        named: "timeline-finished-empty-phone")
     }
 
-    private func storyPage(_ page: ProjectPageModel) -> some View {
-        ProjectStoryView(page: page, now: D.now, images: Self.images, onOpenItem: { _ in }, onOpenFile: { _ in },
-                         onAllDetails: {}) {
-            Button("Rename…") {}
+    // MARK: Project page
+
+    private func summary(_ page: TimelineProjectPage, allWaiting: [TimelineItemRef]? = nil,
+                         showsAllWaiting: Bool = false) -> some View {
+        ProjectSummaryView(page: page, image: page.media.flatMap { Self.images[$0.blobID] },
+                           pixelSize: page.media.flatMap { D.sizes[$0.blobID] },
+                           allWaiting: allWaiting, showsAllWaiting: showsAllWaiting,
+                           onOpenItem: { _ in }, onOpenSection: { _ in }) {
+            ProjectActionsMenu(isOpen: page.isOpen, isLoaded: true, unfiled: D.docsProjectPage.closedMissions,
+                               mergeTargets: [],
+                               onAddMission: { _ in }, onAsk: {}, onRename: {}, onMerge: { _ in }, onClose: {})
         }
     }
 
-    /// The sentence, "Coming up", what waits on you, and the pictures and
-    /// videos by week under their captions and days.
-    func testProjectStory() {
-        assertVariants(of: storyPage(D.docsProjectPage).frame(width: 1_280, height: 800), named: "project-story-mac")
-        assertVariants(of: phone(storyPage(D.docsProjectPage)), named: "project-story-phone")
+    private func assertPage(_ page: () -> some View, named name: String, file: StaticString = #file,
+                            testName: String = #function, line: UInt = #line) {
+        assertVariants(of: page().frame(width: 1_280, height: 800), named: "\(name)-mac", file: file, testName: testName,
+                       line: line)
+        assertVariants(of: phone(page()), named: "\(name)-phone", file: file, testName: testName, line: line)
     }
 
-    /// Nothing to show beyond the words: no gallery, no "Coming up", no
-    /// waiting card; the newest milestone stands in for a status.
-    func testProjectStoryNoMedia() {
-        assertVariants(of: storyPage(D.quietProjectPage).frame(width: 1_280, height: 800), named: "project-story-nomedia-mac")
-        assertVariants(of: phone(storyPage(D.quietProjectPage)), named: "project-story-nomedia-phone")
+    /// The picture, the name, where it stands, what is next, what waits on
+    /// you, then the three rows that open the detail.
+    func testProjectSummary() {
+        assertPage({ summary(D.summaryPage) }, named: "project-summary")
+    }
+
+    /// Nothing but the name and the rows: no picture area, no sentence, no
+    /// "Next", no "Needs you"; a row with nothing behind it is dimmed.
+    func testProjectSummaryBare() {
+        assertPage({ summary(D.summaryPageBare) }, named: "project-summary-bare")
+    }
+
+    /// More waiting than the page lists: "and 2 more" under the rows, which
+    /// opens downwards. Its very wide picture is shown whole.
+    func testProjectSummaryManyWaiting() {
+        assertPage({ summary(D.summaryPageManyWaiting, allWaiting: D.summaryAllWaiting) },
+                   named: "project-summary-waiting")
+    }
+
+    /// Before the rest are known "and 2 more" only counts them: no mark
+    /// says it opens.
+    func testProjectSummaryManyWaitingNotLoaded() {
+        assertPage({ summary(D.summaryPageManyWaiting) }, named: "project-summary-waiting-unloaded")
+    }
+
+    /// "and 2 more" opened: every waiting item, and no row counting more.
+    func testProjectSummaryAllWaiting() {
+        assertPage({ summary(D.summaryPageManyWaiting, allWaiting: D.summaryAllWaiting, showsAllWaiting: true) },
+                   named: "project-summary-waiting-all")
+    }
+
+    /// Week by week: the card's sentence and picture when there was one,
+    /// then that week's milestones, one line each.
+    func testProjectHistory() {
+        assertPage({
+            ProjectHistoryView(weeks: D.history, now: D.now, images: Self.images, sizes: D.sizes, hasMore: true,
+                               onOpenMilestone: { _ in }, onLoadMore: {})
+        }, named: "project-history")
+    }
+
+    /// Open missions by name and status, then the finished ones under "Done".
+    func testProjectMissions() {
+        assertPage({
+            ProjectMissionsListView(open: D.docsProjectPage.missions, closed: D.docsProjectPage.closedMissions,
+                                    now: D.now, onOpenMission: { _ in })
+        }, named: "project-missions")
+    }
+
+    /// Pictures, a video and a document: three to a row, two on a phone.
+    func testProjectFiles() {
+        assertPage({
+            ProjectFilesGridView(files: D.docsProjectPage.files.rows, images: Self.images, now: D.now, hasMore: false,
+                                 onOpenFile: { _ in }, onLoadMore: {})
+        }, named: "project-files")
     }
 }

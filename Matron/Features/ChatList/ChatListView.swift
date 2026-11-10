@@ -266,7 +266,7 @@ struct ChatListView: View {
             Group {
                 if let mission = MissionRoute(pathValue: id) {
                     missionDestination(mission)
-                } else if let project = ProjectRoute(pathValue: id) {
+                } else if let project = ProjectPageTarget(pathValue: id) {
                     projectDestination(project)
                 } else if let route = ItemRoute(pathValue: id) {
                     itemDestination(route)
@@ -572,7 +572,7 @@ struct ChatListView: View {
     /// Project page pushed from a project link or chip in a chat on this
     /// stack: what it opens rides the same stack, by the mission page's
     /// rules just above.
-    private func projectDestination(_ route: ProjectRoute) -> some View {
+    private func projectDestination(_ route: ProjectPageTarget) -> some View {
         ProjectRouteDestination(
             route: route, session: session, deps: deps, vmCache: vmCache,
             onOpenConversation: { convoID in

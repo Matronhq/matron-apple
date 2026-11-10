@@ -553,6 +553,122 @@ final class ProjectDetailViewModelTests: XCTestCase {
         XCTAssertFalse(selfMerge, "a project never merges into itself")
         vm.stop()
     }
+
+    /// The words of the project page's "···" menu and what follows from it.
+    func testProjectActionsWords() {
+        XCTAssertEqual(ProjectActionsFormat.addMission, "Add a mission")
+        XCTAssertEqual(ProjectActionsFormat.ask, "Ask the Coordinator about this")
+        XCTAssertEqual(ProjectActionsFormat.askLabel(asked: false), "Ask the Coordinator about this")
+        XCTAssertEqual(ProjectActionsFormat.askLabel(asked: true), "Asked the Coordinator")
+        XCTAssertEqual(ProjectActionsFormat.rename, "Rename…")
+        XCTAssertEqual(ProjectActionsFormat.mergeInto, "Merge into…")
+        XCTAssertEqual(ProjectActionsFormat.close, "Close project…")
+        XCTAssertEqual(ProjectActionsFormat.askMessage(title: "Promo launch"),
+                       "Tell me about the project “Promo launch”: where it is and what is next.")
+        XCTAssertEqual(ProjectActionsFormat.closeConfirmation(title: "Promo launch"),
+                       "Close “Promo launch”? Its missions stay as they are.")
+        XCTAssertEqual(ProjectActionsFormat.closeSummary, "Closed from the app.")
+        XCTAssertEqual(ProjectActionsFormat.openMissions, "This project still has open missions. Close or move them first.")
+        XCTAssertEqual(ProjectActionsFormat.notOpen, "This project is closed, so it can't be changed.")
+    }
+
+    func testRenameTrimsAndRefusesAnEmptyTitle() async {
+        let (vm, store, projects, _) = make()
+        vm.start()
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
+        await waitForProjects { vm.page != nil }
+        let renamed = await vm.rename(to: "  Promo launch \n")
+        XCTAssertTrue(renamed)
+        XCTAssertEqual(projects.renamed.map(\.0), ["pj_1"])
+        XCTAssertEqual(projects.renamed.map(\.1), ["Promo launch"])
+        let empty = await vm.rename(to: " \n ")
+        XCTAssertFalse(empty)
+        XCTAssertEqual(projects.renamed.count, 1, "an empty title never reaches the journal")
+        XCTAssertNil(vm.error, "nothing went wrong: there was nothing to send")
+        let same = await vm.rename(to: " Promo ")
+        XCTAssertTrue(same, "already its name")
+        XCTAssertEqual(projects.renamed.count, 1)
+        projects.failWrites = JournalAPIError.forbidden
+        let refused = await vm.rename(to: "Docs site launch")
+        XCTAssertFalse(refused)
+        XCTAssertEqual(vm.error, JournalAPIError.forbidden.localizedDescription)
+        vm.stop()
+    }
+
+    func testCloseSendsTheSummaryAndSaysWhyItWasRefused() async {
+        let (vm, store, projects, _) = make()
+        vm.start()
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
+        await waitForProjects { vm.page != nil }
+        projects.failWrites = ProjectCloseError.openMissions
+        let refused = await vm.close()
+        XCTAssertFalse(refused)
+        XCTAssertEqual(vm.error, "This project still has open missions. Close or move them first.")
+        XCTAssertTrue(projects.closed.isEmpty)
+        vm.error = nil
+        projects.failWrites = nil
+        let closed = await vm.close()
+        XCTAssertTrue(closed)
+        XCTAssertEqual(projects.closed.map(\.0), ["pj_1"])
+        XCTAssertEqual(projects.closed.map(\.1), ["Closed from the app."])
+        XCTAssertNil(vm.error)
+        XCTAssertFalse(vm.isBusy)
+        vm.stop()
+    }
+
+    /// A closed project is neither renamed (the journal refuses it) nor closed again.
+    func testAClosedProjectIsNotRenamedOrClosed() async {
+        let (vm, store, projects, _) = make()
+        vm.start()
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, state: .closed, title: "Promo"))
+        await waitForProjects { vm.page?.project.state == .closed }
+        let renamed = await vm.rename(to: "Promo launch")
+        XCTAssertFalse(renamed)
+        XCTAssertEqual(vm.error, "This project is closed, so it can't be changed.", "said, not dropped")
+        vm.error = nil
+        let closed = await vm.close()
+        XCTAssertFalse(closed)
+        XCTAssertEqual(vm.error, "This project is closed, so it can't be changed.")
+        XCTAssertTrue(projects.renamed.isEmpty)
+        XCTAssertTrue(projects.closed.isEmpty)
+        vm.stop()
+    }
+
+    /// Before the project has loaded there is nothing to rename or close,
+    /// and nothing to say.
+    func testAProjectNotYetLoadedIsNotRenamedOrClosed() async {
+        let (vm, _, projects, _) = make()
+        let renamed = await vm.rename(to: "Promo launch")
+        let closed = await vm.close()
+        XCTAssertFalse(renamed)
+        XCTAssertFalse(closed)
+        XCTAssertNil(vm.error)
+        XCTAssertTrue(projects.renamed.isEmpty)
+        XCTAssertTrue(projects.closed.isEmpty)
+    }
+
+    /// The "···" writes need an open project that has loaded; an empty
+    /// list is a dimmed entry, not a submenu.
+    func testProjectActionsAvailability() {
+        let all = ProjectActionsAvailability(isOpen: true, isLoaded: true, hasUnfiled: true, hasMergeTargets: true)
+        XCTAssertTrue(all.addMission && all.rename && all.merge && all.close)
+        let noLists = ProjectActionsAvailability(isOpen: true, isLoaded: true, hasUnfiled: false, hasMergeTargets: false)
+        XCTAssertFalse(noLists.addMission, "no unfiled mission: nothing to open")
+        XCTAssertFalse(noLists.merge, "no other open project")
+        XCTAssertTrue(noLists.rename && noLists.close)
+        for notWritable in [ProjectActionsAvailability(isOpen: false, isLoaded: true, hasUnfiled: true, hasMergeTargets: true),
+                            ProjectActionsAvailability(isOpen: true, isLoaded: false, hasUnfiled: true, hasMergeTargets: true)] {
+            XCTAssertFalse(notWritable.addMission)
+            XCTAssertFalse(notWritable.rename)
+            XCTAssertFalse(notWritable.merge)
+            XCTAssertFalse(notWritable.close)
+        }
+        XCTAssertTrue(TimelineProjectPage(project: TimelineProjectRef(id: "pj_1", num: 1, title: "Promo")).isOpen)
+        XCTAssertFalse(TimelineProjectPage(project: TimelineProjectRef(id: "pj_1", num: 1, title: "Promo"),
+                                           state: "closed").isOpen)
+        XCTAssertFalse(TimelineProjectPage(project: TimelineProjectRef(id: "pj_1", num: 1, title: "Promo"),
+                                           state: "finished").isOpen, "anything but open")
+    }
 }
 
 /// `refreshProject` parks until the test releases it; every write succeeds.
@@ -574,6 +690,8 @@ private final class GatedProjectsSync: ProjectsSyncing, @unchecked Sendable {
     func endWatching(convoID: String) async {}
     func createProject(title: String, body: String?) async throws -> Project { Project(id: "pj_x", num: 1, title: title) }
     func mergeProject(id: String, into: String) async throws {}
+    func renameProject(id: String, title: String) async throws {}
+    func closeProject(id: String, summary: String) async throws {}
     func setMissionProject(missionID: String, project: String?) async throws -> Mission {
         Mission(id: missionID, num: 1, title: "M", originConvoID: "c1", projectID: project)
     }

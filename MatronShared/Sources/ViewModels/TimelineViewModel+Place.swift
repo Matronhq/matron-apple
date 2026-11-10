@@ -16,25 +16,32 @@ extension TimelineViewModel {
         switch place {
         case .week:
             guard let week = Self.shownWeek(week, for: place) else { return unloaded }
-            return .week(week, sentence: weeks.first { $0.week == week.week }?.sentence)
+            return .week(week)
         case .quiet:
             return quiet.map { .quiet($0) } ?? unloaded
         case .long:
             return long.map { .long($0) } ?? unloaded
         case .finished:
             return hasLoadedFinished ? .finished(finished, hasMore: hasMoreFinished) : unloaded
+        case .projects:
+            return allProjects.map { .projects($0, hasMore: hasMoreProjects) } ?? unloaded
         case nil:
             return weeks.isEmpty && error == nil ? .nothingYet : unloaded
         }
     }
 
-    /// Whether `place` has a page on screen (a finished list once read, even empty).
+    /// Whether the hosts offer "All projects": until the journal says it
+    /// has no such list.
+    public var showsAllProjects: Bool { projectsSupported != false }
+
+    /// Whether `place` has a page on screen (a finished or all-projects list once read, even empty).
     public func hasContent(for place: TimelinePlace?) -> Bool {
         switch place {
         case .week: return Self.shownWeek(week, for: place) != nil
         case .quiet: return quiet != nil
         case .long: return long != nil
         case .finished: return hasLoadedFinished
+        case .projects: return allProjects != nil
         case nil: return false
         }
     }

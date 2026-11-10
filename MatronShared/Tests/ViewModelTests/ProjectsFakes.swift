@@ -71,6 +71,8 @@ final class FakeProjectsSync: ProjectsSyncing, @unchecked Sendable {
     var refreshedProjects: [String] { lock.withLock { _refreshedProjects } }
     var created: [(String, String?)] { lock.withLock { _created } }
     var merged: [(String, String)] { lock.withLock { _merged } }
+    var renamed: [(String, String)] { lock.withLock { _renamed } }
+    var closed: [(String, String)] { lock.withLock { _closed } }
     var filed: [(String, String?)] { lock.withLock { _filed } }
     var failWrites: Error? { get { lock.withLock { _failWrites } } set { lock.withLock { _failWrites = newValue } } }
     private var _refreshCalls = 0
@@ -78,6 +80,8 @@ final class FakeProjectsSync: ProjectsSyncing, @unchecked Sendable {
     private var _refreshedProjects: [String] = []
     private var _created: [(String, String?)] = []
     private var _merged: [(String, String)] = []
+    private var _renamed: [(String, String)] = []
+    private var _closed: [(String, String)] = []
     private var _filed: [(String, String?)] = []
     private var _failWrites: Error?
     private var _feedPages: [String: ProjectFeedSlice] = [:]
@@ -113,6 +117,14 @@ final class FakeProjectsSync: ProjectsSyncing, @unchecked Sendable {
     func mergeProject(id: String, into: String) async throws {
         if let e = failWrites { throw e }
         lock.withLock { _merged.append((id, into)) }
+    }
+    func renameProject(id: String, title: String) async throws {
+        if let e = failWrites { throw e }
+        lock.withLock { _renamed.append((id, title)) }
+    }
+    func closeProject(id: String, summary: String) async throws {
+        if let e = failWrites { throw e }
+        lock.withLock { _closed.append((id, summary)) }
     }
     func setMissionProject(missionID: String, project: String?) async throws -> Mission {
         if let e = failWrites { throw e }

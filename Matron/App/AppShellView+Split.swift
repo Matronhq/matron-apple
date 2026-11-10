@@ -108,7 +108,9 @@ extension AppShellView {
         NavigationStack {
             Group {
                 if let viewModel = timeline.viewModel {
-                    TimelineSidebarView(weeks: viewModel.weeks, quietCount: viewModel.quiet?.total,
+                    TimelineSidebarView(weeks: viewModel.weeks, showsProjects: viewModel.showsAllProjects,
+                                        projectsCount: viewModel.allProjects?.total,
+                                        quietCount: viewModel.quiet?.total,
                                         longCount: viewModel.long?.total,
                                         // The journal sends no finished total; a
                                         // count of the rows loaded so far would read as one.
@@ -269,7 +271,7 @@ extension AppShellView {
             MissionRouteDestination(route: mission, session: session, deps: deps, vmCache: vmCache,
                                     onOpenConversation: openConversationOnChatStack,
                                     onOpenItem: { nav.push(ItemRoute(id: $0).pathValue, on: .conversations) })
-        } else if let project = ProjectRoute(pathValue: value) {
+        } else if let project = ProjectPageTarget(pathValue: value) {
             ProjectRouteDestination(route: project, session: session, deps: deps, vmCache: vmCache,
                                     onOpenConversation: openConversationOnChatStack,
                                     onOpenItem: { nav.push(ItemRoute(id: $0).pathValue, on: .conversations) },
@@ -312,7 +314,7 @@ extension AppShellView {
     @ViewBuilder private var splitProjectsRoot: some View {
         if timeline.isShown, let viewModel = timeline.viewModel {
             TimelinePlacePage(host: timeline, viewModel: viewModel, place: timeline.place, session: session,
-                              onOpenProject: timelineActions.onOpenStory, onOpenItem: timelineActions.onOpenItem)
+                              onOpenProject: timelineActions.onOpenStory)
                 .timelineErrorAlert(viewModel, place: timeline.place)
                 // The sidebar names Projects and the page its week: the
                 // bar shows no third title, but the real one stays set so
