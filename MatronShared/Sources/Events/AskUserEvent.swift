@@ -67,19 +67,47 @@ public struct AskUserEvent: Equatable, Sendable {
     /// what lets a "Send all" on one card retire the buttons on the rest —
     /// see `ChatViewModel.queuedReleaseAnswer(for:)`.
     public let queuedReleasePromptID: String?
+    /// How a busy-queue card's message can be edited before the agent gets
+    /// it, `nil` when it can't (or for any other prompt). See `QueuedEdit`.
+    public let queuedEdit: QueuedEdit?
+
+    /// A queued message the user can still edit. Tapping Edit answers the
+    /// card with `edit`, which holds the message on the bridge's queue so
+    /// it isn't delivered half-edited when the agent's turn ends; saving
+    /// answers `edit_save` with the new text, which takes the message's
+    /// place in the queue; cancelling answers `edit_cancel`, which releases
+    /// the hold with the original text. The bridge releases a hold left
+    /// open after `holdSeconds` and sends the original.
+    public struct QueuedEdit: Equatable, Sendable {
+        /// The queued message as the bridge holds it: the editor's start.
+        public let text: String
+        public let holdSeconds: Int
+
+        public init(text: String, holdSeconds: Int) {
+            self.text = text
+            self.holdSeconds = holdSeconds
+        }
+
+        /// The card choices an edit sends.
+        public static let holdChoice = "edit"
+        public static let saveChoice = "edit_save"
+        public static let cancelChoice = "edit_cancel"
+    }
 
     public init(
         prompt: String,
         kind: InputKind,
         expiresAt: Date?,
         replyChannel: ReplyChannel = .textReply,
-        queuedReleasePromptID: String? = nil
+        queuedReleasePromptID: String? = nil,
+        queuedEdit: QueuedEdit? = nil
     ) {
         self.prompt = prompt
         self.kind = kind
         self.expiresAt = expiresAt
         self.replyChannel = replyChannel
         self.queuedReleasePromptID = queuedReleasePromptID
+        self.queuedEdit = queuedEdit
     }
 
     /// Parse a JSON `content` dictionary from a `chat.matron.ask_user`

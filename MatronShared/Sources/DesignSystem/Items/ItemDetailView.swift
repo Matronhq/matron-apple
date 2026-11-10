@@ -82,7 +82,13 @@ public struct ItemDetailView: View {
         /// `nil` draws none. Defaulted so existing call sites and snapshot
         /// tests stay source-compatible.
         public var working: ItemWorkingIndicator?
-        public init(item: TrackerItem, comments: [TrackerComment], pending: [PendingComment], context: ItemContext = ItemContext(), availableResolutions: [ItemResolution], isBusy: Bool, loadedCommentCount: Int? = nil, spawnConsent: ItemSpawnConsent? = nil, actions: [String] = [], selectedAction: String? = nil, stagedAttachments: [StagedAttachment] = [], queuedReplies: [String: QueuedReplyState] = [:], selectedCommentActions: [String: String] = [:], openableConvoIDs: Set<String> = [], working: ItemWorkingIndicator? = nil) {
+        /// Queued replies whose card can be edited (held, then replaced by
+        /// the edited reply) — `ItemDetailViewModel.editableQueuedReplies` —
+        /// and the one being edited now, if any. Defaulted so existing call
+        /// sites and snapshot tests stay source-compatible.
+        public var editableQueuedReplies: Set<String>
+        public var editingQueuedReplyID: String?
+        public init(item: TrackerItem, comments: [TrackerComment], pending: [PendingComment], context: ItemContext = ItemContext(), availableResolutions: [ItemResolution], isBusy: Bool, loadedCommentCount: Int? = nil, spawnConsent: ItemSpawnConsent? = nil, actions: [String] = [], selectedAction: String? = nil, stagedAttachments: [StagedAttachment] = [], queuedReplies: [String: QueuedReplyState] = [:], selectedCommentActions: [String: String] = [:], openableConvoIDs: Set<String> = [], working: ItemWorkingIndicator? = nil, editableQueuedReplies: Set<String> = [], editingQueuedReplyID: String? = nil) {
             self.item = item; self.comments = comments; self.pending = pending; self.context = context
             self.availableResolutions = availableResolutions; self.isBusy = isBusy; self.loadedCommentCount = loadedCommentCount
             self.spawnConsent = spawnConsent; self.actions = actions; self.selectedAction = selectedAction
@@ -90,6 +96,8 @@ public struct ItemDetailView: View {
             self.selectedCommentActions = selectedCommentActions
             self.openableConvoIDs = openableConvoIDs
             self.working = working
+            self.editableQueuedReplies = editableQueuedReplies
+            self.editingQueuedReplyID = editingQueuedReplyID
         }
     }
 
@@ -173,12 +181,19 @@ public struct ItemDetailView: View {
         /// Cancel on a reply still in this device's outbox, by its local id
         /// — `cancelPendingReply`.
         public var cancelPending: ((String) -> Void)?
+        /// Edit on a reply queued behind the agent's turn, by comment id —
+        /// `editQueuedReply` — and Cancel edit on the one being edited —
+        /// `cancelQueuedReplyEdit`.
+        public var editQueued: ((String) -> Void)?
+        public var cancelQueuedEdit: (() -> Void)?
 
         public init(sendQueuedNow: ((String) -> Void)? = nil, cancelQueued: ((String) -> Void)? = nil,
                     editAndResend: ((String) -> Void)? = nil, sendPendingNow: (() -> Void)? = nil,
-                    cancelPending: ((String) -> Void)? = nil) {
+                    cancelPending: ((String) -> Void)? = nil, editQueued: ((String) -> Void)? = nil,
+                    cancelQueuedEdit: (() -> Void)? = nil) {
             self.sendQueuedNow = sendQueuedNow; self.cancelQueued = cancelQueued; self.editAndResend = editAndResend
             self.sendPendingNow = sendPendingNow; self.cancelPending = cancelPending
+            self.editQueued = editQueued; self.cancelQueuedEdit = cancelQueuedEdit
         }
     }
 
@@ -1196,14 +1211,20 @@ public struct ItemDetailView: View {
 
     /// The line under a reply the agent hasn't got yet, with its buttons.
     private func deliveryLine(_ delivery: QueuedReplyState, for c: TrackerComment) -> some View {
-        ItemReplyDeliveryLine(state: delivery, onSendNow: replyDelivery.sendQueuedNow.map { send in { send(c.id) } },
+        // Text only: the reply box can't take back an already-uploaded
+        // attachment, and resending half a reply would read as the whole
+        // of it.
+        let textOnly = c.attachments.isEmpty && !c.body.isEmpty
+        let isEditing = model.editingQueuedReplyID == c.id
+        return ItemReplyDeliveryLine(state: delivery, onSendNow: replyDelivery.sendQueuedNow.map { send in { send(c.id) } },
                               onCancel: replyDelivery.cancelQueued.map { cancel in { cancel(c.id) } },
-                              // Text only: the reply box can't take
-                              // back an already-uploaded attachment,
-                              // and resending half a reply would
-                              // read as the whole of it.
-                              onEditAndResend: c.attachments.isEmpty && !c.body.isEmpty
-                                  ? replyDelivery.editAndResend.map { resend in { resend(c.id) } } : nil)
+                              onEditAndResend: textOnly
+                                  ? replyDelivery.editAndResend.map { resend in { resend(c.id) } } : nil,
+                              // One edit at a time: the reply box holds one.
+                              onEdit: textOnly && model.editableQueuedReplies.contains(c.id) && model.editingQueuedReplyID == nil
+                                  ? replyDelivery.editQueued.map { edit in { edit(c.id) } } : nil,
+                              isEditing: isEditing,
+                              onCancelEdit: isEditing ? replyDelivery.cancelQueuedEdit : nil)
     }
 
     /// A follow-up question's own buttons, under the card that asks.

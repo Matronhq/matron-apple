@@ -18,16 +18,36 @@ struct ItemReplyDeliveryLine: View {
     let onSendNow: (() -> Void)?
     var onCancel: (() -> Void)? = nil
     var onEditAndResend: (() -> Void)? = nil
+    /// Edit on a queued reply: holds it on the agent's queue and puts its
+    /// text in the reply box; sending the reply replaces it.
+    var onEdit: (() -> Void)? = nil
+    /// This reply is being edited in the reply box, held until then.
+    var isEditing: Bool = false
+    var onCancelEdit: (() -> Void)? = nil
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Label(Self.text(for: state), systemImage: Self.symbol(for: state))
+            Label(isEditing && Self.canSendNow(state) ? Self.editingText : Self.text(for: state),
+                  systemImage: isEditing && Self.canSendNow(state) ? "pencil" : Self.symbol(for: state))
                 .font(.caption)
                 .foregroundStyle(Self.isFailure(state) ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
             Spacer(minLength: 0)
             if Self.isAwaitingBridge(state) {
                 ProgressView().controlSize(.small)
+            } else if isEditing, Self.canSendNow(state) {
+                if let onCancelEdit {
+                    Button("Cancel edit", action: onCancelEdit)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .accessibilityHint("Lets this reply go as it was, and clears the reply box")
+                }
             } else if Self.canSendNow(state) {
+                if let onEdit {
+                    Button("Edit", action: onEdit)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .accessibilityHint("Holds this reply so the agent doesn't get it while you edit it in the reply box")
+                }
                 if let onCancel {
                     Button("Cancel", action: onCancel)
                         .buttonStyle(.bordered)
@@ -93,6 +113,9 @@ struct ItemReplyDeliveryLine: View {
         case .queued, .sending, .cancelling: return false
         }
     }
+
+    /// While the reply is held for editing.
+    static let editingText = "Editing: held until you send the edited reply or cancel the edit"
 
     static func text(for state: QueuedReplyState) -> String {
         switch state {

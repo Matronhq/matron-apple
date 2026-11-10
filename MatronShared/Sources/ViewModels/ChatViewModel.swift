@@ -2719,6 +2719,11 @@ public final class ChatViewModel {
                 break
             }
         }
+        // A saved edit retires the card for its replacement: the user's own
+        // `edit_save`, then the bridge's `edited` release. Neither is one of
+        // the card's buttons.
+        labelByValue[AskUserEvent.QueuedEdit.saveChoice] = labelByValue[AskUserEvent.QueuedEdit.saveChoice] ?? "✎ Edited"
+        labelByValue["edited"] = labelByValue["edited"] ?? "✎ Edited"
         return values.map { labelByValue[$0] ?? $0 }.joined(separator: ", ")
     }
 

@@ -93,6 +93,85 @@ public final class AskUserSheetViewModel {
         }
     }
 
+    // MARK: Editing a queued message
+
+    /// The editor's text while a queued message is being edited.
+    public var editText: String = ""
+    /// The message is held on the bridge's queue and the editor is open.
+    public private(set) var isEditing = false
+    /// An Edit, Save or Cancel edit is on its way to the journal.
+    public private(set) var isSendingEdit = false
+    public private(set) var editError: String?
+
+    /// Whether this card offers Edit at all (`AskUserEvent.QueuedEdit`).
+    public var offersEdit: Bool { event.queuedEdit != nil && !hasSent && !isExpired }
+
+    /// Save is pointless on an empty editor: the bridge refuses an empty edit.
+    public var canSaveEdit: Bool {
+        !editText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Edit: hold the message on the bridge's queue, then open the editor
+    /// with its text. The editor only opens once the hold has reached the
+    /// journal, so an edit never runs while the message can still go out.
+    public func beginEdit() async {
+        guard let edit = event.queuedEdit, !isEditing, !isSendingEdit, !hasSent else { return }
+        isSendingEdit = true
+        defer { isSendingEdit = false }
+        do {
+            try await timeline.sendQueuedEdit(choice: AskUserEvent.QueuedEdit.holdChoice, text: nil,
+                                              inReplyTo: promptEventID)
+            editText = edit.text
+            editError = nil
+            isEditing = true
+        } catch {
+            editError = "Couldn't hold the message for editing. \(error.localizedDescription)"
+        }
+    }
+
+    /// Save: the edited text takes the message's place in the queue (or
+    /// goes at once if the agent finished its turn meanwhile). An unchanged
+    /// text just releases the hold.
+    public func saveEdit() async {
+        guard isEditing, !isSendingEdit, !hasSent else { return }
+        let text = editText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        if text == event.queuedEdit?.text.trimmingCharacters(in: .whitespacesAndNewlines) {
+            await cancelEdit()
+            return
+        }
+        isSendingEdit = true
+        defer { isSendingEdit = false }
+        do {
+            try await timeline.sendQueuedEdit(choice: AskUserEvent.QueuedEdit.saveChoice, text: text,
+                                              inReplyTo: promptEventID)
+            hasSent = true
+            isEditing = false
+            editError = nil
+            onClose()
+        } catch {
+            editError = "Couldn't save the edit. \(error.localizedDescription)"
+        }
+    }
+
+    /// Cancel edit: release the hold; the message keeps its original text.
+    /// The editor closes either way: a release that doesn't reach the
+    /// bridge still ends when the hold times out.
+    public func cancelEdit() async {
+        guard isEditing, !isSendingEdit else { return }
+        isSendingEdit = true
+        defer { isSendingEdit = false }
+        isEditing = false
+        do {
+            try await timeline.sendQueuedEdit(choice: AskUserEvent.QueuedEdit.cancelChoice, text: nil,
+                                              inReplyTo: promptEventID)
+            editError = nil
+        } catch {
+            let minutes = max(1, (event.queuedEdit?.holdSeconds ?? 600) / 60)
+            editError = "Couldn't release the message. It goes with its original text within \(minutes) minutes."
+        }
+    }
+
     /// Sleeps until `event.expiresAt`, then calls `onExpire` (unless
     /// cancelled). Driven by the View's `.task(id: promptEventID)`
     /// modifier; no-op for prompts without an expiry.
