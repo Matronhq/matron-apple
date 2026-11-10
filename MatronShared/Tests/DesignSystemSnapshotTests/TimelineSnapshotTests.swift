@@ -338,7 +338,8 @@ final class TimelineSnapshotTests: XCTestCase {
         ProjectSummaryView(page: page, image: page.media.flatMap { Self.images[$0.blobID] },
                            pixelSize: page.media.flatMap { D.sizes[$0.blobID] },
                            onOpenItem: { _ in }, onOpenSection: { _ in }) {
-            ProjectActionsMenu(unfiled: D.docsProjectPage.closedMissions, mergeTargets: [],
+            ProjectActionsMenu(isOpen: page.isOpen, isLoaded: true, unfiled: D.docsProjectPage.closedMissions,
+                               mergeTargets: [],
                                onAddMission: { _ in }, onAsk: {}, onRename: {}, onMerge: { _ in }, onClose: {})
         }
     }

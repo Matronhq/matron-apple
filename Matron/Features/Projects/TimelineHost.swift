@@ -296,7 +296,8 @@ struct TimelineStoryHost: View {
         ProjectSummaryView(page: page, image: page.media.flatMap { images.images[$0.blobID] },
                            pixelSize: page.media.flatMap { images.sizes[$0.blobID] },
                            onOpenItem: onOpenItem, onOpenSection: onOpenSection) {
-            ProjectActionsMenu(unfiled: detail?.page?.unfiledMissions ?? [],
+            ProjectActionsMenu(isOpen: page.isOpen, isLoaded: detail?.page != nil,
+                               unfiled: detail?.page?.unfiledMissions ?? [],
                                mergeTargets: detail?.page?.mergeTargets ?? [],
                                onAddMission: { id in act { await $0.addMission(id) } },
                                onAsk: ask,

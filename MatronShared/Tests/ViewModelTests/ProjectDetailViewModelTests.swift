@@ -567,6 +567,7 @@ final class ProjectDetailViewModelTests: XCTestCase {
                        "Close “Promo launch”? Its missions stay as they are.")
         XCTAssertEqual(ProjectActionsFormat.closeSummary, "Closed from the app.")
         XCTAssertEqual(ProjectActionsFormat.openMissions, "This project still has open missions. Close or move them first.")
+        XCTAssertEqual(ProjectActionsFormat.notOpen, "This project is closed, so it can't be changed.")
     }
 
     func testRenameTrimsAndRefusesAnEmptyTitle() async {
@@ -620,12 +621,51 @@ final class ProjectDetailViewModelTests: XCTestCase {
         store.project("pj_1").send(Project(id: "pj_1", num: 1, state: .closed, title: "Promo"))
         await waitForProjects { vm.page?.project.state == .closed }
         let renamed = await vm.rename(to: "Promo launch")
-        let closed = await vm.close()
         XCTAssertFalse(renamed)
+        XCTAssertEqual(vm.error, "This project is closed, so it can't be changed.", "said, not dropped")
+        vm.error = nil
+        let closed = await vm.close()
         XCTAssertFalse(closed)
+        XCTAssertEqual(vm.error, "This project is closed, so it can't be changed.")
         XCTAssertTrue(projects.renamed.isEmpty)
         XCTAssertTrue(projects.closed.isEmpty)
         vm.stop()
+    }
+
+    /// Before the project has loaded there is nothing to rename or close,
+    /// and nothing to say.
+    func testAProjectNotYetLoadedIsNotRenamedOrClosed() async {
+        let (vm, _, projects, _) = make()
+        let renamed = await vm.rename(to: "Promo launch")
+        let closed = await vm.close()
+        XCTAssertFalse(renamed)
+        XCTAssertFalse(closed)
+        XCTAssertNil(vm.error)
+        XCTAssertTrue(projects.renamed.isEmpty)
+        XCTAssertTrue(projects.closed.isEmpty)
+    }
+
+    /// The "···" writes need an open project that has loaded; an empty
+    /// list is a dimmed entry, not a submenu.
+    func testProjectActionsAvailability() {
+        let all = ProjectActionsAvailability(isOpen: true, isLoaded: true, hasUnfiled: true, hasMergeTargets: true)
+        XCTAssertTrue(all.addMission && all.rename && all.merge && all.close)
+        let noLists = ProjectActionsAvailability(isOpen: true, isLoaded: true, hasUnfiled: false, hasMergeTargets: false)
+        XCTAssertFalse(noLists.addMission, "no unfiled mission: nothing to open")
+        XCTAssertFalse(noLists.merge, "no other open project")
+        XCTAssertTrue(noLists.rename && noLists.close)
+        for notWritable in [ProjectActionsAvailability(isOpen: false, isLoaded: true, hasUnfiled: true, hasMergeTargets: true),
+                            ProjectActionsAvailability(isOpen: true, isLoaded: false, hasUnfiled: true, hasMergeTargets: true)] {
+            XCTAssertFalse(notWritable.addMission)
+            XCTAssertFalse(notWritable.rename)
+            XCTAssertFalse(notWritable.merge)
+            XCTAssertFalse(notWritable.close)
+        }
+        XCTAssertTrue(TimelineProjectPage(project: TimelineProjectRef(id: "pj_1", num: 1, title: "Promo")).isOpen)
+        XCTAssertFalse(TimelineProjectPage(project: TimelineProjectRef(id: "pj_1", num: 1, title: "Promo"),
+                                           state: "closed").isOpen)
+        XCTAssertFalse(TimelineProjectPage(project: TimelineProjectRef(id: "pj_1", num: 1, title: "Promo"),
+                                           state: "finished").isOpen, "anything but open")
     }
 }
 

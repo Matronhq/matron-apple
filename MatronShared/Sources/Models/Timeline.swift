@@ -292,6 +292,8 @@ public struct TimelineProjectPage: Equatable, Hashable, Sendable {
     public let isLive: Bool
     /// The project's own state as the journal names it (`open`, `closed`).
     public let state: String
+    /// The project can still be changed: any other state is closed or finished.
+    public var isOpen: Bool { state == "open" }
     /// Where the project stands; nil when nothing says.
     public let sentence: String?
     public let next: String?
