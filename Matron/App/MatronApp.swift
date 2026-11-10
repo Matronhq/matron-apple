@@ -52,6 +52,10 @@ struct MatronApp: App {
     /// transition would nag a user who cancelled in an endless loop.
     @State private var lockAutoPrompted = false
 
+    init() {
+        MatronDarkAppearance.install()
+    }
+
     var body: some Scene {
         WindowGroup {
             Group {

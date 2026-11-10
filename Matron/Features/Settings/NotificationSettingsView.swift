@@ -1,4 +1,5 @@
 import SwiftUI
+import MatronDesignSystem
 import MatronJournal
 import MatronViewModels
 
@@ -14,6 +15,7 @@ struct NotificationSettingsView: View {
 
     var body: some View {
         Form {
+            MatronGroupedRows {
             if store.isSupported == false {
                 Section {
                     Text("This server doesn't support notification settings yet.")
@@ -39,6 +41,7 @@ struct NotificationSettingsView: View {
                         .font(.footnote)
                         .foregroundStyle(.red)
                 }
+            }
             }
         }
         .navigationTitle("Notifications")

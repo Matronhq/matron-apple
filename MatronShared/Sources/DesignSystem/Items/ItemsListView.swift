@@ -89,11 +89,13 @@ public struct ItemsListView: View {
                                        description: Text("Questions, tasks and decisions the agent files appear here."))
             } else {
                 List {
+                    MatronGroupedRows {
                     pendingSection()
                     section("Needs you", model.needsYou, movable: false)
                     section("Tasks", model.tasks, movable: true)
                     section("Decisions", model.decisions, movable: false)
                     section("Done", model.done, movable: false)
+                    }
                 }
                 #if os(iOS)
                 .listStyle(.insetGrouped)

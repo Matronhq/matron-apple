@@ -104,6 +104,7 @@ struct PinEditorForm: View {
 
     var body: some View {
         Form {
+            MatronGroupedRows {
             Section {
                 PinEditorFields(label: $label, emoji: $emoji, labelMax: ConvoPin.labelMax)
             } footer: {
@@ -112,6 +113,7 @@ struct PinEditorForm: View {
                 } else {
                     Text("The name shows in place of the chat's title. Leave the emoji empty to show its first letter.")
                 }
+            }
             }
         }
         .navigationTitle(title)

@@ -37,6 +37,7 @@ struct DevicesView: View {
 
     var body: some View {
         List {
+            MatronGroupedRows {
             if let error = viewModel.errorMessage {
                 Section {
                     Text(error)
@@ -50,6 +51,7 @@ struct DevicesView: View {
                 }
             } footer: {
                 Text("Agents are headless machines running the bridge. Revoking a device signs it out immediately — there's no undo.")
+            }
             }
         }
         .navigationTitle("Devices")

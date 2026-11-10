@@ -138,6 +138,12 @@ struct AppShellView: View {
             }
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { windowWidth = $0 }
+        #if DEBUG
+        // Screenshot hook: opens the More list, which holds nothing private.
+        .task {
+            if ProcessInfo.processInfo.environment["MATRON_DEBUG_OPEN_MORE"] != nil { nav.tab = .more }
+        }
+        #endif
         // Each visit to Projects reads the timeline, with the flag on.
         .onChange(of: nav.projectsPageShown, initial: true) { _, shown in
             guard shown else { return }
@@ -427,8 +433,10 @@ struct AppShellView: View {
     private var moreList: some View {
         NavigationStack {
             List {
+                MatronGroupedRows {
                 ForEach(AppShellNavigation.moreEntries(missionsSupported: missionsVM.isSupported != false),
                         id: \.self, content: moreRow)
+                }
             }
             .tabBarFollowsTheSelectedTab(otherwise: .visible)
             .navigationTitle("More")

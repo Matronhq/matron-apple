@@ -1,4 +1,5 @@
 import SwiftUI
+import MatronDesignSystem
 import MatronChat
 import MatronModels
 import MatronViewModels
@@ -60,6 +61,7 @@ struct CoordinatorChooserSheet: View {
         let chats = Self.filtered(candidates, query: query, box: box)
         NavigationStack {
             List {
+                MatronGroupedRows {
                 if let newChatLabel {
                     Section {
                         Button {
@@ -90,6 +92,7 @@ struct CoordinatorChooserSheet: View {
                             .buttonStyle(.plain)
                             .foregroundStyle(Color.primary)
                     }
+                }
                 }
             }
             .listStyle(.insetGrouped)

@@ -45,6 +45,7 @@ public struct MemoryEditorView: View {
 
     public var body: some View {
         Form {
+            MatronGroupedRows {
             #if os(macOS)
             // No navigation bar in the Mac detail column: the title is the
             // form's own header.
@@ -128,6 +129,7 @@ public struct MemoryEditorView: View {
                     Button("Delete memory", role: .destructive) { confirmingDelete = true }
                         .accessibilityIdentifier("memory.delete")
                 }
+            }
             }
         }
         .formStyle(.grouped)

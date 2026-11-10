@@ -19,6 +19,7 @@ struct NewItemSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                MatronGroupedRows {
                 Picker("Type", selection: $kind) {
                     ForEach(ItemKind.creatable, id: \.self) { k in
                         Label(ItemGlyph.label(k), systemImage: ItemGlyph.symbol(k)).tag(k)
@@ -34,6 +35,7 @@ struct NewItemSheet: View {
                         .frame(minHeight: 120)
                 } header: {
                     Text("Details")
+                }
                 }
             }
             .navigationTitle("New item")

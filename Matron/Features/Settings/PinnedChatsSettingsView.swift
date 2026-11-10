@@ -37,6 +37,7 @@ struct PinnedChatsSettingsView: View {
 
     var body: some View {
         List {
+            MatronGroupedRows {
             if store.isSupported == false {
                 Text("This journal server doesn't support pinned chats yet.")
                     .foregroundStyle(.secondary)
@@ -84,6 +85,7 @@ struct PinnedChatsSettingsView: View {
                 } footer: {
                     Text("Up to \(store.limit) chats, shown under the Coordinator on every device. Tap one to rename it; drag to reorder.")
                 }
+            }
             }
         }
         .navigationTitle("Pinned chats")

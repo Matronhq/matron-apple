@@ -1,4 +1,5 @@
 import SwiftUI
+import MatronDesignSystem
 import UIKit
 import MatronJournal
 import MatronViewModels
@@ -37,6 +38,7 @@ struct ChangePasswordSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                MatronGroupedRows {
                 Section {
                     SecureField(ChangePasswordModel.currentLabel, text: $model.currentPassword)
                         .textContentType(.password)
@@ -73,6 +75,7 @@ struct ChangePasswordSheet: View {
                     }
                     .disabled(!model.canSubmit)
                     .accessibilityIdentifier("changePassword.submit")
+                }
                 }
             }
             .navigationTitle(ChangePasswordModel.title)
