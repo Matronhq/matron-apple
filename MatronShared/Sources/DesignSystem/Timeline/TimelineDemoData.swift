@@ -184,20 +184,30 @@ public enum TimelineDemoData {
 
     // MARK: Pictures
 
-    /// The pictures the stories name, by blob id, drawn in code.
+    /// The pictures the stories name, by blob id, drawn in code; with
+    /// them a very wide strip and a tall phone shot.
     public static var images: [String: Image] {
         var images: [String: Image] = [:]
-        for (id, draw) in [("docs", drawDocs), ("themes", drawThemes), ("cropper", drawCropper),
-                           ("chart", drawChart), ("billing", drawBilling)] as [(String, (CGContext, CGSize) -> Void)] {
-            if let cgImage = picture(draw) { images[id] = Image(decorative: cgImage, scale: 2) }
+        for (id, size, draw) in pictures {
+            if let cgImage = picture(size, draw) { images[id] = Image(decorative: cgImage, scale: 2) }
         }
         return images
     }
 
+    /// Each picture's size in pixels, by blob id.
+    public static var sizes: [String: CGSize] {
+        Dictionary(uniqueKeysWithValues: pictures.map { ($0.id, $0.size) })
+    }
+
     private static let pictureSize = CGSize(width: 960, height: 400)
 
-    private static func picture(_ draw: (CGContext, CGSize) -> Void) -> CGImage? {
-        let size = pictureSize
+    private static var pictures: [(id: String, size: CGSize, draw: (CGContext, CGSize) -> Void)] {
+        [("docs", pictureSize, drawDocs), ("themes", pictureSize, drawThemes), ("cropper", pictureSize, drawCropper),
+         ("chart", pictureSize, drawChart), ("billing", pictureSize, drawBilling),
+         ("strip", CGSize(width: 2_000, height: 300), drawStrip), ("phone", CGSize(width: 600, height: 1_300), drawPhone)]
+    }
+
+    private static func picture(_ size: CGSize, _ draw: (CGContext, CGSize) -> Void) -> CGImage? {
         guard let context = CGContext(data: nil, width: Int(size.width), height: Int(size.height), bitsPerComponent: 8,
                                       bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
@@ -279,6 +289,33 @@ public enum TimelineDemoData {
         for row in 0..<6 {
             fill(context, CGRect(x: page.minX + 32, y: page.minY + 100 + CGFloat(row) * 38, width: page.width - 64, height: 14),
                  0xE5E7EB, radius: 4)
+        }
+    }
+
+    /// A very wide strip: a toolbar of coloured tabs end to end.
+    private static func drawStrip(_ context: CGContext, _ size: CGSize) {
+        fill(context, CGRect(origin: .zero, size: size), 0x1F2937)
+        let colors: [UInt32] = [0x2F7CF6, 0xF0C374, 0x86EFAC, 0xFCA5A5, 0xA78BFA, 0x5EEAD4, 0xFDE68A, 0x93C5FD]
+        let gap: CGFloat = 24
+        let width = (size.width - CGFloat(colors.count + 1) * gap) / CGFloat(colors.count)
+        for (index, color) in colors.enumerated() {
+            let x = gap + CGFloat(index) * (width + gap)
+            fill(context, CGRect(x: x, y: 40, width: width, height: size.height - 80), color, radius: 18)
+            fill(context, CGRect(x: x + 28, y: size.height / 2 - 10, width: width - 56, height: 20), 0xFFFFFF, radius: 6)
+        }
+    }
+
+    /// A tall phone shot: a coloured header over a list of rows.
+    private static func drawPhone(_ context: CGContext, _ size: CGSize) {
+        fill(context, CGRect(origin: .zero, size: size), 0xFFFFFF)
+        gradient(context, [0x312E81, 0x2F7CF6], from: .zero, to: CGPoint(x: size.width, y: 0))
+        fill(context, CGRect(x: 0, y: 260, width: size.width, height: size.height - 260), 0xFFFFFF)
+        fill(context, CGRect(x: 48, y: 150, width: 300, height: 40), 0xFFFFFF, radius: 10)
+        for row in 0..<7 {
+            let y = 320 + CGFloat(row) * 136
+            fill(context, CGRect(x: 48, y: y, width: 88, height: 88), row % 2 == 0 ? 0xFDE68A : 0x86EFAC, radius: 20)
+            fill(context, CGRect(x: 168, y: y + 12, width: 340, height: 24), 0x1F2937, radius: 6)
+            fill(context, CGRect(x: 168, y: y + 54, width: 240, height: 18), 0xD1D5DB, radius: 6)
         }
     }
 

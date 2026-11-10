@@ -156,6 +156,30 @@ final class TimelineSnapshotTests: XCTestCase {
         XCTAssertEqual(TimelineWeekView<EmptyView>.columnCount(pageWidth: 1_400), 2)
     }
 
+    /// Whole only past the limits: a picture at a limit still fills.
+    func testMediaFit() {
+        func fit(_ width: CGFloat, _ height: CGFloat) -> TimelineMediaFit {
+            TimelineMediaFit.of(pixelSize: CGSize(width: width, height: height))
+        }
+        XCTAssertEqual(fit(240, 100), .fill)
+        XCTAssertEqual(fit(360, 100), .fill)
+        XCTAssertEqual(fit(361, 100), .whole)
+        XCTAssertEqual(fit(133, 100), .fill)
+        XCTAssertEqual(fit(132, 100), .whole)
+        XCTAssertEqual(fit(2_000, 300), .whole)
+        XCTAssertEqual(fit(600, 1_300), .whole)
+        XCTAssertEqual(TimelineMediaFit.of(pixelSize: nil), .fill)
+        XCTAssertEqual(fit(0, 0), .fill, "no size to go by")
+        XCTAssertEqual(fit(100, 0), .fill)
+    }
+
+    func testDemoPicturesHaveTheirSizes() {
+        XCTAssertEqual(Set(D.sizes.keys), Set(D.images.keys))
+        XCTAssertEqual(D.sizes["strip"], CGSize(width: 2_000, height: 300))
+        XCTAssertEqual(D.sizes["phone"], CGSize(width: 600, height: 1_300))
+        XCTAssertEqual(TimelineMediaFit.of(pixelSize: D.sizes["docs"]), .fill)
+    }
+
     // MARK: Project story
 
     private static func file(_ name: String?, _ type: String, at date: Date, item: Int? = nil) -> ProjectFile {
@@ -348,6 +372,30 @@ final class TimelineSnapshotTests: XCTestCase {
                        named: "timeline-card-video-mac")
         assertVariants(of: TimelineStoryCard(story: story, image: nil).frame(width: 358),
                        named: "timeline-card-video-phone")
+    }
+
+    /// The media area at a Mac card's width, with the window showing round
+    /// it: a picture alone draws the same in light and dark.
+    private func mediaView(_ blobID: String) -> some View {
+        TimelineMediaView(media: TimelineMedia(blobID: blobID, contentType: "image/png", name: "\(blobID).png"),
+                          image: Self.images[blobID], pixelSize: D.sizes[blobID])
+            .frame(width: 448)
+            .padding(16)
+    }
+
+    /// A very wide picture: all of it, on a blurred, darkened copy of itself.
+    func testMediaWideShownWhole() {
+        assertVariants(of: mediaView("strip"), named: "timeline-media-wide")
+    }
+
+    /// A tall phone shot: all of it, centred on its own blur.
+    func testMediaTallShownWhole() {
+        assertVariants(of: mediaView("phone"), named: "timeline-media-tall")
+    }
+
+    /// A picture near the area's own shape fills it, cropped.
+    func testMediaNormalFills() {
+        assertVariants(of: mediaView("docs"), named: "timeline-media-normal")
     }
 
     func testSidebar() {
