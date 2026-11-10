@@ -393,6 +393,29 @@ public actor ProjectsSync {
         _ = await refreshProject(id: into)
     }
 
+    /// The journal holds the new title; the list and the project are read
+    /// again so the store's rows are the journal's.
+    public func renameProject(id: String, title: String) async throws {
+        try await api.renameProject(id: id, title: title)
+        guard !stopped else { return }
+        _ = await refresh()
+        _ = await refreshProject(id: id)
+    }
+
+    /// Closes the project, then reads the list and the project again. A
+    /// project that was closed already (on another device, say) is what
+    /// was asked for, so that is no error: the reads catch this device up.
+    public func closeProject(id: String, summary: String) async throws {
+        do {
+            try await api.closeProject(id: id, summary: summary)
+        } catch ProjectCloseError.alreadyClosed {
+            // Nothing to write; fall through to the reads.
+        }
+        guard !stopped else { return }
+        _ = await refresh()
+        _ = await refreshProject(id: id)
+    }
+
     @discardableResult
     public func setMissionProject(missionID: String, project: String?) async throws -> Mission {
         let mission = try await api.setMissionProject(missionID: missionID, project: project)

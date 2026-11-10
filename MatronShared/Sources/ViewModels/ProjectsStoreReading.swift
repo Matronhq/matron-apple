@@ -27,6 +27,8 @@ public protocol ProjectsSyncing: Sendable {
     func endWatching(convoID: String) async
     func createProject(title: String, body: String?) async throws -> Project
     func mergeProject(id: String, into: String) async throws
+    func renameProject(id: String, title: String) async throws
+    func closeProject(id: String, summary: String) async throws
     @discardableResult func setMissionProject(missionID: String, project: String?) async throws -> Mission
     func supportedStream() async -> AsyncStream<Bool>
     func projectFeed(id: String, kind: ProjectFeedKind, before: String?, limit: Int?) async throws -> ProjectFeedSlice

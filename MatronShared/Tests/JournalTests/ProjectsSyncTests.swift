@@ -14,6 +14,9 @@ private final class FakeProjects: ProjectsProviding, @unchecked Sendable {
     private var _linkCalls: [String] = []
     private var _created: [(String, String?, String)] = []
     private var _merged: [(String, String)] = []
+    private var _renamed: [(String, String)] = []
+    private var _closed: [(String, String)] = []
+    private var _closeError: Error?
     private var _filed: [(String, String?)] = []
     private var _listGate: CheckedContinuation<Void, Never>?
     private var _blockNextList = false
@@ -36,6 +39,9 @@ private final class FakeProjects: ProjectsProviding, @unchecked Sendable {
     var feedCalls: [(String, ProjectFeedKind, String?, Int?)] { lock.withLock { _feedCalls } }
     var created: [(String, String?, String)] { lock.withLock { _created } }
     var merged: [(String, String)] { lock.withLock { _merged } }
+    var renamed: [(String, String)] { lock.withLock { _renamed } }
+    var closed: [(String, String)] { lock.withLock { _closed } }
+    var closeError: Error? { get { lock.withLock { _closeError } } set { lock.withLock { _closeError = newValue } } }
     var filed: [(String, String?)] { lock.withLock { _filed } }
     var blockNextList: Bool { get { lock.withLock { _blockNextList } } set { lock.withLock { _blockNextList = newValue } } }
     var isListGated: Bool { lock.withLock { _listGate != nil } }
@@ -91,6 +97,11 @@ private final class FakeProjects: ProjectsProviding, @unchecked Sendable {
                        updatedAt: Date(timeIntervalSince1970: 1))
     }
     func mergeProject(id: String, into: String) async throws { lock.withLock { _merged.append((id, into)) } }
+    func renameProject(id: String, title: String) async throws { lock.withLock { _renamed.append((id, title)) } }
+    func closeProject(id: String, summary: String) async throws {
+        lock.withLock { _closed.append((id, summary)) }
+        if let e = closeError { throw e }
+    }
     func setMissionProject(missionID: String, project: String?) async throws -> Mission {
         lock.withLock { _filed.append((missionID, project)) }
         return Mission(id: missionID, num: 61, title: "M61", originConvoID: "c1",
@@ -337,6 +348,37 @@ final class ProjectsSyncTests: XCTestCase {
         XCTAssertEqual(try store.mission(id: "ms_1")?.projectID, "pj_new")
         try await sync.mergeProject(id: "pj_a", into: "pj_b")
         XCTAssertEqual(api.merged.map(\.1), ["pj_b"])
+    }
+
+    /// A rename and a close are written, then the list and the project
+    /// are read again: the journal's rows are the ones the store keeps.
+    func testRenameAndCloseReadTheProjectAgain() async throws {
+        let api = FakeProjects()
+        let (sync, _, _, _) = try make(api: api)
+        let lists = api.listCalls
+        try await sync.renameProject(id: "pj_a", title: "Docs site launch")
+        XCTAssertEqual(api.renamed.map(\.1), ["Docs site launch"])
+        XCTAssertEqual(api.listCalls, lists + 1)
+        XCTAssertEqual(api.detailCalls.last, "pj_a")
+        try await sync.closeProject(id: "pj_a", summary: "Closed from the app.")
+        XCTAssertEqual(api.closed.map(\.1), ["Closed from the app."])
+        XCTAssertEqual(api.listCalls, lists + 2)
+    }
+
+    /// Open missions refuse the close: the error reaches the caller. A
+    /// project closed elsewhere already is what was asked for: no error,
+    /// and the list is read again to catch up.
+    func testCloseRefusedOrAlreadyDone() async throws {
+        let api = FakeProjects()
+        let (sync, _, _, _) = try make(api: api)
+        api.closeError = ProjectCloseError.openMissions
+        let lists = api.listCalls
+        do { try await sync.closeProject(id: "pj_a", summary: "s"); XCTFail("expected a throw") }
+        catch { XCTAssertEqual(error as? ProjectCloseError, .openMissions) }
+        XCTAssertEqual(api.listCalls, lists, "nothing changed, nothing to read")
+        api.closeError = ProjectCloseError.alreadyClosed
+        try await sync.closeProject(id: "pj_a", summary: "s")
+        XCTAssertEqual(api.listCalls, lists + 1)
     }
 
     /// A created project must survive a list GET that left before it existed.

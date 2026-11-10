@@ -480,6 +480,39 @@ public final class ProjectDetailViewModel {
         }
     }
 
+    /// "Rename…": the title less the space around it. An empty title is
+    /// refused without a request, and the name it already has needs none.
+    /// Only an open project is renamed: the journal refuses a closed one.
+    public func rename(to title: String) async -> Bool {
+        let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty, let project, project.state == .open else { return false }
+        guard title != project.title else { return true }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            try await projects.renameProject(id: projectID, title: title)
+            return true
+        } catch {
+            self.error = error.localizedDescription
+            return false
+        }
+    }
+
+    /// "Close project…": its missions stay as they are, so the journal
+    /// refuses while any is open, and `error` then says so.
+    public func close() async -> Bool {
+        guard project?.state == .open else { return false }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            try await projects.closeProject(id: projectID, summary: ProjectActionsFormat.closeSummary)
+            return true
+        } catch {
+            self.error = error.localizedDescription
+            return false
+        }
+    }
+
     /// "Add a mission": files it into this project, which must be open
     /// (preflight R5).
     public func addMission(_ missionID: String) async {

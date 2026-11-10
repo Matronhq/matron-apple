@@ -38,13 +38,37 @@ public struct ProjectDetail: Equatable, Sendable {
     }
 }
 
+/// Why the journal refused to close a project.
+public enum ProjectCloseError: Error, Equatable, Sendable {
+    /// 409 `blocked_by: open_missions`: a project closes only once its
+    /// missions are closed or moved.
+    case openMissions
+    /// 409 `blocked_by: closed`: it was closed already.
+    case alreadyClosed
+}
+
+extension ProjectCloseError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .openMissions: return ProjectActionsFormat.openMissions
+        case .alreadyClosed: return "This project is already closed."
+        }
+    }
+}
+
 /// The projects routes the apps use, plus the link read for the header.
-/// Only the three writes spec §6 gives the apps: create, merge, file.
+/// The writes the apps make: create, rename, close, merge, file.
 public protocol ProjectsProviding: Sendable {
     func listProjects() async throws -> ProjectsListDecode
     func project(id: String) async throws -> ProjectDetail
     func createProject(title: String, body: String?, idempotencyKey: String) async throws -> Project
     func mergeProject(id: String, into: String) async throws
+    /// `PATCH /projects/:id` with the new title.
+    func renameProject(id: String, title: String) async throws
+    /// `POST /projects/:id/close`. The journal wants a summary, and
+    /// refuses with `ProjectCloseError` while the project has open
+    /// missions or when it is closed already.
+    func closeProject(id: String, summary: String) async throws
     func setMissionProject(missionID: String, project: String?) async throws -> Mission
     func conversationMissions(convoID: String) async throws -> [ConversationMissionLink]
     /// `GET /projects/:id/feed`: one page of `kind`, older than the
@@ -152,6 +176,25 @@ extension JournalAPI: ProjectsProviding {
 
     public func mergeProject(id: String, into: String) async throws {
         _ = try await request(path: "/projects/\(Self.pathSegment(id))/merge", method: "POST", body: ["into": into])
+    }
+
+    public func renameProject(id: String, title: String) async throws {
+        _ = try await request(path: "/projects/\(Self.pathSegment(id))", method: "PATCH", body: ["title": title])
+    }
+
+    public func closeProject(id: String, summary: String) async throws {
+        let (data, response) = try await rawRequest(path: "/projects/\(Self.pathSegment(id))/close", method: "POST",
+                                                    body: ["summary": summary])
+        guard response.statusCode != 200 else { return }
+        if response.statusCode == 409 {
+            let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            switch obj?["blocked_by"] as? String {
+            case "open_missions": throw ProjectCloseError.openMissions
+            case "closed": throw ProjectCloseError.alreadyClosed
+            default: break
+            }
+        }
+        throw Self.error(status: response.statusCode, data: data)
     }
 
     public func setMissionProject(missionID: String, project: String?) async throws -> Mission {
