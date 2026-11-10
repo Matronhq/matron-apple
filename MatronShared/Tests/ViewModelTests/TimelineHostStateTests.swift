@@ -150,7 +150,7 @@ final class TimelineHostStateTests: XCTestCase {
         let vm = Self.viewModel(timeline)
         XCTAssertEqual(vm.content(for: .week("2026-11-02")), .loading)
         await vm.start()
-        XCTAssertEqual(vm.content(for: .week("2026-11-02")), .week(StubTimeline.week("2026-11-02"), sentence: "Moved."))
+        XCTAssertEqual(vm.content(for: .week("2026-11-02")), .week(StubTimeline.week("2026-11-02")))
         XCTAssertEqual(vm.content(for: .week("2026-10-26")), .loading, "another week waits for its own read")
         XCTAssertEqual(vm.content(for: .quiet), .loading)
         await vm.loadCounts()

@@ -661,8 +661,7 @@ struct AppShellView: View {
             onOpenList: { place in
                 guard let route = TimelineListRoute(place: place) else { return }
                 nav.pushTimelinePage(route.pathValue)
-            },
-            onOpenItem: { nav.pushMissionItem($0) })
+            })
     }
 
     /// One of the timeline's lists, pushed from the iPhone's week page: the
@@ -671,7 +670,7 @@ struct AppShellView: View {
     @ViewBuilder private func timelineListDestination(_ route: TimelineListRoute) -> some View {
         if let place = route.place, let viewModel = timeline.viewModel {
             TimelinePlacePage(host: timeline, viewModel: viewModel, place: place, session: session,
-                              onOpenProject: timelineActions.onOpenStory, onOpenItem: timelineActions.onOpenItem)
+                              onOpenProject: timelineActions.onOpenStory)
                 .timelineErrorAlert(viewModel, place: place)
                 .navigationTitle(Self.timelineListTitle(place))
                 .navigationBarTitleDisplayMode(.inline)

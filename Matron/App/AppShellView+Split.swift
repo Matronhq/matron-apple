@@ -311,7 +311,7 @@ extension AppShellView {
     @ViewBuilder private var splitProjectsRoot: some View {
         if timeline.isShown, let viewModel = timeline.viewModel {
             TimelinePlacePage(host: timeline, viewModel: viewModel, place: timeline.place, session: session,
-                              onOpenProject: timelineActions.onOpenStory, onOpenItem: timelineActions.onOpenItem)
+                              onOpenProject: timelineActions.onOpenStory)
                 .timelineErrorAlert(viewModel, place: timeline.place)
                 // The sidebar names Projects and the page its week: the
                 // bar shows no third title, but the real one stays set so

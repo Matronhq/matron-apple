@@ -24,7 +24,6 @@ struct TimelinePlacePage<Footer: View>: View {
     let place: TimelinePlace?
     let session: UserSession
     let onOpenProject: (String) -> Void
-    let onOpenItem: (String) -> Void
     @ViewBuilder let footer: () -> Footer
 
     @Environment(\.appDependencies) private var deps
@@ -33,7 +32,7 @@ struct TimelinePlacePage<Footer: View>: View {
     var body: some View {
         TimelinePlaceView(content: viewModel.content(for: place), now: Date(), images: images.images,
                           sizes: images.sizes,
-                          asked: viewModel.askedProjectIDs, onOpenProject: onOpenProject, onOpenItem: onOpenItem,
+                          asked: viewModel.askedProjectIDs, onOpenProject: onOpenProject,
                           onAsk: { stalled in Task { await viewModel.ask(about: stalled) } },
                           onLoadMoreFinished: { Task { await viewModel.loadMoreFinished() } },
                           onLoadMoreProjects: { Task { await viewModel.loadMoreProjects() } },
@@ -49,9 +48,9 @@ struct TimelinePlacePage<Footer: View>: View {
 
 extension TimelinePlacePage where Footer == EmptyView {
     init(host: TimelineHostState, viewModel: TimelineViewModel, place: TimelinePlace?, session: UserSession,
-         onOpenProject: @escaping (String) -> Void, onOpenItem: @escaping (String) -> Void) {
-        self.init(host: host, viewModel: viewModel, place: place, session: session, onOpenProject: onOpenProject,
-                  onOpenItem: onOpenItem) { EmptyView() }
+         onOpenProject: @escaping (String) -> Void) {
+        self.init(host: host, viewModel: viewModel, place: place, session: session,
+                  onOpenProject: onOpenProject) { EmptyView() }
     }
 }
 

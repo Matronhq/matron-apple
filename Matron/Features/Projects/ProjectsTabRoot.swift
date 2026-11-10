@@ -30,7 +30,6 @@ struct ProjectsTabRoot: View {
     struct TimelineActions {
         let onOpenStory: (String) -> Void
         let onOpenList: (TimelinePlace) -> Void
-        let onOpenItem: (String) -> Void
     }
 
     /// Which page the root draws.
@@ -97,8 +96,7 @@ struct ProjectsTabRoot: View {
     @ViewBuilder private var page: some View {
         if let timeline, let timelineViewModel = phoneTimeline, let timelineActions, let session {
             TimelinePhoneRoot(state: timeline, viewModel: timelineViewModel, session: session,
-                              onOpenStory: timelineActions.onOpenStory, onOpenList: timelineActions.onOpenList,
-                              onOpenItem: timelineActions.onOpenItem)
+                              onOpenStory: timelineActions.onOpenStory, onOpenList: timelineActions.onOpenList)
         } else {
             dashboard
         }

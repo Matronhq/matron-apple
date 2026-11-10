@@ -13,7 +13,6 @@ struct TimelinePhoneRoot: View {
     let session: UserSession
     let onOpenStory: (String) -> Void
     let onOpenList: (TimelinePlace) -> Void
-    let onOpenItem: (String) -> Void
 
     /// One entry of the week menu.
     struct WeekChoice: Identifiable, Equatable {
@@ -43,7 +42,7 @@ struct TimelinePhoneRoot: View {
 
     var body: some View {
         TimelinePlacePage(host: state, viewModel: viewModel, place: Self.place(state), session: session,
-                          onOpenProject: onOpenStory, onOpenItem: onOpenItem) {
+                          onOpenProject: onOpenStory) {
             footRows
         }
         .navigationTitle(title)

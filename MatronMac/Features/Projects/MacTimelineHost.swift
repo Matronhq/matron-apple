@@ -202,7 +202,7 @@ struct MacTimelineDetail: View {
         } else if let viewModel = state.viewModel {
             MacTimelinePlaceView(viewModel: viewModel, place: state.place, session: session,
                                  onRefresh: { await state.host.refresh() },
-                                 onOpenProject: onOpenStory, onOpenItem: actions.onOpenItem)
+                                 onOpenProject: onOpenStory)
         }
     }
 }
@@ -216,7 +216,6 @@ struct MacTimelinePlaceView: View {
     /// "Try again": the place and the counts again.
     let onRefresh: () async -> Void
     let onOpenProject: (String) -> Void
-    let onOpenItem: (String) -> Void
 
     @Environment(\.appDependencies) private var deps
     @State private var images = TimelineImages()
@@ -224,7 +223,7 @@ struct MacTimelinePlaceView: View {
     var body: some View {
         TimelinePlaceView(content: viewModel.content(for: place), now: Date(), images: images.images,
                           sizes: images.sizes,
-                          asked: viewModel.askedProjectIDs, onOpenProject: onOpenProject, onOpenItem: onOpenItem,
+                          asked: viewModel.askedProjectIDs, onOpenProject: onOpenProject,
                           onAsk: { stalled in Task { await viewModel.ask(about: stalled) } },
                           onLoadMoreFinished: { Task { await viewModel.loadMoreFinished() } },
                           onLoadMoreProjects: { Task { await viewModel.loadMoreProjects() } },

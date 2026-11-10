@@ -20,11 +20,8 @@ public struct TimelinePlaceView<Footer: View>: View {
     let onRetry: () -> Void
     let footer: Footer
 
-    /// `onOpenItem` is taken for the hosts that pass it; no place opens an
-    /// item of its own (a card opens its project).
     public init(content: TimelinePlaceContent, now: Date, images: [String: Image], sizes: [String: CGSize] = [:],
                 asked: Set<String>, onOpenProject: @escaping (String) -> Void,
-                onOpenItem: @escaping (String) -> Void = { _ in },
                 onAsk: @escaping (StalledProject) -> Void, onLoadMoreFinished: @escaping () -> Void,
                 onLoadMoreProjects: @escaping () -> Void = {},
                 onRetry: @escaping () -> Void, @ViewBuilder footer: () -> Footer) {
@@ -36,7 +33,7 @@ public struct TimelinePlaceView<Footer: View>: View {
 
     public var body: some View {
         switch content {
-        case .week(let week, _):
+        case .week(let week):
             TimelineWeekView(week: week, now: now, images: images, sizes: sizes,
                              onOpenProject: onOpenProject) { footer }
         case .projects(let list, let hasMore):
@@ -81,11 +78,10 @@ public struct TimelinePlaceView<Footer: View>: View {
 public extension TimelinePlaceView where Footer == EmptyView {
     init(content: TimelinePlaceContent, now: Date, images: [String: Image], sizes: [String: CGSize] = [:],
          asked: Set<String>, onOpenProject: @escaping (String) -> Void,
-         onOpenItem: @escaping (String) -> Void = { _ in },
          onAsk: @escaping (StalledProject) -> Void, onLoadMoreFinished: @escaping () -> Void,
          onLoadMoreProjects: @escaping () -> Void = {}, onRetry: @escaping () -> Void) {
         self.init(content: content, now: now, images: images, sizes: sizes, asked: asked, onOpenProject: onOpenProject,
-                  onOpenItem: onOpenItem, onAsk: onAsk, onLoadMoreFinished: onLoadMoreFinished,
+                  onAsk: onAsk, onLoadMoreFinished: onLoadMoreFinished,
                   onLoadMoreProjects: onLoadMoreProjects, onRetry: onRetry) { EmptyView() }
     }
 }

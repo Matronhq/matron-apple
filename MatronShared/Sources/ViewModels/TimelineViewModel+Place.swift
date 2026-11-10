@@ -16,7 +16,7 @@ extension TimelineViewModel {
         switch place {
         case .week:
             guard let week = Self.shownWeek(week, for: place) else { return unloaded }
-            return .week(week, sentence: weeks.first { $0.week == week.week }?.sentence)
+            return .week(week)
         case .quiet:
             return quiet.map { .quiet($0) } ?? unloaded
         case .long:
