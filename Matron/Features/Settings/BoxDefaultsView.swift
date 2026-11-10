@@ -1,4 +1,5 @@
 import SwiftUI
+import MatronDesignSystem
 import MatronJournal
 import MatronViewModels
 
@@ -19,6 +20,7 @@ struct BoxDefaultsView: View {
 
     var body: some View {
         Form {
+            MatronGroupedRows {
             if let device, let defaults = device.defaults, viewModel.showsBoxDefaults(for: device) {
                 Section {
                     picker(.agent, value: defaults.agent, choices: BoxDefaults.agentChoices, device: device)
@@ -45,6 +47,7 @@ struct BoxDefaultsView: View {
             } else {
                 Text("This journal does not support box defaults yet.")
                     .foregroundStyle(.secondary)
+            }
             }
         }
         .navigationTitle(device?.name ?? "New sessions")

@@ -114,6 +114,7 @@ struct NewChatSheet: View {
 
     @ViewBuilder private func agentPicker(_ agents: [DeviceDTO]) -> some View {
         List {
+            MatronGroupedRows {
             if let error = viewModel.errorMessage {
                 Section { Text(error).foregroundStyle(.red) }
             }
@@ -131,6 +132,7 @@ struct NewChatSheet: View {
                 if !agents.isEmpty && !agents.contains(where: \.connected) {
                     Text("All boxes are asleep — pick one to wake it.")
                 }
+            }
             }
         }
     }
@@ -216,6 +218,7 @@ struct NewChatSheet: View {
 
     @ViewBuilder private func folderPicker(_ agent: DeviceDTO) -> some View {
         List {
+            MatronGroupedRows {
             Section {
                 if viewModel.isWakingBox {
                     HStack(spacing: 10) {
@@ -315,6 +318,7 @@ struct NewChatSheet: View {
                 Text("Other folder")
             } footer: {
                 Text("Blank starts in the agent's default folder — pick a recent one above, or type a path.")
+            }
             }
         }
     }

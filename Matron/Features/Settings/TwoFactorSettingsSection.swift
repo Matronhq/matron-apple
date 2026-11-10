@@ -1,4 +1,5 @@
 import SwiftUI
+import MatronDesignSystem
 import MatronJournal
 import MatronViewModels
 
@@ -119,11 +120,13 @@ struct TwoFactorSecuritySheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                MatronGroupedRows {
                 switch flow.step {
                 case .confirm: confirm
                 case .scan(let setup): scan(setup)
                 case .recoveryCodes(let codes): recoveryCodes(codes)
                 case .finished: EmptyView()
+                }
                 }
             }
             .navigationTitle(flow.title)

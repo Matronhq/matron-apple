@@ -425,8 +425,10 @@ struct AppShellView: View {
     private var moreList: some View {
         NavigationStack {
             List {
+                MatronGroupedRows {
                 ForEach(AppShellNavigation.moreEntries(missionsSupported: missionsVM.isSupported != false),
                         id: \.self, content: moreRow)
+                }
             }
             .tabBarFollowsTheSelectedTab(otherwise: .visible)
             .navigationTitle("More")

@@ -20,9 +20,11 @@ public struct ConversationMissionsList: View {
     public var body: some View {
         let sections = missions.sections
         List {
+            MatronGroupedRows {
             if let current = sections.current { Section("Current") { row(current) } }
             if !sections.alsoOn.isEmpty { Section("Also on") { ForEach(sections.alsoOn) { row($0) } } }
             if !sections.earlier.isEmpty { Section("Earlier") { ForEach(sections.earlier) { row($0) } } }
+            }
         }
         #if os(iOS)
         .listStyle(.insetGrouped)

@@ -31,6 +31,7 @@ struct SearchView: View {
 
     var body: some View {
         List {
+            MatronGroupedRows {
             if let hit = viewModel.numberHit, let onSelectNumber {
                 Section("Go to") {
                     Button { onSelectNumber(hit) } label: {
@@ -83,6 +84,7 @@ struct SearchView: View {
                 Section { Text("Search across chat titles, bots, and messages.").foregroundStyle(.secondary) }
             } else if viewModel.hasNoResults && !viewModel.isSearching {
                 Section { Text(viewModel.emptyResultsMessage).foregroundStyle(.secondary) }
+            }
             }
         }
         .searchable(text: $viewModel.query, placement: .navigationBarDrawer(displayMode: .always))

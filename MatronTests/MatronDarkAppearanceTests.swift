@@ -44,7 +44,9 @@ final class MatronDarkAppearanceTests: XCTestCase {
     /// come out in the palette.
     func test_aRenderedListUsesThePalette() throws {
         let host = UIHostingController(rootView: List {
-            Section { Text("Row").frame(maxWidth: .infinity, minHeight: 60) }
+            MatronGroupedRows {
+                Section { Text("Row").frame(maxWidth: .infinity, minHeight: 60) }
+            }
         }.listStyle(.insetGrouped))
         // A window outside a scene renders black, whatever it holds.
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)

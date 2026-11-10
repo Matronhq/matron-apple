@@ -1,4 +1,5 @@
 import SwiftUI
+import MatronDesignSystem
 import MatronJournal
 import MatronViewModels
 
@@ -17,6 +18,7 @@ struct AgentChatView: View {
 
     var body: some View {
         List {
+            MatronGroupedRows {
             if let error = viewModel.errorMessage {
                 Section {
                     Text(error).font(.callout).foregroundStyle(.red)
@@ -55,6 +57,7 @@ struct AgentChatView: View {
                 } footer: {
                     Text("An agent asking to talk to another agent waits here until you decide. Every request asks — approving one says nothing about the next. Unanswered requests expire after 24 hours.")
                 }
+            }
             }
         }
         .navigationTitle("Agent Chats")

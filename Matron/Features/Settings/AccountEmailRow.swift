@@ -1,4 +1,5 @@
 import SwiftUI
+import MatronDesignSystem
 import UIKit
 import MatronJournal
 import MatronViewModels
@@ -46,6 +47,7 @@ struct AccountEmailSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                MatronGroupedRows {
                 Section {
                     TextField(AccountEmailModel.fieldLabel, text: $model.email)
                         .textContentType(.emailAddress)
@@ -84,6 +86,7 @@ struct AccountEmailSheet: View {
                         .disabled(!model.canRemove)
                         .accessibilityIdentifier("accountEmail.remove")
                     }
+                }
                 }
             }
             .navigationTitle(AccountEmailModel.title)
