@@ -254,6 +254,54 @@ final class ProjectSummaryViewModelTests: XCTestCase {
         XCTAssertNil(vm.error)
     }
 
+    /// Coming back to the page reads it again and leaves the history as
+    /// far as it was paged.
+    func testRefreshPageKeepsThePagedHistory() async {
+        let (vm, fake) = make()
+        fake.historyPages[nil] = ([week("2026-11-02")], "2026-11-02")
+        fake.historyPages["2026-11-02"] = ([week("2026-10-26")], nil)
+        await vm.start()
+        await vm.loadHistory()
+        await vm.loadMoreHistory()
+        fake.page = .success(page(sentence: "Tickets are on sale."))
+        await vm.refreshPage()
+        XCTAssertEqual(vm.page?.sentence, "Tickets are on sale.")
+        XCTAssertEqual(vm.history.map(\.week), ["2026-11-02", "2026-10-26"])
+        XCTAssertEqual(fake.historyCalls, ["pj_promo:nil", "pj_promo:2026-11-02"], "no history read")
+        fake.page = .failure(JournalAPIError.forbidden)
+        await vm.refreshPage()
+        XCTAssertEqual(vm.error, JournalAPIError.forbidden.localizedDescription)
+    }
+
+    /// The history section coming on screen again reads nothing: the
+    /// pages read stay, and none is read twice.
+    func testLoadHistoryIfNeededReadsTheFirstPageOnce() async {
+        let (vm, fake) = make()
+        fake.historyPages[nil] = ([week("2026-11-02")], "2026-11-02")
+        fake.historyPages["2026-11-02"] = ([week("2026-10-26")], nil)
+        await vm.start()
+        await vm.loadHistoryIfNeeded()
+        XCTAssertEqual(vm.history.map(\.week), ["2026-11-02"])
+        await vm.loadMoreHistory()
+        await vm.loadHistoryIfNeeded()
+        XCTAssertEqual(vm.history.map(\.week), ["2026-11-02", "2026-10-26"])
+        XCTAssertEqual(fake.historyCalls, ["pj_promo:nil", "pj_promo:2026-11-02"])
+        await vm.refresh()
+        XCTAssertEqual(vm.history.map(\.week), ["2026-11-02"], "a pull to refresh starts over")
+    }
+
+    func testLoadHistoryIfNeededAsksAgainAfterAFailedRead() async {
+        let (vm, fake) = make()
+        fake.historyPages[nil] = ([week("2026-11-02")], nil)
+        fake.historyError = JournalAPIError.forbidden
+        await vm.start()
+        await vm.loadHistoryIfNeeded()
+        XCTAssertEqual(vm.history, [])
+        fake.historyError = nil
+        await vm.loadHistoryIfNeeded()
+        XCTAssertEqual(vm.history.map(\.week), ["2026-11-02"])
+    }
+
     func testAProjectGoneOnRefreshIsMissing() async {
         let (vm, fake) = make()
         await vm.start()

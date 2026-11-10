@@ -168,7 +168,7 @@ struct TimelineStoryHost: View {
             }
         }
         // Runs again on every re-appear (Back from a section or a mission):
-        // the view models are kept, and read again.
+        // the view models are kept, and the page alone is read again.
         .task(id: projectID) { await load() }
         .onDisappear { detail?.stop() }
     }
@@ -192,7 +192,9 @@ struct TimelineStoryHost: View {
         detail?.start()
         loadFailed = false
         if let summary {
-            await summary.refresh()
+            // The history stays as far as it was paged: pull to refresh
+            // reads it again.
+            await summary.refreshPage()
         } else {
             let made = deps.makeProjectSummaryViewModel(for: session, projectID: projectID)
             summary = made
@@ -315,7 +317,8 @@ struct TimelineStoryHost: View {
                                hasMore: summary?.hasMoreHistory == true,
                                onOpenMilestone: { onOpenMilestone($0.milestone.convoID, $0.milestone.seq) },
                                onLoadMore: { Task { await summary?.loadMoreHistory() } })
-                .task { await summary?.loadHistory() }
+                // Back from a milestone runs this again: nothing is read twice.
+                .task { await summary?.loadHistoryIfNeeded() }
                 .refreshable { await refresh() }
         case .missions:
             if let page = detail?.page {

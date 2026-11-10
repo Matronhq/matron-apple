@@ -37,6 +37,8 @@ public final class ProjectSummaryViewModel {
     @ObservationIgnored private var projectID: String
     @ObservationIgnored private var historyNextBefore: String?
     @ObservationIgnored private var hasAskedForHistory = false
+    /// A first page of the history has landed.
+    @ObservationIgnored private var hasLoadedHistory = false
     /// Bumped by each page read: only the newest read's answer (or failure) lands.
     @ObservationIgnored private var pageGeneration = 0
     /// Bumped when a reload replaces the history: a page fetched before is dropped.
@@ -56,11 +58,27 @@ public final class ProjectSummaryViewModel {
         await loadPage()
     }
 
-    /// Re-reads the page, and the history's first page once it was asked for.
+    /// Re-reads the page, and the history's first page once it was asked
+    /// for: a pull to refresh, or after a change to the project. The
+    /// history starts over from its first page.
     public func refresh() async {
+        await refreshPage()
+        if hasAskedForHistory, !isMissing, !isUnsupported { await loadHistory() }
+    }
+
+    /// Re-reads the page alone, for coming back to it: the history stays
+    /// as far as it was paged.
+    public func refreshPage() async {
         error = nil
         await loadPage()
-        if hasAskedForHistory, !isMissing, !isUnsupported { await loadHistory() }
+    }
+
+    /// Reads the history's first page unless it has loaded (or is being
+    /// read): the history section coming on screen, the first time or
+    /// again, without losing the pages read since.
+    public func loadHistoryIfNeeded() async {
+        guard !hasLoadedHistory, !isReloadingHistory else { return }
+        await loadHistory()
     }
 
     /// Reads the history's first page, replacing what was loaded.
@@ -74,6 +92,7 @@ public final class ProjectSummaryViewModel {
             let loaded = try await timeline.timelineProjectHistory(projectID, before: nil, limit: nil)
             guard generation == historyGeneration else { return }
             history = loaded.weeks
+            hasLoadedHistory = true
             historyNextBefore = loaded.nextBefore
         } catch {
             if generation == historyGeneration, !error.isReadCancellation { self.error = error.localizedDescription }
