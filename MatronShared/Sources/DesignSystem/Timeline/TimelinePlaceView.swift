@@ -62,7 +62,8 @@ public struct TimelinePlaceView<Footer: View>: View {
                 Button("Try again", action: onRetry)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-        case .loading:
+        case .loading, .projects:
+            // The all-projects list has no page of its own yet.
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }

@@ -9,6 +9,8 @@ public enum TimelinePlaceContent: Equatable, Sendable {
     case quiet(StalledList)
     case long(StalledList)
     case finished([FinishedProject], hasMore: Bool)
+    /// Every project, as far as it has been paged.
+    case projects(TimelineProjectList, hasMore: Bool)
     /// The journal lists no weeks yet.
     case nothingYet
     case loading

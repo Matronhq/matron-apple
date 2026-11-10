@@ -22,6 +22,8 @@ private final class FakeTimeline: TimelineProviding, @unchecked Sendable {
         var quietCalls = 0
         var longCalls = 0
         var finishedCalls: [String?] = []
+        var projectPages: [String?: TimelineProjectList] = [:]
+        var projectsCalls: [String?] = []
         var gated: Set<String> = []
         var held: [String: CheckedContinuation<Void, Never>] = [:]
     }
@@ -50,10 +52,16 @@ private final class FakeTimeline: TimelineProviding, @unchecked Sendable {
     var quietCalls: Int { read(\.quietCalls) }
     var longCalls: Int { read(\.longCalls) }
     var finishedCalls: [String?] { read(\.finishedCalls) }
+    /// All-projects pages by `before`; a page not scripted answers 404, as
+    /// a journal without the route does.
+    var projectPages: [String?: TimelineProjectList] {
+        get { read(\.projectPages) } set { write { $0.projectPages = newValue } }
+    }
+    var projectsCalls: [String?] { read(\.projectsCalls) }
 
     // MARK: Gates
 
-    /// Hold the next call at `key` ("weeks:<before>", "week:<key>", "quiet", "long", "finished:<before>").
+    /// Hold the next call at `key` ("weeks:<before>", "week:<key>", "quiet", "long", "finished:<before>", "projects:<before>").
     func gate(_ key: String) { write { $0.gated.insert(key) } }
 
     func waitUntilHeld(_ key: String) async {
@@ -119,7 +127,16 @@ private final class FakeTimeline: TimelineProviding, @unchecked Sendable {
         return page
     }
 
-    func timelineProjects(before: String?, limit: Int?) async throws -> TimelineProjectList { throw JournalAPIError.notFound }
+    func timelineProjects(before: String?, limit: Int?) async throws -> TimelineProjectList {
+        let page = lock.withLock { () -> TimelineProjectList? in
+            state.projectsCalls.append(before)
+            return state.projectPages[before]
+        }
+        await holdIfGated("projects:\(before ?? "nil")")
+        guard let page else { throw JournalAPIError.notFound }
+        return page
+    }
+
     func timelineProject(_ id: String) async throws -> TimelineProjectPage { throw JournalAPIError.notFound }
     func timelineProjectHistory(_ id: String, before: String?, limit: Int?) async throws
         -> (weeks: [TimelineHistoryWeek], nextBefore: String?) { throw JournalAPIError.notFound }
@@ -522,6 +539,131 @@ final class TimelineViewModelTests: XCTestCase {
         await older.value
         XCTAssertNil(vm.error)
         XCTAssertEqual(vm.week?.week, "2026-11-02")
+    }
+
+    // MARK: - All projects
+
+    private func row(_ n: Int) -> TimelineProjectRow { TimelineProjectRow(project: project(n), lastMovedAt: now, openMissions: 1) }
+
+    /// Two pages of three projects: 1 and 2, then 3.
+    private func scriptProjects(_ fake: FakeTimeline) {
+        fake.projectPages[nil] = TimelineProjectList(total: 3, rows: [row(1), row(2)], nextBefore: "cursor")
+        fake.projectPages["cursor"] = TimelineProjectList(total: 3, rows: [row(3)])
+    }
+
+    func testSelectingAllProjectsLoadsOnceAndPagesWithNextBefore() async {
+        let (vm, fake, _) = make()
+        scriptProjects(fake)
+        await vm.start()
+        XCTAssertNil(vm.allProjects)
+        XCTAssertEqual(vm.content(for: .projects), .loading)
+        XCTAssertFalse(vm.hasContent(for: .projects))
+        await vm.select(.projects)
+        XCTAssertEqual(vm.allProjects?.rows.map(\.project.num), [1, 2])
+        XCTAssertEqual(vm.allProjects?.total, 3)
+        XCTAssertTrue(vm.hasMoreProjects)
+        XCTAssertTrue(vm.hasContent(for: .projects))
+        XCTAssertEqual(vm.content(for: .projects),
+                       .projects(TimelineProjectList(total: 3, rows: [row(1), row(2)], nextBefore: "cursor"), hasMore: true))
+        await vm.loadMoreProjects()
+        XCTAssertEqual(vm.allProjects?.rows.map(\.project.num), [1, 2, 3])
+        XCTAssertEqual(vm.allProjects?.total, 3)
+        XCTAssertFalse(vm.hasMoreProjects)
+        XCTAssertEqual(vm.content(for: .projects),
+                       .projects(TimelineProjectList(total: 3, rows: [row(1), row(2), row(3)]), hasMore: false))
+        await vm.loadMoreProjects()
+        await vm.select(.week("2026-11-02"))
+        await vm.select(.projects)
+        XCTAssertEqual(fake.projectsCalls, [nil, "cursor"], "cached; no extra requests")
+        await vm.refresh()
+        XCTAssertEqual(fake.projectsCalls, [nil, "cursor", nil], "a refresh on the list re-reads its first page")
+        XCTAssertEqual(vm.allProjects?.rows.map(\.project.num), [1, 2])
+    }
+
+    func testAFailedAllProjectsReadSetsError() async {
+        let (vm, _, _) = make()
+        await vm.start()
+        await vm.select(.projects)
+        XCTAssertNil(vm.allProjects)
+        XCTAssertNotNil(vm.error)
+        XCTAssertEqual(vm.content(for: .projects), .failed)
+    }
+
+    func testPagingAllProjectsDuringAReloadIsRefused() async {
+        let (vm, fake, _) = make()
+        scriptProjects(fake)
+        await vm.start()
+        await vm.select(.projects)
+        fake.projectPages[nil] = TimelineProjectList(total: 3, rows: [row(1), row(2), row(3)])
+        fake.gate("projects:nil")
+        fake.gate("projects:cursor")
+        let reload = Task { await vm.refresh() }
+        await fake.waitUntilHeld("projects:nil")
+        let paging = Task { await vm.loadMoreProjects() }
+        await settle()
+        fake.release("projects:nil")
+        await reload.value
+        fake.release("projects:cursor")
+        await paging.value
+        XCTAssertEqual(vm.allProjects?.rows.map(\.project.num), [1, 2, 3])
+        XCTAssertEqual(fake.projectsCalls, [nil, nil], "no page was requested off the old cursor")
+    }
+
+    func testAnAllProjectsPageFetchedBeforeARefreshIsDropped() async {
+        let (vm, fake, _) = make()
+        scriptProjects(fake)
+        await vm.start()
+        await vm.select(.projects)
+        fake.gate("projects:cursor")
+        let paging = Task { await vm.loadMoreProjects() }
+        await fake.waitUntilHeld("projects:cursor")
+        fake.projectPages[nil] = TimelineProjectList(total: 3, rows: [row(1), row(2), row(3)])
+        await vm.refresh()
+        fake.release("projects:cursor")
+        await paging.value
+        XCTAssertEqual(vm.allProjects?.rows.map(\.project.num), [1, 2, 3], "no duplicate tail")
+        XCTAssertFalse(vm.hasMoreProjects)
+    }
+
+    func testLoadCountsReadsTheFirstAllProjectsPageForTheSidebar() async {
+        let (vm, fake, _) = make()
+        scriptProjects(fake)
+        await vm.start()
+        await vm.loadCounts()
+        XCTAssertEqual(vm.allProjects?.total, 3)
+        XCTAssertEqual(vm.allProjects?.rows.map(\.project.num), [1, 2])
+        await vm.select(.projects)
+        await vm.loadCounts()
+        XCTAssertEqual(fake.projectsCalls, [nil], "a visit after the counts, and fresh counts, read nothing again")
+        await vm.loadMoreProjects()
+        XCTAssertEqual(vm.allProjects?.rows.map(\.project.num), [1, 2, 3], "the counts' page pages on")
+        await vm.refresh()
+        await vm.loadCounts()
+        XCTAssertEqual(fake.projectsCalls, [nil, "cursor", nil], "after a refresh the counts re-read")
+        XCTAssertEqual(vm.allProjects?.rows.map(\.project.num), [1, 2])
+    }
+
+    func testAnAllProjectsCountFromBeforeARefreshIsDropped() async {
+        let (vm, fake, _) = make()
+        scriptProjects(fake)
+        await vm.start()
+        fake.gate("projects:nil")
+        let counts = Task { await vm.loadCounts() }
+        await fake.waitUntilHeld("projects:nil")
+        await vm.refresh()
+        fake.release("projects:nil")
+        await counts.value
+        XCTAssertNil(vm.allProjects, "the pre-refresh count is dropped")
+    }
+
+    func testCountsOnAJournalWithoutAllProjectsStayQuiet() async {
+        let (vm, fake, _) = make()
+        fake.quiet = StalledList(total: 5, rows: [])
+        await vm.start()
+        await vm.loadCounts()
+        XCTAssertNil(vm.allProjects)
+        XCTAssertNil(vm.error, "a count is a hint: no alert")
+        XCTAssertEqual(vm.quiet?.total, 5, "the other counts still land")
     }
 
     func testFlagKey() {
