@@ -65,7 +65,7 @@ final class StackExitTests: XCTestCase {
     /// once, so no pushed page is without it.
     func test_everyStackStatesTheExitOnItsDestinations() throws {
         let stacks = [
-            ("Matron/App/AppShellView.swift", ["For you", "Projects", "Search"]),
+            ("Matron/App/AppShellView.swift", ["Boxes", "For you", "Projects", "Search"]),
             ("Matron/Features/ChatList/ChatListView.swift", ["Conversations"]),
             ("Matron/Features/Coordinator/CoordinatorTabView.swift", ["the Coordinator"]),
         ]

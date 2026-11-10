@@ -481,12 +481,15 @@ struct AppShellView: View {
             BoxesScreen(viewModel: boxesVM, deps: deps, session: session, isActive: nav.tab == .boxes,
                         onOpenChat: { nav.openChat($0) })
                 .toolbar { if showsBackToMore { backToMore } }
-                .navigationDestination(for: String.self) { value in
-                    if let id = BoxRoute.id(from: value),
-                       let row = boxesVM.rows().first(where: { $0.id == id }) {
-                        BoxSessionsView(row: row, onOpenChat: { nav.openChat($0) })
-                    }
+                .navigationDestination(for: String.self) {
+                    boxesDestination($0).leadsBackToTheRoot(named: "Boxes")
                 }
+        }
+    }
+
+    @ViewBuilder private func boxesDestination(_ value: String) -> some View {
+        if let id = BoxRoute.id(from: value), let row = boxesVM.rows().first(where: { $0.id == id }) {
+            BoxSessionsView(row: row, onOpenChat: { nav.openChat($0) })
         }
     }
 
