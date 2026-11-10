@@ -158,6 +158,12 @@ public enum TimelineDemoData {
                    TimelineItemRef(id: "it_demo_53", num: 53, title: "Should sepia follow the system’s night mode?")],
         needsYouTotal: 5, media: image("strip", "theme-strip.png"), weeks: 9, missionsOpen: 2, missionsDone: 11, files: 24)
 
+    /// Every item waiting on `summaryPageManyWaiting`: the three it lists
+    /// and the two it only counts.
+    public static let summaryAllWaiting: [TimelineItemRef] = summaryPageManyWaiting.needsYou + [
+        TimelineItemRef(id: "it_demo_54", num: 54, title: "Name the high-contrast theme"),
+        TimelineItemRef(id: "it_demo_55", num: 55, title: "Which three themes go in the screenshots?")]
+
     /// Three weeks of "Docs site launch": this week with its card and more
     /// milestones than it lists, last week with a sentence and no picture,
     /// and an older week the project moved in without a card.

@@ -169,6 +169,45 @@ final class TimelineSnapshotTests: XCTestCase {
         XCTAssertNil(TimelineFormat.moreWaiting(short), "a total below the rows sent")
     }
 
+    /// "and 2 more" opens in place once every waiting item is known: the
+    /// rows the page lists stay where they are, the rest follow, and the
+    /// row itself goes. Until they are known it can't be opened.
+    func testAllWaitingOpensInPlace() {
+        let page = D.summaryPageManyWaiting, all = D.summaryAllWaiting
+        let unknown = TimelineFormat.waitingList(page, all: nil, expanded: false)
+        XCTAssertEqual(unknown.rows, page.needsYou)
+        XCTAssertEqual(unknown.more, "and 2 more")
+        XCTAssertFalse(unknown.canExpand, "the rest are not loaded yet")
+        XCTAssertEqual(TimelineFormat.waitingList(page, all: nil, expanded: true), unknown, "nothing to open onto")
+
+        let closed = TimelineFormat.waitingList(page, all: all, expanded: false)
+        XCTAssertEqual(closed.rows, page.needsYou, "the page as it was")
+        XCTAssertEqual(closed.more, "and 2 more")
+        XCTAssertTrue(closed.canExpand)
+
+        let open = TimelineFormat.waitingList(page, all: all, expanded: true)
+        XCTAssertEqual(open.rows.map(\.num), [51, 52, 53, 54, 55])
+        XCTAssertNil(open.more)
+        XCTAssertFalse(open.canExpand)
+
+        // The full list in another order, and without one the page lists:
+        // the page's rows keep their places and none is lost.
+        let shuffled = [all[4], all[1], all[3]]
+        XCTAssertEqual(TimelineFormat.waitingList(page, all: shuffled, expanded: true).rows.map(\.num), [51, 52, 53, 55, 54])
+
+        // A full list with nothing the page doesn't show opens onto nothing.
+        let same = TimelineFormat.waitingList(page, all: page.needsYou, expanded: true)
+        XCTAssertEqual(same.rows, page.needsYou)
+        XCTAssertEqual(same.more, "and 2 more")
+        XCTAssertFalse(same.canExpand)
+
+        // Everything listed: no row, opened or not.
+        let whole = TimelineFormat.waitingList(D.summaryPage, all: D.summaryPage.needsYou, expanded: false)
+        XCTAssertEqual(whole.rows, D.summaryPage.needsYou)
+        XCTAssertNil(whole.more)
+        XCTAssertFalse(whole.canExpand)
+    }
+
     /// The week being lived is this week, the one before it last week,
     /// any other its dates.
     func testHistoryWeekTitles() {
@@ -342,9 +381,11 @@ final class TimelineSnapshotTests: XCTestCase {
 
     // MARK: Project page
 
-    private func summary(_ page: TimelineProjectPage) -> some View {
+    private func summary(_ page: TimelineProjectPage, allWaiting: [TimelineItemRef]? = nil,
+                         showsAllWaiting: Bool = false) -> some View {
         ProjectSummaryView(page: page, image: page.media.flatMap { Self.images[$0.blobID] },
                            pixelSize: page.media.flatMap { D.sizes[$0.blobID] },
+                           allWaiting: allWaiting, showsAllWaiting: showsAllWaiting,
                            onOpenItem: { _ in }, onOpenSection: { _ in }) {
             ProjectActionsMenu(isOpen: page.isOpen, isLoaded: true, unfiled: D.docsProjectPage.closedMissions,
                                mergeTargets: [],
@@ -371,10 +412,23 @@ final class TimelineSnapshotTests: XCTestCase {
         assertPage({ summary(D.summaryPageBare) }, named: "project-summary-bare")
     }
 
-    /// More waiting than the page lists: "and 2 more" under the rows. Its
-    /// very wide picture is shown whole.
+    /// More waiting than the page lists: "and 2 more" under the rows, which
+    /// opens downwards. Its very wide picture is shown whole.
     func testProjectSummaryManyWaiting() {
-        assertPage({ summary(D.summaryPageManyWaiting) }, named: "project-summary-waiting")
+        assertPage({ summary(D.summaryPageManyWaiting, allWaiting: D.summaryAllWaiting) },
+                   named: "project-summary-waiting")
+    }
+
+    /// Before the rest are known "and 2 more" only counts them: no mark
+    /// says it opens.
+    func testProjectSummaryManyWaitingNotLoaded() {
+        assertPage({ summary(D.summaryPageManyWaiting) }, named: "project-summary-waiting-unloaded")
+    }
+
+    /// "and 2 more" opened: every waiting item, and no row counting more.
+    func testProjectSummaryAllWaiting() {
+        assertPage({ summary(D.summaryPageManyWaiting, allWaiting: D.summaryAllWaiting, showsAllWaiting: true) },
+                   named: "project-summary-waiting-all")
     }
 
     /// Week by week: the card's sentence and picture when there was one,

@@ -206,6 +206,23 @@ public enum TimelineFormat {
         return more > 0 ? "and \(more) more" : nil
     }
 
+    /// What "Needs you" lists. The page carries the newest waiting items
+    /// and a count of them all; `all` is every one, once the host has
+    /// them. Closed, the list is the page's rows and "and N more", which
+    /// can open when `all` has an item the page doesn't list. Open, the
+    /// page's rows keep their places, the rest of `all` follow, and the
+    /// row counting more goes.
+    public static func waitingList(_ page: TimelineProjectPage, all: [TimelineItemRef]?,
+                                   expanded: Bool) -> ProjectWaitingList {
+        let listed = Set(page.needsYou.map(\.id))
+        let rest = (all ?? []).filter { !listed.contains($0.id) }
+        guard let more = moreWaiting(page), !rest.isEmpty else {
+            return ProjectWaitingList(rows: page.needsYou, more: moreWaiting(page), canExpand: false)
+        }
+        if expanded { return ProjectWaitingList(rows: page.needsYou + rest, more: nil, canExpand: false) }
+        return ProjectWaitingList(rows: page.needsYou, more: more, canExpand: true)
+    }
+
     /// A week of a project's history: the week `now` falls in is this
     /// week, the one that ended within the last seven days last week, any
     /// other its dates ("19 – 25 Oct").

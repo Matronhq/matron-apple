@@ -299,6 +299,11 @@ struct TimelineStoryHost: View {
     private func summaryView(_ page: TimelineProjectPage) -> some View {
         ProjectSummaryView(page: page, image: page.media.flatMap { images.images[$0.blobID] },
                            pixelSize: page.media.flatMap { images.sizes[$0.blobID] },
+                           // Every waiting item, which "and N more" lists:
+                           // the page read carries only the newest.
+                           allWaiting: detail?.page?.needsYou.map {
+                               TimelineItemRef(id: $0.id, num: $0.num, title: $0.title)
+                           },
                            onOpenItem: onOpenItem, onOpenSection: onOpenSection) {
             ProjectActionsMenu(isOpen: page.isOpen, isLoaded: detail?.page != nil, asked: asked,
                                unfiled: detail?.page?.unfiledMissions ?? [],

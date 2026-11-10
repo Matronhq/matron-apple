@@ -6,28 +6,54 @@ public enum ProjectSection: String, Hashable, Sendable, CaseIterable {
     case history, missions, files
 }
 
+/// The rows under "Needs you" on a project's page
+/// (`TimelineFormat.waitingList`).
+public struct ProjectWaitingList: Equatable, Sendable {
+    public let rows: [TimelineItemRef]
+    /// "and 2 more", while waiting items are counted but not listed.
+    public let more: String?
+    /// Whether "and N more" opens onto the rest.
+    public let canExpand: Bool
+
+    public init(rows: [TimelineItemRef], more: String?, canExpand: Bool) {
+        self.rows = rows; self.more = more; self.canExpand = canExpand
+    }
+}
+
 /// A project's page, kept light: its picture (no area without one), its
 /// name with "···" beside it, one sentence on where it stands, what is
 /// next, what waits on the user, then three rows that open the detail: the
 /// weeks it moved in, its missions and its files. A row with nothing
-/// behind it is dimmed and can't be opened. A pure leaf: hosts pass the
+/// behind it is dimmed and can't be opened. The page lists the newest
+/// items waiting and counts the rest ("and 2 more"): that row lists them
+/// all in place, once the host has them. A pure leaf: hosts pass the
 /// page, its loaded picture and the openers, fill "···" with `menu`, and
 /// provide the way back.
 public struct ProjectSummaryView<MenuContent: View>: View {
     let page: TimelineProjectPage
     let image: Image?
     let pixelSize: CGSize?
+    let allWaiting: [TimelineItemRef]?
     let onOpenItem: (String) -> Void
     let onOpenSection: (ProjectSection) -> Void
     let menu: MenuContent
 
+    /// "and N more" was opened: every waiting item is listed.
+    @State private var showsAllWaiting: Bool
+
     /// `pixelSize` is the picture's own size, when the host knows it.
+    /// `allWaiting` is every item of the project waiting on the user, or
+    /// nil until the host has them; `showsAllWaiting` starts the page with
+    /// them listed.
     public init(page: TimelineProjectPage, image: Image?, pixelSize: CGSize?,
+                allWaiting: [TimelineItemRef]? = nil, showsAllWaiting: Bool = false,
                 onOpenItem: @escaping (String) -> Void, onOpenSection: @escaping (ProjectSection) -> Void,
                 @ViewBuilder menu: () -> MenuContent) {
         self.page = page; self.image = image; self.pixelSize = pixelSize
+        self.allWaiting = allWaiting
         self.onOpenItem = onOpenItem; self.onOpenSection = onOpenSection
         self.menu = menu()
+        _showsAllWaiting = State(initialValue: showsAllWaiting)
     }
 
     private typealias M = ProjectPageMetrics
@@ -113,22 +139,31 @@ public struct ProjectSummaryView<MenuContent: View>: View {
     // MARK: Needs you
 
     @ViewBuilder private var waiting: some View {
-        if !page.needsYou.isEmpty {
+        let list = TimelineFormat.waitingList(page, all: allWaiting, expanded: showsAllWaiting)
+        if !list.rows.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 ProjectPageHeading(TimelineFormat.needsYouHeading)
-                ForEach(page.needsYou, id: \.id) { item in
+                ForEach(list.rows, id: \.id) { item in
                     Button { onOpenItem(item.id) } label: { waitingRow(item) }
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("projects.summary.waiting.\(item.num)")
                 }
-                if let more = TimelineFormat.moreWaiting(page) {
-                    Button { onOpenSection(.missions) } label: {
-                        ProjectPageRow { Text(more).foregroundStyle(.secondary) }
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("projects.summary.waiting.more")
-                }
+                if let more = list.more { moreWaitingRow(more, opens: list.canExpand) }
             }
+        }
+    }
+
+    /// "and 2 more": lists them in place when they are known, and until
+    /// then only counts them.
+    @ViewBuilder private func moreWaitingRow(_ more: String, opens: Bool) -> some View {
+        let row = ProjectPageRow(mark: opens ? .opensInPlace : nil) { Text(more).foregroundStyle(.secondary) }
+        if opens {
+            Button { showsAllWaiting = true } label: { row }
+                .buttonStyle(.plain)
+                .accessibilityHint("Shows every item waiting for you")
+                .accessibilityIdentifier("projects.summary.waiting.more")
+        } else {
+            row.accessibilityIdentifier("projects.summary.waiting.more")
         }
     }
 
@@ -174,8 +209,10 @@ public struct ProjectSummaryView<MenuContent: View>: View {
 
 public extension ProjectSummaryView where MenuContent == EmptyView {
     init(page: TimelineProjectPage, image: Image?, pixelSize: CGSize?,
+         allWaiting: [TimelineItemRef]? = nil, showsAllWaiting: Bool = false,
          onOpenItem: @escaping (String) -> Void, onOpenSection: @escaping (ProjectSection) -> Void) {
-        self.init(page: page, image: image, pixelSize: pixelSize, onOpenItem: onOpenItem,
+        self.init(page: page, image: image, pixelSize: pixelSize, allWaiting: allWaiting,
+                  showsAllWaiting: showsAllWaiting, onOpenItem: onOpenItem,
                   onOpenSection: onOpenSection) { EmptyView() }
     }
 }
@@ -194,14 +231,23 @@ struct ProjectPageHeading: View {
     }
 }
 
-/// A row of a project's page that opens something: its content, an
-/// optional count at the trailing edge, and a chevron.
+/// A row of a project's page: its content, an optional count at the
+/// trailing edge, and the mark for what a tap does.
 struct ProjectPageRow<Content: View>: View {
+    /// What the row does: opens a page, or lists more in place.
+    enum Mark {
+        case opensPage, opensInPlace
+
+        var symbol: String { self == .opensPage ? "chevron.right" : "chevron.down" }
+    }
+
     let detail: String?
+    /// nil for a row that opens nothing.
+    let mark: Mark?
     let content: Content
 
-    init(detail: String? = nil, @ViewBuilder content: () -> Content) {
-        self.detail = detail; self.content = content()
+    init(detail: String? = nil, mark: Mark? = .opensPage, @ViewBuilder content: () -> Content) {
+        self.detail = detail; self.mark = mark; self.content = content()
     }
 
     var body: some View {
@@ -212,8 +258,10 @@ struct ProjectPageRow<Content: View>: View {
                 Text(detail).font(ProjectPageMetrics.detailFont.monospacedDigit()).foregroundStyle(.secondary)
                     .lineLimit(1).fixedSize()
             }
-            Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
-                .accessibilityHidden(true)
+            if let mark {
+                Image(systemName: mark.symbol).font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
+            }
         }
         .font(ProjectPageMetrics.rowFont)
         .padding(.horizontal, 14).padding(.vertical, 11)
