@@ -666,7 +666,8 @@ public actor ItemsSync {
 
     /// `action` and `replyTo` are optional so rows queued by a build that
     /// predates item (or comment) action buttons still decode.
-    private struct CommentPayload: Codable { var body: String; var attachments: [TrackerAttachment]; var action: String?; var replyTo: String? }
+    /// `replaces` (an edited resend's cancelled original) likewise.
+    private struct CommentPayload: Codable { var body: String; var attachments: [TrackerAttachment]; var action: String?; var replyTo: String?; var replaces: String? }
     /// Only the fields the apps-side create flow currently needs.
     /// `labels`/`links`/`awaiting`/`position`/`supersedes` are deliberately
     /// not round-tripped through the outbox — `enqueueCreate` never
@@ -691,8 +692,15 @@ public actor ItemsSync {
     /// kicked in the background, as `enqueueCreate` does.
     @discardableResult
     public func queueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async -> Bool {
+        await queueComment(itemID: itemID, localID: localID, body: body, attachments: attachments, replaces: nil)
+    }
+
+    /// `queueComment` for an edited resend: `replaces` is the cancelled
+    /// reply it stands in for, and rides the outbox row to the POST.
+    @discardableResult
+    public func queueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment], replaces: String?) async -> Bool {
         guard !stopped else { return false }
-        guard insertCommentRow(itemID: itemID, localID: localID, body: body, attachments: attachments, action: nil) else { return false }
+        guard insertCommentRow(itemID: itemID, localID: localID, body: body, attachments: attachments, action: nil, replaces: replaces) else { return false }
         Task { [weak self] in await self?.drainOutbox() }
         return true
     }
@@ -719,15 +727,17 @@ public actor ItemsSync {
     }
 
     @discardableResult
-    private func insertCommentRow(itemID: String, localID: String, body: String, attachments: [TrackerAttachment], action: String?, replyTo: String? = nil) -> Bool {
+    private func insertCommentRow(itemID: String, localID: String, body: String, attachments: [TrackerAttachment], action: String?, replyTo: String? = nil, replaces: String? = nil) -> Bool {
         // One timestamp for every part: the outbox orders by time, then
         // local id, and the parts' ids sort in order and together, so no
         // other reply queued in the same instant can land between them.
         let now = Int64(Date().timeIntervalSince1970 * 1000)
         let rows = Self.commentBatches(localID: localID, body: body, attachments: attachments, action: action, replyTo: replyTo)
             .map { batch in
+                // Only the reply's first part stands in for the original.
                 let payload = (try? String(data: JSONEncoder().encode(CommentPayload(body: batch.body, attachments: batch.attachments,
-                                                                                     action: batch.action, replyTo: batch.replyTo)),
+                                                                                     action: batch.action, replyTo: batch.replyTo,
+                                                                                     replaces: batch.localID == localID ? replaces : nil)),
                                            encoding: .utf8)) ?? "{}"
                 return ItemOutboxRecord(localID: batch.localID, itemID: itemID, op: "comment", payloadJSON: payload,
                                         createdAt: now, attempts: 0, lastError: nil)
@@ -962,7 +972,7 @@ public actor ItemsSync {
     /// under that key (matron-journal `addComment`).
     private func postComment(itemID: String, payload p: CommentPayload, idempotencyKey: String) async throws -> (item: TrackerItem, comment: TrackerComment?) {
         do {
-            return try await api.commentItem(id: itemID, body: p.body, attachments: p.attachments, action: p.action, replyTo: p.replyTo, idempotencyKey: idempotencyKey)
+            return try await api.commentItem(id: itemID, body: p.body, attachments: p.attachments, action: p.action, replyTo: p.replyTo, replaces: p.replaces, idempotencyKey: idempotencyKey)
         } catch JournalAPIError.http(status: 400, message: "unknown_action") where p.action != nil && !stopped {
             Self.logger.notice("outbox row \(idempotencyKey, privacy: .public): action no longer offered — re-sending as a typed reply")
             return try await api.commentItem(id: itemID, body: p.body, attachments: p.attachments, action: nil, replyTo: nil, idempotencyKey: idempotencyKey)

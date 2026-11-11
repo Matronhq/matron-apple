@@ -521,7 +521,7 @@ struct MacItemDetailHost: View {
     /// own body's attachments, so it is always one of these.
     private var imageAttachments: [TrackerAttachment] {
         guard let item else { return [] }
-        return (item.attachments + (viewModel?.comments.flatMap(\.attachments) ?? [])).filter(\.isImage)
+        return (item.attachments + (viewModel?.threadComments.flatMap(\.attachments) ?? [])).filter(\.isImage)
     }
     /// The title-bar strip's item header, on the Decisions page only — see
     /// `MacItemHeaderProps`. `nil` until the item has loaded.
@@ -548,7 +548,7 @@ struct MacItemDetailHost: View {
                 if let slot, let viewModel = slot.viewModel, let item = viewModel.item {
                     MacItemNativeThread(detail: ItemDetailView(
                         model: .init(
-                            item: item, comments: viewModel.comments,
+                            item: item, comments: viewModel.threadComments,
                             pending: viewModel.pendingComments.map {
                                 .init(id: $0.localID, body: pendingBody($0), attachmentCount: pendingAttachments($0),
                                       attempts: $0.attempts, lastError: $0.lastError, attachmentNames: $0.commentAttachmentNames)
@@ -561,7 +561,7 @@ struct MacItemDetailHost: View {
                             // honest UI (Bugbot).
                             context: viewModel.context(currentConvoID: currentConvoID),
                             availableResolutions: viewModel.availableResolutions, isBusy: viewModel.isBusy,
-                            loadedCommentCount: viewModel.loadedCommentCount,
+                            loadedCommentCount: viewModel.threadLoadedCommentCount,
                             spawnConsent: viewModel.spawnConsent,
                             actions: viewModel.offeredActions, selectedAction: viewModel.selectedAction,
                             stagedAttachments: viewModel.stagedAttachments,
@@ -852,7 +852,7 @@ struct MacItemDetailHost: View {
     private func openAttachment(_ a: TrackerAttachment, in item: TrackerItem) {
         guard let deps else { return }
         if a.isImage {
-            let all = item.threadImageAttachments(comments: viewModel?.comments ?? [])
+            let all = item.threadImageAttachments(comments: viewModel?.threadComments ?? [])
             let urls = all.map(mediaURL)
             slot?.galleryPreview = GalleryPreview(gallery: ImageGalleries.urls(
                 urls, names: all.map(\.name), tapped: mediaURL(a), deps: deps, session: session))

@@ -141,10 +141,21 @@ public protocol ItemsProviding: Sendable {
     /// refuses a `reply_to` on its own. `comment` is nil only for a tap
     /// the journal applied as an answer rather than storing it as a reply.
     func commentItem(id: String, body: String, attachments: [TrackerAttachment], action: String?, replyTo: String?, idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment?)
+    /// `commentItem` for an edited resend: `replaces` names the cancelled
+    /// reply the comment stands in for (the journal's `replaces`).
+    func commentItem(id: String, body: String, attachments: [TrackerAttachment], action: String?, replyTo: String?, replaces: String?, idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment?)
     func closeItem(id: String, resolution: ItemResolution, comment: String?) async throws -> TrackerItem
     func reopenItem(id: String, comment: String?) async throws -> TrackerItem
     func rankItem(id: String, _ change: ItemRankChange) async throws -> TrackerItem
     func uploadMedia(_ data: Data, contentType: String) async throws -> String
+}
+
+public extension ItemsProviding {
+    /// A provider that knows nothing of `replaces` posts the reply without
+    /// the link: the words still go.
+    func commentItem(id: String, body: String, attachments: [TrackerAttachment], action: String?, replyTo: String?, replaces: String?, idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment?) {
+        try await commentItem(id: id, body: body, attachments: attachments, action: action, replyTo: replyTo, idempotencyKey: idempotencyKey)
+    }
 }
 
 extension JournalAPI: ItemsProviding {
@@ -177,7 +188,12 @@ extension JournalAPI: ItemsProviding {
     }
 
     public func commentItem(id: String, body: String, attachments: [TrackerAttachment], action: String?, replyTo: String?, idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment?) {
+        try await commentItem(id: id, body: body, attachments: attachments, action: action, replyTo: replyTo, replaces: nil, idempotencyKey: idempotencyKey)
+    }
+
+    public func commentItem(id: String, body: String, attachments: [TrackerAttachment], action: String?, replyTo: String?, replaces: String?, idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment?) {
         var json: [String: Any] = ["body": body]
+        if let replaces { json["replaces"] = replaces }
         if let action {
             json["action"] = action
             if let replyTo { json["reply_to"] = replyTo }

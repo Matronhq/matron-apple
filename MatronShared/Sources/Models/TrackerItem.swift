@@ -542,13 +542,19 @@ public struct TrackerComment: Identifiable, Equatable, Hashable, Sendable {
     /// comments and on every comment copied over by a hand-over. `nil` on
     /// everything written in the user's own log.
     public let attribution: String?
+    /// The cancelled reply this one is the edited version of: the user
+    /// withdrew that reply before it reached the agent and sent this in its
+    /// place. The thread shows this reply alone. `nil` on every other
+    /// comment.
+    public let replaces: String?
 
     public init(id: String, itemID: String, author: ItemAuthor, deviceID: Int64 = 0, kind: Kind = .comment,
                 body: String, attachments: [TrackerAttachment] = [], statusFrom: TrackerItem.StatusSnapshot? = nil,
                 statusTo: TrackerItem.StatusSnapshot? = nil, createdAt: Date = Date(), action: String? = nil,
                 actions: [String] = [], chosenAction: String? = nil, replyTo: String? = nil,
                 deviceName: String? = nil, convoID: String? = nil, convoTitle: String? = nil,
-                contributor: Contributor? = nil, attribution: String? = nil) {
+                contributor: Contributor? = nil, attribution: String? = nil, replaces: String? = nil) {
+        self.replaces = replaces
         self.id = id; self.itemID = itemID; self.author = author; self.deviceID = deviceID; self.kind = kind
         self.body = body; self.attachments = attachments; self.statusFrom = statusFrom; self.statusTo = statusTo
         self.createdAt = createdAt; self.action = action
@@ -608,7 +614,8 @@ public struct TrackerComment: Identifiable, Equatable, Hashable, Sendable {
                   deviceName: json["device_name"] as? String, convoID: json["convo_id"] as? String,
                   convoTitle: json["convo_title"] as? String,
                   contributor: Contributor(json: json["contributor"]),
-                  attribution: json["attribution"] as? String)
+                  attribution: json["attribution"] as? String,
+                  replaces: json["replaces"] as? String ?? meta?["replaces"] as? String)
     }
 
     /// The action buttons the thread offers under this comment: its
@@ -623,6 +630,6 @@ public struct TrackerComment: Identifiable, Equatable, Hashable, Sendable {
                        attachments: attachments, statusFrom: statusFrom, statusTo: statusTo, createdAt: createdAt,
                        action: action, actions: actions, chosenAction: label, replyTo: replyTo,
                        deviceName: deviceName, convoID: convoID, convoTitle: convoTitle,
-                       contributor: contributor, attribution: attribution)
+                       contributor: contributor, attribution: attribution, replaces: replaces)
     }
 }

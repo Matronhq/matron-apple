@@ -77,6 +77,8 @@ public final class ItemDetailViewModel {
         public let localID: String
         public let body: String
         public let attachmentCount: Int
+        /// The cancelled reply this one stands in for, if it is an edit.
+        public var replaces: String?
         /// In the outbox (not just uploading) — only then can it settle.
         public internal(set) var isQueued = false
     }
@@ -370,6 +372,30 @@ public final class ItemDetailViewModel {
     public private(set) var editingQueuedReplyID: String?
     /// What the reply box held before Edit put the reply's text in it.
     private var preEditDraft = ""
+    /// The cancelled reply the text in the reply box is an edit of: the
+    /// next reply sent stands in for it (`replaces`), so the thread shows
+    /// one reply, not the cancelled copy and its edit. Set once an edited
+    /// reply's original is withdrawn, and by Edit and resend.
+    public private(set) var replacingCommentID: String?
+
+    /// The cancelled replies an edit stands in for, whether that edit has
+    /// reached the journal, waits in the outbox or is still being queued.
+    public var replacedCommentIDs: Set<String> {
+        Set(comments.compactMap(\.replaces) + pendingComments.compactMap(\.commentReplaces)
+            + sendingReplies.compactMap(\.replaces))
+    }
+
+    /// `loadedCommentCount` in `threadComments`' terms, for the hosts that
+    /// show that list.
+    public var threadLoadedCommentCount: Int? {
+        loadedCommentCount.map { max(0, $0 - (comments.count - threadComments.count)) }
+    }
+
+    /// The thread as it is shown: `comments` without the cancelled replies
+    /// an edit replaced.
+    public var threadComments: [TrackerComment] {
+        ItemQueuedReplies.hidingReplaced(comments, replaced: replacedCommentIDs)
+    }
 
     private func refreshQueuedReplies() {
         let editable = ItemQueuedReplies.editable(rows: queuedRows, itemID: itemID)
@@ -484,8 +510,14 @@ public final class ItemDetailViewModel {
         let deadline = ContinuousClock.now.advanced(by: sendNowConfirmTimeout)
         while true {
             switch ItemQueuedReplies.derive(rows: queuedRows, itemID: itemID)[commentID] {
-            case .cancelled?, .notDelivered?:
-                // Withdrawn, or never going to be delivered: the edit replaces it.
+            case .cancelled?:
+                // Withdrawn: the edit replaces it, in the thread too.
+                preEditDraft = ""
+                replacingCommentID = commentID
+                return nil
+            case .notDelivered?:
+                // Never going to be delivered, but not withdrawn: the edit
+                // goes as a reply of its own.
                 preEditDraft = ""
                 return nil
             case nil:
@@ -627,7 +659,11 @@ public final class ItemDetailViewModel {
             return
         }
         // A queued tap's body is just its button's label, nothing to edit.
-        if row.commentAction == nil, let body = row.commentBody { restoreToDraft(body) }
+        if row.commentAction == nil, let body = row.commentBody {
+            restoreToDraft(body)
+            // Still an edit of the reply it stood in for.
+            if replacingCommentID == nil { replacingCommentID = row.commentReplaces }
+        }
         // An earlier attempt that failed on this side may still have reached
         // the journal: refetch, so a reply that landed shows in the thread
         // now rather than whenever the item next refreshes.
@@ -636,8 +672,8 @@ public final class ItemDetailViewModel {
 
     /// Edit and resend on a reply that never reached the agent (cancelled,
     /// or its session ended first): its text goes into the reply box to
-    /// edit and send as a new reply. The original stays in the thread,
-    /// marked as not sent.
+    /// edit and send. A cancelled reply's resend takes its place in the
+    /// thread; one whose session ended stays, marked as not sent.
     public func editAndResend(commentID: String) {
         switch queuedReplies[commentID] {
         case .cancelled, .notDelivered: break
@@ -645,6 +681,9 @@ public final class ItemDetailViewModel {
         }
         guard let comment = comments.first(where: { $0.id == commentID }) else { return }
         restoreToDraft(comment.body)
+        // A cancelled reply was withdrawn, so its resend can stand in for
+        // it. One whose session ended is still the agent's to read.
+        if queuedReplies[commentID] == .cancelled { replacingCommentID = commentID }
     }
 
     /// Puts a withdrawn reply's text into the reply box — after whatever is
@@ -995,9 +1034,11 @@ public final class ItemDetailViewModel {
         defer { busyCount -= 1 }
         let pending = draft
         let localID = UUID().uuidString
+        let replaces = replacingCommentID
+        replacingCommentID = nil
         draft = ""
         stagedAttachments = []
-        sendingReplies.append(SendingReply(localID: localID, body: text, attachmentCount: attachments.count))
+        sendingReplies.append(SendingReply(localID: localID, body: text, attachmentCount: attachments.count, replaces: replaces))
         var uploaded: [TrackerAttachment] = []
         do {
             for a in attachments {
@@ -1008,11 +1049,13 @@ public final class ItemDetailViewModel {
             }
         } catch {
             restoreUnsent(attachments, text: pending, note: note, localID: localID)
+            if replacingCommentID == nil { replacingCommentID = replaces }
             return "Couldn't upload an attachment: \(error.localizedDescription)"
         }
         // Returns once the outbox row is durable; delivery is the drain's.
-        let queued = await sync.queueComment(itemID: itemID, localID: localID, body: text, attachments: uploaded)
+        let queued = await sync.queueComment(itemID: itemID, localID: localID, body: text, attachments: uploaded, replaces: replaces)
         guard queued else {
+            if replacingCommentID == nil { replacingCommentID = replaces }
             // Nothing was queued (sync stopped, or the local write failed):
             // the reply comes back whole — text and tray, staged copies
             // intact — as on an upload failure. Its uploaded blobs are

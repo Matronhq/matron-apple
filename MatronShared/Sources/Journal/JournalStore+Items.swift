@@ -163,7 +163,7 @@ public struct ItemCommentRecord: Codable, FetchableRecord, PersistableRecord, Eq
         var from: Snap?; var to: Snap?; var action: String?
         var actions: [String]?; var chosenAction: String?; var replyTo: String?
         var deviceName: String?; var convoID: String?; var convoTitle: String?
-        var contributor: Contributor?; var attribution: String?
+        var contributor: Contributor?; var attribution: String?; var replaces: String?
     }
     private struct Snap: Codable { var state: String?; var resolution: String?; var awaiting: String? }
 
@@ -172,12 +172,12 @@ public struct ItemCommentRecord: Codable, FetchableRecord, PersistableRecord, Eq
         body = c.body; attachmentsJson = enc(c.attachments); createdAt = ms(c.createdAt)
         if c.statusFrom != nil || c.statusTo != nil || c.action != nil || !c.actions.isEmpty || c.chosenAction != nil || c.replyTo != nil
             || c.deviceName != nil || c.convoID != nil || c.convoTitle != nil
-            || c.contributor != nil || c.attribution != nil {
+            || c.contributor != nil || c.attribution != nil || c.replaces != nil {
             let snap = { (s: TrackerItem.StatusSnapshot?) in s.map { Snap(state: $0.state?.rawValue, resolution: $0.resolution?.rawValue, awaiting: $0.awaiting?.rawValue) } }
             metaJson = enc(Meta(from: snap(c.statusFrom), to: snap(c.statusTo), action: c.action,
                                 actions: c.actions.isEmpty ? nil : c.actions, chosenAction: c.chosenAction, replyTo: c.replyTo,
                                 deviceName: c.deviceName, convoID: c.convoID, convoTitle: c.convoTitle,
-                                contributor: c.contributor, attribution: c.attribution))
+                                contributor: c.contributor, attribution: c.attribution, replaces: c.replaces))
         } else { metaJson = nil }
     }
 
@@ -193,7 +193,7 @@ public struct ItemCommentRecord: Codable, FetchableRecord, PersistableRecord, Eq
                               action: meta?.action, actions: meta?.actions ?? [], chosenAction: meta?.chosenAction,
                               replyTo: meta?.replyTo,
                               deviceName: meta?.deviceName, convoID: meta?.convoID, convoTitle: meta?.convoTitle,
-                              contributor: meta?.contributor, attribution: meta?.attribution)
+                              contributor: meta?.contributor, attribution: meta?.attribution, replaces: meta?.replaces)
     }
 }
 
@@ -256,6 +256,10 @@ public struct ItemOutboxRecord: Codable, FetchableRecord, PersistableRecord, Equ
     /// `replyTo`); `nil` for a tap on the item's own buttons and for
     /// every row that is not a tap.
     public var commentReplyTo: String? { commentPayload?["replyTo"] as? String }
+
+    /// The cancelled reply a queued reply is the edited version of (its
+    /// payload's `replaces`); `nil` for every other row.
+    public var commentReplaces: String? { commentPayload?["replaces"] as? String }
 
     private var commentPayload: [String: Any]? {
         guard op == "comment", let data = payloadJSON.data(using: .utf8) else { return nil }
