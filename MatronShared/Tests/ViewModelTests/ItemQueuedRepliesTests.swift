@@ -132,11 +132,12 @@ final class ItemQueuedRepliesTests: XCTestCase {
         func refreshItem(id: String) async { lock.withLock { _refetched.append(id) } }
         func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment], action: String?, replyTo: String?) async {}
         func queueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async -> Bool { true }
-        private var _queued: [(body: String, replaces: String?)] = []
-        /// The typed replies queued, each with the reply it stands in for.
-        var queued: [(body: String, replaces: String?)] { lock.withLock { _queued } }
+        private var _queued: [(body: String, replaces: String?, files: [String])] = []
+        /// The typed replies queued, each with the reply it stands in for
+        /// and its attachments' names.
+        var queued: [(body: String, replaces: String?, files: [String])] { lock.withLock { _queued } }
         func queueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment], replaces: String?) async -> Bool {
-            lock.withLock { _queued.append((body, replaces)) }
+            lock.withLock { _queued.append((body, replaces, attachments.map(\.name))) }
             return true
         }
         func enqueueCreate(localID: String, _ new: NewItem) async -> Bool { true }
@@ -480,6 +481,39 @@ final class ItemQueuedRepliesTests: XCTestCase {
         XCTAssertEqual(vm.threadComments.map(\.id), ["ic_1"])
         XCTAssertEqual(vm.draft, "Use OAuth with PKCE")
         XCTAssertEqual(vm.replacingCommentID, "ic_1")
+    }
+
+    func testAnEditCancelledFromElsewhereStillTakesTheCancelledReplysPlace() async throws {
+        let cards = Cards(); let release = Release(); let store = Store(); let sync = Sync()
+        store.thread = [Self.reply("ic_1", body: "Use OAuth")]
+        let (vm, _, _) = try await make(cards: cards, release: release, store: store, sync: sync)
+        try await waitUntil { vm.comments.count == 1 }
+        cards.land([Self.resendCard(10, prompt: "pr_a", comment: "ic_1")])
+        try await waitUntil { vm.editableQueuedReplies == ["ic_1"] }
+        await vm.editQueuedReply(commentID: "ic_1")
+        vm.draft = "Use OAuth with PKCE"
+        // Cancelled on the card in the conversation, not by Send here.
+        cards.land([Self.resendCard(10, prompt: "pr_a", comment: "ic_1"), Self.release(11, prompt: "pr_a", action: "cancel")])
+        try await waitUntil { vm.editingQueuedReplyID == nil }
+        XCTAssertEqual(vm.replacingCommentID, "ic_1")
+        await vm.submitComment()
+        XCTAssertEqual(sync.queued.map(\.replaces), ["ic_1"])
+        XCTAssertEqual(release.sent.map(\.2), ["edit"], "nothing left to cancel")
+    }
+
+    func testAnEditCarriesTheFilesOfTheReplyItReplaces() async throws {
+        let cards = Cards(); let store = Store(); let sync = Sync()
+        let file = TrackerAttachment(blobRef: "blob_1", mime: "application/pdf", name: "plan.pdf", size: 10)
+        store.thread = [TrackerComment(id: "ic_1", itemID: "it_1", author: .user, body: "See the plan", attachments: [file])]
+        let (vm, _, _) = try await make(cards: cards, store: store, sync: sync)
+        try await waitUntil { vm.comments.count == 1 }
+        cards.land([Self.card(10, prompt: "pr_a", comment: "ic_1"), Self.release(11, prompt: "pr_a", action: "cancel")])
+        try await waitUntil { vm.queuedReplies["ic_1"] == .cancelled }
+        vm.editAndResend(commentID: "ic_1")
+        vm.draft = "See the plan, page 2"
+        await vm.submitComment()
+        XCTAssertEqual(sync.queued.map(\.files), [["plan.pdf"]], "the hidden original's file is not lost")
+        XCTAssertEqual(sync.queued.map(\.replaces), ["ic_1"])
     }
 
     func testOnlyTheUsersOwnRepliesAreEverLeftOut() {

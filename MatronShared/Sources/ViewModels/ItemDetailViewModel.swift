@@ -414,6 +414,12 @@ public final class ItemDetailViewModel {
         if let editing = editingQueuedReplyID {
             switch next[editing] {
             case .queued, .sendFailed: break
+            case .cancelled:
+                // Cancelled from the conversation or another device: it was
+                // withdrawn all the same, so the edit still takes its place.
+                editingQueuedReplyID = nil
+                replacingCommentID = editing
+                error = "That reply was cancelled before the edit was sent. Your edit is still in the reply box."
             default:
                 editingQueuedReplyID = nil
                 error = "That reply left the queue before the edit was sent. Your edit is still in the reply box."
@@ -1038,7 +1044,10 @@ public final class ItemDetailViewModel {
         replacingCommentID = nil
         draft = ""
         stagedAttachments = []
-        sendingReplies.append(SendingReply(localID: localID, body: text, attachmentCount: attachments.count, replaces: replaces))
+        // The reply it stands in for leaves the thread, so its files go
+        // with the edit: already uploaded, they are named again, not re-sent.
+        let carried = replaces.flatMap { id in comments.first { $0.id == id } }?.attachments ?? []
+        sendingReplies.append(SendingReply(localID: localID, body: text, attachmentCount: carried.count + attachments.count, replaces: replaces))
         var uploaded: [TrackerAttachment] = []
         do {
             for a in attachments {
@@ -1049,18 +1058,18 @@ public final class ItemDetailViewModel {
             }
         } catch {
             restoreUnsent(attachments, text: pending, note: note, localID: localID)
-            if replacingCommentID == nil { replacingCommentID = replaces }
+            restoreReplacing(replaces, with: pending)
             return "Couldn't upload an attachment: \(error.localizedDescription)"
         }
         // Returns once the outbox row is durable; delivery is the drain's.
-        let queued = await sync.queueComment(itemID: itemID, localID: localID, body: text, attachments: uploaded, replaces: replaces)
+        let queued = await sync.queueComment(itemID: itemID, localID: localID, body: text, attachments: carried + uploaded, replaces: replaces)
         guard queued else {
-            if replacingCommentID == nil { replacingCommentID = replaces }
             // Nothing was queued (sync stopped, or the local write failed):
             // the reply comes back whole — text and tray, staged copies
             // intact — as on an upload failure. Its uploaded blobs are
             // orphaned; a retry uploads again.
             restoreUnsent(attachments, text: pending, note: note, localID: localID)
+            restoreReplacing(replaces, with: pending)
             return "Couldn't queue your reply."
         }
         attachments.forEach { $0.deleteStagedCopy() }
@@ -1070,6 +1079,14 @@ public final class ItemDetailViewModel {
         }
         settleSendingReplies()
         return nil
+    }
+
+    /// An edit that didn't go out is an edit again only when its own text
+    /// came back to the reply box: something typed meanwhile is a reply of
+    /// its own and must not take the cancelled reply's place.
+    private func restoreReplacing(_ replaces: String?, with pending: String) {
+        guard let replaces, replacingCommentID == nil, draft == pending else { return }
+        replacingCommentID = replaces
     }
 
     /// Puts a reply that didn't go out back in the composer: its
