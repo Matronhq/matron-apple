@@ -372,6 +372,9 @@ public final class ItemDetailViewModel {
     public private(set) var editingQueuedReplyID: String?
     /// What the reply box held before Edit put the reply's text in it.
     private var preEditDraft = ""
+    /// Whether Edit has put the reply's text in the box yet: not while its
+    /// hold is still on its way.
+    private var editTextInBox = false
     /// The cancelled reply the text in the reply box is an edit of: the
     /// next reply sent stands in for it (`replaces`), so the thread shows
     /// one reply, not the cancelled copy and its edit. Set once an edited
@@ -418,6 +421,12 @@ public final class ItemDetailViewModel {
                 // Cancelled from the conversation or another device: it was
                 // withdrawn all the same, so the edit still takes its place.
                 editingQueuedReplyID = nil
+                // Its text goes in the box in the same step when Edit had not
+                // got that far, so a Send can never replace it with
+                // whatever was typed before.
+                if !editTextInBox, let original = comments.first(where: { $0.id == editing }) {
+                    restoreToDraft(original.body)
+                }
                 replacingCommentID = editing
                 error = "That reply was cancelled before the edit was sent. Your edit is still in the reply box."
             default:
@@ -441,6 +450,7 @@ public final class ItemDetailViewModel {
         // Marked as being edited at the tap, so its Send now and Cancel go
         // away while the hold is on its way and can't send the original.
         editingQueuedReplyID = commentID
+        editTextInBox = false
         preEditDraft = draft
         do {
             try await queuedRelease.sendQueuedRelease(convoID: target.convoID, targetSeq: target.seq,
@@ -451,13 +461,8 @@ public final class ItemDetailViewModel {
             return
         }
         // Released (or the edit cancelled) while the hold was on its way.
-        guard editingQueuedReplyID == commentID else {
-            // Cancelled elsewhere meanwhile: the next reply stands in for
-            // it, so its text must be in the box to edit, after anything
-            // already typed there.
-            if replacingCommentID == commentID { restoreToDraft(comment.body) }
-            return
-        }
+        // (A cancel from elsewhere has already put its text in the box.)
+        guard editingQueuedReplyID == commentID else { return }
         switch queuedReplies[commentID] {
         case .queued, .sendFailed: break
         default:
@@ -465,6 +470,7 @@ public final class ItemDetailViewModel {
             return
         }
         draft = comment.body
+        editTextInBox = true
     }
 
     /// Cancel edit: the held reply goes as it was, and the reply box gets

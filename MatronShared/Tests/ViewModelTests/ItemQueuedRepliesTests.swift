@@ -518,9 +518,11 @@ final class ItemQueuedRepliesTests: XCTestCase {
             // Long enough for the view model to take the release in.
             try? await Task.sleep(nanoseconds: 300_000_000)
         }
-        await vm.editQueuedReply(commentID: "ic_1")
-        XCTAssertEqual(vm.replacingCommentID, "ic_1")
-        XCTAssertEqual(vm.draft, "By the way\n\nUse OAuth", "the reply being replaced is in the box, after what was typed")
+        let edit = Task { await vm.editQueuedReply(commentID: "ic_1") }
+        try await waitUntil { vm.replacingCommentID == "ic_1" }
+        XCTAssertEqual(vm.draft, "By the way\n\nUse OAuth", "in the box as soon as it is the reply being replaced, before the hold returns")
+        await edit.value
+        XCTAssertEqual(vm.draft, "By the way\n\nUse OAuth", "and not pasted twice")
     }
 
     func testAnEditCarriesTheFilesOfTheReplyItReplaces() async throws {
