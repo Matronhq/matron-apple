@@ -16,6 +16,19 @@ final class MacMissionsDashboardNavTests: XCTestCase {
         XCTAssertEqual(widths.max, MacNavColumn.width)
     }
 
+    /// Boxes draws no list beside its table, so its sidebar is the nav
+    /// column alone; reserving the list's width left an empty column.
+    func testBoxesCollapsesTheSidebarToTheNavColumn() {
+        XCTAssertTrue(MacChatListView.showsNavColumnOnly(.boxes))
+        XCTAssertTrue(MacChatListView.showsNavColumnOnly(.boxes, timelineShown: true))
+        let widths = MacChatListView.sidebarWidths(for: .boxes)
+        XCTAssertEqual(widths.min, MacNavColumn.width)
+        XCTAssertEqual(widths.ideal, MacNavColumn.width)
+        XCTAssertEqual(widths.max, MacNavColumn.width)
+        XCTAssertTrue(MacChatListView.headerCarriesNavigation(nav: .boxes, columnVisibility: .automatic),
+                      "the 72 pt sidebar has no toolbar room for Back/Forward")
+    }
+
     func testTheDashboardIsTheMissionsPlaceWithNoMission() {
         let place = MacChatListView.place(nav: .missions, selectedSummaryID: "c1", selectedMissionID: nil,
                                           selectedDecisionID: "it_1", paneRoute: .items(path: []),

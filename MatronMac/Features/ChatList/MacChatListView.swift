@@ -303,7 +303,8 @@ struct MacChatListView: View {
                 MacTimelineColumn(state: timeline, onSelect: selectTimelinePlace)
             case .coordinator, .missions, .desk, .boxes:
                 // Full-width detail: the list column collapses to the nav
-                // column alone (the width modifier below shrinks it).
+                // column alone (the width modifier below shrinks it, for
+                // the entries `showsNavColumnOnly` names).
                 Spacer(minLength: 0)
             }
         }
@@ -340,10 +341,12 @@ struct MacChatListView: View {
     /// Entries whose detail takes the full width: the sidebar is the 72 pt
     /// nav column alone. The Coordinator page and
     /// Missions — the dashboard and the mission pages it opens (spec
-    /// 2026-09-28 §3.1). With the timeline shown, Projects has a list
-    /// column like For you.
+    /// 2026-09-28 §3.1) — and Boxes, whose table needs the width and has
+    /// no list to put beside it. With the timeline shown, Projects has a
+    /// list column like For you. Must agree with `sidebarStack`: an entry
+    /// that draws no list there and is missing here keeps an empty column.
     static func showsNavColumnOnly(_ nav: MacNav, timelineShown: Bool = false) -> Bool {
-        nav.isChatPage || (nav == .missions && !timelineShown)
+        nav.isChatPage || nav == .boxes || (nav == .missions && !timelineShown)
     }
 
     /// The place the shell's state describes (spec §1), normalised: only
