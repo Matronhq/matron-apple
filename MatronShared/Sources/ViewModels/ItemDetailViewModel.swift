@@ -451,7 +451,13 @@ public final class ItemDetailViewModel {
             return
         }
         // Released (or the edit cancelled) while the hold was on its way.
-        guard editingQueuedReplyID == commentID else { return }
+        guard editingQueuedReplyID == commentID else {
+            // Cancelled elsewhere meanwhile: the next reply stands in for
+            // it, so its text must be in the box to edit, after anything
+            // already typed there.
+            if replacingCommentID == commentID { restoreToDraft(comment.body) }
+            return
+        }
         switch queuedReplies[commentID] {
         case .queued, .sendFailed: break
         default:

@@ -184,9 +184,12 @@ final class ItemQueuedRepliesTests: XCTestCase {
         var sent: [(String, Int64, String)] { lock.withLock { _sent } }
         var fail: Bool { get { lock.withLock { _fail } } set { lock.withLock { _fail = newValue } } }
         struct Offline: Error {}
+        /// Runs while a release is on its way, before it returns.
+        var onSend: (@Sendable () async -> Void)?
         func sendQueuedRelease(convoID: String, targetSeq: Int64, choice: String) async throws {
             let f = lock.withLock { () -> Bool in _sent.append((convoID, targetSeq, choice)); return _fail }
             if f { throw Offline() }
+            await onSend?()
         }
     }
 
@@ -499,6 +502,25 @@ final class ItemQueuedRepliesTests: XCTestCase {
         await vm.submitComment()
         XCTAssertEqual(sync.queued.map(\.replaces), ["ic_1"])
         XCTAssertEqual(release.sent.map(\.2), ["edit"], "nothing left to cancel")
+    }
+
+    func testACancelWhileTheHoldIsOnItsWayStillPutsTheTextInTheBox() async throws {
+        let cards = Cards(); let release = Release(); let store = Store(); let sync = Sync()
+        store.thread = [Self.reply("ic_1", body: "Use OAuth")]
+        let (vm, _, _) = try await make(cards: cards, release: release, store: store, sync: sync)
+        try await waitUntil { vm.comments.count == 1 }
+        cards.land([Self.resendCard(10, prompt: "pr_a", comment: "ic_1")])
+        try await waitUntil { vm.editableQueuedReplies == ["ic_1"] }
+        vm.draft = "By the way"
+        let cancelled = [Self.resendCard(10, prompt: "pr_a", comment: "ic_1"), Self.release(11, prompt: "pr_a", action: "cancel")]
+        release.onSend = {
+            cards.land(cancelled)
+            // Long enough for the view model to take the release in.
+            try? await Task.sleep(nanoseconds: 300_000_000)
+        }
+        await vm.editQueuedReply(commentID: "ic_1")
+        XCTAssertEqual(vm.replacingCommentID, "ic_1")
+        XCTAssertEqual(vm.draft, "By the way\n\nUse OAuth", "the reply being replaced is in the box, after what was typed")
     }
 
     func testAnEditCarriesTheFilesOfTheReplyItReplaces() async throws {
