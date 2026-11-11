@@ -540,6 +540,22 @@ final class ItemQueuedRepliesTests: XCTestCase {
         XCTAssertEqual(sync.queued.map(\.replaces), ["ic_1"])
     }
 
+    func testACancelledReplyOfFilesAloneIsNotReplacedByTheNextReply() async throws {
+        let cards = Cards(); let store = Store(); let sync = Sync()
+        let file = TrackerAttachment(blobRef: "blob_1", mime: "application/pdf", name: "plan.pdf", size: 10)
+        store.thread = [TrackerComment(id: "ic_1", itemID: "it_1", author: .user, body: "", attachments: [file])]
+        let (vm, _, _) = try await make(cards: cards, store: store, sync: sync)
+        try await waitUntil { vm.comments.count == 1 }
+        cards.land([Self.card(10, prompt: "pr_a", comment: "ic_1"), Self.release(11, prompt: "pr_a", action: "cancel")])
+        try await waitUntil { vm.queuedReplies["ic_1"] == .cancelled }
+        vm.editAndResend(commentID: "ic_1")
+        XCTAssertNil(vm.replacingCommentID, "nothing went into the box, so nothing is an edit of it")
+        vm.draft = "Something else entirely"
+        await vm.submitComment()
+        XCTAssertEqual(sync.queued.map(\.replaces), [nil])
+        XCTAssertEqual(sync.queued.map(\.files), [[]])
+    }
+
     func testOnlyTheUsersOwnRepliesAreEverLeftOut() {
         let mine = Self.reply("ic_1", body: "Use OAuth")
         let agents = TrackerComment(id: "ic_2", itemID: "it_1", author: .agent, body: "Noted")

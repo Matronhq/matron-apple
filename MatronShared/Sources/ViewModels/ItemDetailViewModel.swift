@@ -424,10 +424,13 @@ public final class ItemDetailViewModel {
                 // Its text goes in the box in the same step when Edit had not
                 // got that far, so a Send can never replace it with
                 // whatever was typed before.
-                if !editTextInBox, let original = comments.first(where: { $0.id == editing }) {
-                    restoreToDraft(original.body)
+                let original = comments.first(where: { $0.id == editing })?.body ?? ""
+                if !editTextInBox { restoreToDraft(original) }
+                // A reply that was files alone has put nothing in the box,
+                // so there is no edit to take its place.
+                if editTextInBox || !original.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    replacingCommentID = editing
                 }
-                replacingCommentID = editing
                 error = "That reply was cancelled before the edit was sent. Your edit is still in the reply box."
             default:
                 editingQueuedReplyID = nil
@@ -701,7 +704,11 @@ public final class ItemDetailViewModel {
         restoreToDraft(comment.body)
         // A cancelled reply was withdrawn, so its resend can stand in for
         // it. One whose session ended is still the agent's to read.
-        if queuedReplies[commentID] == .cancelled { replacingCommentID = commentID }
+        // Only with its text in the box to send: a reply that was files
+        // alone puts nothing there, and must not be replaced by whatever
+        // is typed next.
+        let hasText = !comment.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if queuedReplies[commentID] == .cancelled, hasText { replacingCommentID = commentID }
     }
 
     /// Puts a withdrawn reply's text into the reply box — after whatever is
