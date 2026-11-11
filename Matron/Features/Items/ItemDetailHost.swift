@@ -169,11 +169,11 @@ struct ItemDetailHost: View {
                 // covers item + every comment, de-duplicated by `blobRef`,
                 // and its `.task(id:)` re-runs whenever `vm.comments` gains a
                 // new attachment-bearing reply.
-                let images = Self.imageAttachments(item: item, comments: vm.comments)
+                let images = Self.imageAttachments(item: item, comments: vm.threadComments)
                 let detail = ItemDetailView(
                     model: .init(
                         item: item,
-                        comments: vm.comments,
+                        comments: vm.threadComments,
                         pending: vm.pendingComments.map(Self.pending) + Self.sending(vm),
                         // The mission and owner conversation.
                         // `currentConvoID` drops a row that would just point
@@ -184,7 +184,7 @@ struct ItemDetailHost: View {
                         context: vm.context(currentConvoID: currentConvoID),
                         availableResolutions: vm.availableResolutions,
                         isBusy: vm.isBusy,
-                        loadedCommentCount: vm.loadedCommentCount,
+                        loadedCommentCount: vm.threadLoadedCommentCount,
                         spawnConsent: vm.spawnConsent,
                         actions: vm.offeredActions,
                         selectedAction: vm.selectedAction,
@@ -476,7 +476,7 @@ struct ItemDetailHost: View {
                 // Every image in the thread, so a sideways swipe steps to
                 // the next one — the same list and order the Mac viewer's
                 // ←/→ keys walk.
-                let images = viewModel?.item?.threadImageAttachments(comments: viewModel?.comments ?? []) ?? []
+                let images = viewModel?.item?.threadImageAttachments(comments: viewModel?.threadComments ?? []) ?? []
                 let all = images.contains(where: { $0.blobRef == blobRef }) ? images : [attachment]
                 attachmentPreview = .image(ImageGalleries.urls(
                     all.map { mediaURL(for: $0.blobRef) }, names: all.map(\.name), tapped: url,
@@ -491,7 +491,7 @@ struct ItemDetailHost: View {
     /// The markdown preview's Download: the file path a tap on it took
     /// before the preview existed.
     private func downloadMarkdown(_ request: MarkdownPreviewRequest) {
-        let all = (viewModel?.item?.attachments ?? []) + (viewModel?.comments.flatMap(\.attachments) ?? [])
+        let all = (viewModel?.item?.attachments ?? []) + (viewModel?.threadComments.flatMap(\.attachments) ?? [])
         guard let attachment = all.first(where: { $0.blobRef == request.blobRef }) else { return }
         download(attachment)
     }

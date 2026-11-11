@@ -73,6 +73,14 @@ public enum ItemQueuedReplies {
         return Set(cards.filter { !released.contains($0.key) }.values)
     }
 
+    /// `comments` without the cancelled replies an edit stands in for
+    /// (`replaced`, by comment id). Only the user's own replies are ever
+    /// left out, whatever a `replaces` names.
+    public static func hidingReplaced(_ comments: [TrackerComment], replaced: Set<String>) -> [TrackerComment] {
+        guard !replaced.isEmpty else { return comments }
+        return comments.filter { !($0.author == .user && $0.kind == .comment && replaced.contains($0.id)) }
+    }
+
     /// The card choices an edit from the thread sends.
     public static let editChoice = "edit"
     public static let editCancelChoice = "edit_cancel"

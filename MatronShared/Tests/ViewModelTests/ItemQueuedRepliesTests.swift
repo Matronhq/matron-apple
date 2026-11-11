@@ -132,6 +132,14 @@ final class ItemQueuedRepliesTests: XCTestCase {
         func refreshItem(id: String) async { lock.withLock { _refetched.append(id) } }
         func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment], action: String?, replyTo: String?) async {}
         func queueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async -> Bool { true }
+        private var _queued: [(body: String, replaces: String?, files: [String])] = []
+        /// The typed replies queued, each with the reply it stands in for
+        /// and its attachments' names.
+        var queued: [(body: String, replaces: String?, files: [String])] { lock.withLock { _queued } }
+        func queueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment], replaces: String?) async -> Bool {
+            lock.withLock { _queued.append((body, replaces, attachments.map(\.name))) }
+            return true
+        }
         func enqueueCreate(localID: String, _ new: NewItem) async -> Bool { true }
         func supportedStream() async -> AsyncStream<Bool> { AsyncStream { $0.yield(true) } }
         func drainOutbox() async { lock.withLock { _drains += 1 } }
@@ -176,9 +184,12 @@ final class ItemQueuedRepliesTests: XCTestCase {
         var sent: [(String, Int64, String)] { lock.withLock { _sent } }
         var fail: Bool { get { lock.withLock { _fail } } set { lock.withLock { _fail = newValue } } }
         struct Offline: Error {}
+        /// Runs while a release is on its way, before it returns.
+        var onSend: (@Sendable () async -> Void)?
         func sendQueuedRelease(convoID: String, targetSeq: Int64, choice: String) async throws {
             let f = lock.withLock { () -> Bool in _sent.append((convoID, targetSeq, choice)); return _fail }
             if f { throw Offline() }
+            await onSend?()
         }
     }
 
@@ -404,6 +415,162 @@ final class ItemQueuedRepliesTests: XCTestCase {
         XCTAssertEqual(vm.draft, "")
         XCTAssertEqual(vm.queuedReplies["ic_1"], .cancelled)
         XCTAssertNil(vm.error)
+    }
+
+    // MARK: - An edit takes the cancelled reply's place
+
+    func testAnEditedReplyIsQueuedNamingTheCancelledReplyItReplaces() async throws {
+        let cards = Cards(); let release = Release(); let store = Store(); let sync = Sync()
+        store.thread = [Self.reply("ic_1", body: "Use OAuth")]
+        let (vm, _, _) = try await make(cards: cards, release: release, store: store, sync: sync)
+        try await waitUntil { vm.comments.count == 1 }
+        cards.land([Self.resendCard(10, prompt: "pr_a", comment: "ic_1")])
+        try await waitUntil { vm.editableQueuedReplies == ["ic_1"] }
+        await vm.editQueuedReply(commentID: "ic_1")
+        vm.draft = "Use OAuth with PKCE"
+        let send = Task { await vm.submitComment() }
+        try await waitUntil { release.sent.count == 2 }
+        cards.land([Self.resendCard(10, prompt: "pr_a", comment: "ic_1"), Self.release(11, prompt: "pr_a", action: "cancel")])
+        await send.value
+        XCTAssertEqual(sync.queued.map(\.body), ["Use OAuth with PKCE"])
+        XCTAssertEqual(sync.queued.map(\.replaces), ["ic_1"])
+        XCTAssertNil(vm.replacingCommentID, "the next reply is a reply of its own")
+        vm.draft = "And another thing"
+        await vm.submitComment()
+        XCTAssertEqual(sync.queued.map(\.replaces), ["ic_1", nil])
+    }
+
+    func testEditAndResendOnACancelledReplyReplacesIt_oneWhoseSessionEndedDoesNot() async throws {
+        let cards = Cards(); let store = Store(); let sync = Sync()
+        store.thread = [Self.reply("ic_1", body: "Use OAuth"), Self.reply("ic_2", body: "Use SAML")]
+        let (vm, _, _) = try await make(cards: cards, store: store, sync: sync)
+        try await waitUntil { vm.comments.count == 2 }
+        cards.land([Self.card(10, prompt: "pr_a", comment: "ic_1"), Self.release(11, prompt: "pr_a", action: "cancel"),
+                    Self.card(12, prompt: "pr_b", comment: "ic_2"), Self.release(13, prompt: "pr_b", action: "expired")])
+        try await waitUntil { vm.queuedReplies.count == 2 }
+        vm.editAndResend(commentID: "ic_2")
+        XCTAssertNil(vm.replacingCommentID, "a reply that was never withdrawn stays in the thread")
+        await vm.submitComment()
+        vm.editAndResend(commentID: "ic_1")
+        XCTAssertEqual(vm.replacingCommentID, "ic_1")
+        await vm.submitComment()
+        XCTAssertEqual(sync.queued.map(\.replaces), [nil, "ic_1"])
+    }
+
+    func testTheThreadLeavesOutACancelledReplyItsEditReplaced() async throws {
+        let store = Store()
+        store.thread = [Self.reply("ic_1", body: "Use OAuth"),
+                        TrackerComment(id: "ic_2", itemID: "it_1", author: .user, body: "Use OAuth with PKCE", replaces: "ic_1")]
+        let (vm, _, _) = try await make(store: store)
+        try await waitUntil { vm.comments.count == 2 }
+        XCTAssertEqual(vm.threadComments.map(\.id), ["ic_2"])
+        XCTAssertEqual(vm.threadLoadedCommentCount, 1)
+    }
+
+    func testAnEditStillWaitingInTheOutboxAlreadyHidesTheReplyItReplaces() async throws {
+        let store = Store()
+        store.thread = [Self.reply("ic_1", body: "Use OAuth")]
+        store.outbox = [ItemOutboxRecord(localID: "L1", itemID: "it_1", op: "comment",
+                                         payloadJSON: #"{"body":"Use OAuth with PKCE","attachments":[],"replaces":"ic_1"}"#,
+                                         createdAt: 1, attempts: 1, lastError: "Server error (HTTP 502).")]
+        let (vm, _, sync) = try await make(store: store)
+        try await waitUntil { vm.comments.count == 1 && vm.pendingComments.count == 1 }
+        XCTAssertEqual(vm.threadComments, [], "one reply on screen: the edit, waiting to send")
+        // Cancelling the waiting edit brings the original back, and the
+        // text is still an edit of it.
+        store.outbox = []
+        await vm.cancelPendingReply(localID: "L1")
+        XCTAssertEqual(sync.cancelled, ["L1"])
+        XCTAssertEqual(vm.threadComments.map(\.id), ["ic_1"])
+        XCTAssertEqual(vm.draft, "Use OAuth with PKCE")
+        XCTAssertEqual(vm.replacingCommentID, "ic_1")
+    }
+
+    func testAnEditCancelledFromElsewhereStillTakesTheCancelledReplysPlace() async throws {
+        let cards = Cards(); let release = Release(); let store = Store(); let sync = Sync()
+        store.thread = [Self.reply("ic_1", body: "Use OAuth")]
+        let (vm, _, _) = try await make(cards: cards, release: release, store: store, sync: sync)
+        try await waitUntil { vm.comments.count == 1 }
+        cards.land([Self.resendCard(10, prompt: "pr_a", comment: "ic_1")])
+        try await waitUntil { vm.editableQueuedReplies == ["ic_1"] }
+        await vm.editQueuedReply(commentID: "ic_1")
+        vm.draft = "Use OAuth with PKCE"
+        // Cancelled on the card in the conversation, not by Send here.
+        cards.land([Self.resendCard(10, prompt: "pr_a", comment: "ic_1"), Self.release(11, prompt: "pr_a", action: "cancel")])
+        try await waitUntil { vm.editingQueuedReplyID == nil }
+        XCTAssertEqual(vm.replacingCommentID, "ic_1")
+        await vm.submitComment()
+        XCTAssertEqual(sync.queued.map(\.replaces), ["ic_1"])
+        XCTAssertEqual(release.sent.map(\.2), ["edit"], "nothing left to cancel")
+    }
+
+    func testACancelWhileTheHoldIsOnItsWayStillPutsTheTextInTheBox() async throws {
+        let cards = Cards(); let release = Release(); let store = Store(); let sync = Sync()
+        store.thread = [Self.reply("ic_1", body: "Use OAuth")]
+        let (vm, _, _) = try await make(cards: cards, release: release, store: store, sync: sync)
+        try await waitUntil { vm.comments.count == 1 }
+        cards.land([Self.resendCard(10, prompt: "pr_a", comment: "ic_1")])
+        try await waitUntil { vm.editableQueuedReplies == ["ic_1"] }
+        vm.draft = "By the way"
+        let cancelled = [Self.resendCard(10, prompt: "pr_a", comment: "ic_1"), Self.release(11, prompt: "pr_a", action: "cancel")]
+        release.onSend = {
+            cards.land(cancelled)
+            // Long enough for the view model to take the release in.
+            try? await Task.sleep(nanoseconds: 300_000_000)
+        }
+        let edit = Task { await vm.editQueuedReply(commentID: "ic_1") }
+        try await waitUntil { vm.replacingCommentID == "ic_1" }
+        XCTAssertEqual(vm.draft, "By the way\n\nUse OAuth", "in the box as soon as it is the reply being replaced, before the hold returns")
+        await edit.value
+        XCTAssertEqual(vm.draft, "By the way\n\nUse OAuth", "and not pasted twice")
+    }
+
+    func testAnEditCarriesTheFilesOfTheReplyItReplaces() async throws {
+        let cards = Cards(); let store = Store(); let sync = Sync()
+        let file = TrackerAttachment(blobRef: "blob_1", mime: "application/pdf", name: "plan.pdf", size: 10)
+        store.thread = [TrackerComment(id: "ic_1", itemID: "it_1", author: .user, body: "See the plan", attachments: [file])]
+        let (vm, _, _) = try await make(cards: cards, store: store, sync: sync)
+        try await waitUntil { vm.comments.count == 1 }
+        cards.land([Self.card(10, prompt: "pr_a", comment: "ic_1"), Self.release(11, prompt: "pr_a", action: "cancel")])
+        try await waitUntil { vm.queuedReplies["ic_1"] == .cancelled }
+        vm.editAndResend(commentID: "ic_1")
+        vm.draft = "See the plan, page 2"
+        await vm.submitComment()
+        XCTAssertEqual(sync.queued.map(\.files), [["plan.pdf"]], "the hidden original's file is not lost")
+        XCTAssertEqual(sync.queued.map(\.replaces), ["ic_1"])
+    }
+
+    func testACancelledReplyOfFilesAloneIsNotReplacedByTheNextReply() async throws {
+        let cards = Cards(); let store = Store(); let sync = Sync()
+        let file = TrackerAttachment(blobRef: "blob_1", mime: "application/pdf", name: "plan.pdf", size: 10)
+        store.thread = [TrackerComment(id: "ic_1", itemID: "it_1", author: .user, body: "", attachments: [file])]
+        let (vm, _, _) = try await make(cards: cards, store: store, sync: sync)
+        try await waitUntil { vm.comments.count == 1 }
+        cards.land([Self.card(10, prompt: "pr_a", comment: "ic_1"), Self.release(11, prompt: "pr_a", action: "cancel")])
+        try await waitUntil { vm.queuedReplies["ic_1"] == .cancelled }
+        vm.editAndResend(commentID: "ic_1")
+        XCTAssertNil(vm.replacingCommentID, "nothing went into the box, so nothing is an edit of it")
+        vm.draft = "Something else entirely"
+        await vm.submitComment()
+        XCTAssertEqual(sync.queued.map(\.replaces), [nil])
+        XCTAssertEqual(sync.queued.map(\.files), [[]])
+    }
+
+    func testOnlyTheUsersOwnRepliesAreEverLeftOut() {
+        let mine = Self.reply("ic_1", body: "Use OAuth")
+        let agents = TrackerComment(id: "ic_2", itemID: "it_1", author: .agent, body: "Noted")
+        XCTAssertEqual(ItemQueuedReplies.hidingReplaced([mine, agents], replaced: ["ic_1", "ic_2"]).map(\.id), ["ic_2"])
+        XCTAssertEqual(ItemQueuedReplies.hidingReplaced([mine, agents], replaced: []).map(\.id), ["ic_1", "ic_2"])
+    }
+
+    func testACommentDecodesTheReplyItReplaces() {
+        let json: [String: Any] = ["id": "ic_2", "item_id": "it_1", "author": "user", "kind": "comment", "body": "x",
+                                   "created_at": 1_000, "replaces": "ic_1"]
+        XCTAssertEqual(TrackerComment(json: json)?.replaces, "ic_1")
+        var plain = json; plain["replaces"] = nil
+        XCTAssertNil(TrackerComment(json: plain)?.replaces)
+        let cached = ItemCommentRecord(TrackerComment(json: json)!).comment
+        XCTAssertEqual(cached.replaces, "ic_1", "kept in the local cache")
     }
 
     func testAnUnconfirmedCancelKeepsTheEditInTheBoxAndTheReplyBeingEdited() async throws {

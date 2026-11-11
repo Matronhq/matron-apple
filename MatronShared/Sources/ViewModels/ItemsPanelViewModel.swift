@@ -59,6 +59,10 @@ public protocol ItemsSyncing: Sendable {
     /// when the drain has already posted the comment into the thread.
     @discardableResult
     func queueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async -> Bool
+    /// `queueComment` for an edited resend: `replaces` is the cancelled
+    /// reply the new one stands in for.
+    @discardableResult
+    func queueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment], replaces: String?) async -> Bool
     /// Returns whether the outbox insert itself succeeded (fix wave, item
     /// I3) — `false` when the sync engine is stopped or the local write
     /// throws. Callers use this to tell "your item is queued" apart from
@@ -84,6 +88,15 @@ public protocol ItemsSyncing: Sendable {
     // satisfy the protocol with no unsafe conformance, and a synchronous
     // fake still satisfies an async requirement trivially.
     func supportedStream() async -> AsyncStream<Bool>
+}
+
+public extension ItemsSyncing {
+    /// A sync that knows nothing of `replaces` queues the reply without the
+    /// link: the words still go.
+    @discardableResult
+    func queueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment], replaces: String?) async -> Bool {
+        await queueComment(itemID: itemID, localID: localID, body: body, attachments: attachments)
+    }
 }
 extension ItemsSync: ItemsSyncing {}
 
