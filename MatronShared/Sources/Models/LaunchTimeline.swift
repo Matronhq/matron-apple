@@ -9,15 +9,28 @@ public struct LaunchRecord: Codable, Equatable, Sendable {
     public var migration: TimeInterval?
     public var firstListPaint: TimeInterval?
     public var catchUpComplete: TimeInterval?
+    /// The For you list first drew what the device had cached.
+    public var forYouCached: TimeInterval?
+    /// The journal socket answered the hello: the network is up and the
+    /// replay of missed events starts here.
+    public var connected: TimeInterval?
+    /// The first tracker refresh from the journal landed: For you is up to
+    /// date from here.
+    public var forYouFresh: TimeInterval?
     public var recordedAt: Date
 
     public init(storeOpen: TimeInterval? = nil, migration: TimeInterval? = nil,
                 firstListPaint: TimeInterval? = nil, catchUpComplete: TimeInterval? = nil,
+                forYouCached: TimeInterval? = nil, connected: TimeInterval? = nil,
+                forYouFresh: TimeInterval? = nil,
                 recordedAt: Date = Date()) {
         self.storeOpen = storeOpen
         self.migration = migration
         self.firstListPaint = firstListPaint
         self.catchUpComplete = catchUpComplete
+        self.forYouCached = forYouCached
+        self.connected = connected
+        self.forYouFresh = forYouFresh
         self.recordedAt = recordedAt
     }
 }
@@ -34,12 +47,13 @@ public struct LaunchRecord: Codable, Equatable, Sendable {
 public final class LaunchTimeline: @unchecked Sendable {
     public enum Mark: String, Sendable, CaseIterable {
         case processStart, storeOpen, migration, firstListPaint, catchUpComplete
+        case forYouCached, connected, forYouFresh
     }
 
     /// The `UserDefaults` key the Settings row reads.
     public static let defaultsKey = "launch.last"
 
-    public static let shared = LaunchTimeline()
+    public static let shared = LaunchTimeline(logsToFile: true)
 
     private static let signposter = OSSignposter(
         subsystem: subsystem, category: "launch")
@@ -56,6 +70,9 @@ public final class LaunchTimeline: @unchecked Sendable {
     private let defaults: UserDefaults
     private let clock: @Sendable () -> Date
     private let processStart: Date
+    /// Only the process-wide recorder writes the diagnostic file: an
+    /// instance a test builds must leave the disk alone.
+    private let logsToFile: Bool
     private let lock = NSLock()
     private var _record: LaunchRecord
     private var storeOpenBegan: Date?
@@ -66,8 +83,10 @@ public final class LaunchTimeline: @unchecked Sendable {
     /// first Swift code happened to run.
     public init(defaults: UserDefaults = .standard,
                 processStart: Date? = nil,
+                logsToFile: Bool = false,
                 clock: @escaping @Sendable () -> Date = { Date() }) {
         self.defaults = defaults
+        self.logsToFile = logsToFile
         self.clock = clock
         self.processStart = processStart ?? Self.kernelProcessStart() ?? clock()
         self._record = LaunchRecord(recordedAt: self.processStart)
@@ -143,6 +162,15 @@ public final class LaunchTimeline: @unchecked Sendable {
         case .catchUpComplete:
             guard _record.catchUpComplete == nil else { lock.unlock(); return }
             _record.catchUpComplete = elapsed
+        case .forYouCached:
+            guard _record.forYouCached == nil else { lock.unlock(); return }
+            _record.forYouCached = elapsed
+        case .connected:
+            guard _record.connected == nil else { lock.unlock(); return }
+            _record.connected = elapsed
+        case .forYouFresh:
+            guard _record.forYouFresh == nil else { lock.unlock(); return }
+            _record.forYouFresh = elapsed
         case .processStart, .storeOpen, .migration:
             // Intervals (or the anchor), not point marks — see above.
             lock.unlock()
@@ -161,9 +189,15 @@ public final class LaunchTimeline: @unchecked Sendable {
         switch mark {
         case .firstListPaint: Self.signposter.emitEvent("firstListPaint")
         case .catchUpComplete: Self.signposter.emitEvent("catchUpComplete")
+        case .forYouCached: Self.signposter.emitEvent("forYouCached")
+        case .connected: Self.signposter.emitEvent("connected")
+        case .forYouFresh: Self.signposter.emitEvent("forYouFresh")
         case .processStart, .storeOpen, .migration: break
         }
         Self.logger.info("launch \(mark.rawValue, privacy: .public) \(elapsed, format: .fixed(precision: 3), privacy: .public) s")
+        // Also in the diagnostic file, which copies off a phone without the
+        // unified log.
+        if logsToFile { MatronFileLog.append(String(format: "launch %@ %.3f s", mark.rawValue, elapsed)) }
     }
 
     /// Encodes and writes `record`. Every call site holds `lock` for the

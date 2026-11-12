@@ -81,6 +81,12 @@ struct MatronApp: App {
                         appDelegate.registerDeviceToken = { token in
                             Task { try? await pushService.registerToken(token, pusherBaseURL: session.homeserverURL) }
                         }
+                        #if DEBUG || MATRON_PERF_PROBE
+                        // Timing rigs: the permission alert would keep the
+                        // scene inactive, and a return to the foreground
+                        // would never register.
+                        if ProcessInfo.processInfo.environment["MATRON_PERF_NO_PUSH_PROMPT"] != nil { return }
+                        #endif
                         _ = await pushService.requestPermission()
                         UIApplication.shared.registerForRemoteNotifications()
                     }
@@ -98,8 +104,19 @@ struct MatronApp: App {
                             Task {
                                 let engine = dependencies.syncService(for: session) as? JournalSyncEngine
                                 await engine?.nudge()
-                                await engine?.verifyConnection()
+                                // Half the default wait: the user is
+                                // looking at the screen, and a socket that
+                                // died while the app was suspended answers
+                                // nothing. Replacing a slow but live one
+                                // costs one reconnect.
+                                await engine?.verifyConnection(timeout: .milliseconds(1500))
                             }
+                            // For you first: one request for what changed in
+                            // the tracker, sent now rather than once the
+                            // socket has been checked, replaced and caught
+                            // up. It needs the network, not the socket.
+                            MatronFileLog.append("foreground")
+                            dependencies.refreshForYou(for: session)
                             // Foreground sweep (spec §3.4): a process that
                             // has been backgrounded past the hour sweeps now
                             // rather than waiting out the in-process timer,

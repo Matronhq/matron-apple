@@ -62,6 +62,8 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
     private var _blockNextItem = false
     private var _itemGate: CheckedContinuation<Void, Never>?
     private var _itemCalls = 0
+    /// Every id `item(id:)` was asked for, in order.
+    private var _itemIDsFetched: [String] = []
     /// Fix round 3: the gate for `listItems`, so a test can hold one
     /// `refresh(scope:)` open inside its network call and prove a second,
     /// concurrent refresh of the same scope joins it instead of issuing a
@@ -144,6 +146,7 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
         cont?.resume()
     }
     var itemCalls: Int { lock.withLock { _itemCalls } }
+    var itemIDsFetched: [String] { lock.withLock { _itemIDsFetched } }
     func releaseItemGate() {
         let cont = lock.withLock { () -> CheckedContinuation<Void, Never>? in
             let c = _itemGate; _itemGate = nil; return c
@@ -208,6 +211,7 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
         try Task.checkCancellation()
         let shouldGate = lock.withLock { () -> Bool in
             _itemCalls += 1
+            _itemIDsFetched.append(id)
             guard _blockNextItem else { return false }
             _blockNextItem = false
             return true
@@ -1230,8 +1234,61 @@ class ItemsSyncTests: XCTestCase {
             markers.yield((convoID: "c1", marker: ItemMarkerEvent(itemID: "it_1", num: 1, kind: .question, title: "Q",
                                                                   action: .commented, by: .user, comment: comment)))
         }
-        try await waitUntil { api.itemCalls == 3 }
+        // Markers for one item share a refetch, so the fetch count does not
+        // say all three were read. A marker for another item does: markers
+        // are taken in order, and its refetch is the last to start.
+        markers.yield((convoID: "c1", marker: ItemMarkerEvent(itemID: "it_last", num: 2, kind: .question, title: "Last",
+                                                              action: .created, by: .agent)))
+        try await waitUntil { api.itemIDsFetched.contains("it_last") }
         XCTAssertNil(try store.comments(itemID: "it_1").first?.chosenAction)
+    }
+
+    /// A reconnect replays every marker the device missed, often several
+    /// for one item. They share one refetch, so a new item's refetch does
+    /// not wait behind a request per marker.
+    func testMarkersWaitingForOneItemShareARefetch() async throws {
+        let api = FakeItems()
+        let (sync, _, markers, _) = try make(api: api)
+        await sync.start()
+        func marker(_ id: String) -> (convoID: String, marker: ItemMarkerEvent) {
+            (convoID: "c1", marker: ItemMarkerEvent(itemID: id, num: 1, kind: .question, title: "Q",
+                                                    action: .updated, by: .agent))
+        }
+        api.blockNextItem = true
+        markers.yield(marker("it_first"))
+        try await waitUntil { api.isItemGated }
+        for _ in 0..<5 { markers.yield(marker("it_busy")) }
+        markers.yield(marker("it_new"))
+        // Let the six markers be read while the first refetch is held.
+        try await Task.sleep(nanoseconds: 100_000_000)
+        api.releaseItemGate()
+        // Both ride the same batch, in either order.
+        try await waitUntil { api.itemIDsFetched.contains("it_new") && api.itemIDsFetched.contains("it_busy") }
+        XCTAssertEqual(api.itemIDsFetched.filter { $0 == "it_busy" }.count, 1,
+                       "five markers waiting for one item cost one request")
+    }
+
+    /// The tracker list is fetched as soon as the socket is up, not once
+    /// the replay of what the device missed has ended.
+    func testTheListIsRefreshedWhenTheSocketComesUp() async throws {
+        let api = FakeItems()
+        let (sync, _, _, states) = try make(api: api)
+        await sync.start()
+        states.yield(.connecting)
+        states.yield(.catchingUp)
+        try await waitUntil { api.listQueries.count == 1 }
+        XCTAssertNil(api.listQueries[0].convoID)
+    }
+
+    /// The app's launch timings hear how each list refresh went.
+    func testTheRefreshObserverHearsEachListRefresh() async throws {
+        let api = FakeItems()
+        let (sync, _, _, _) = try make(api: api)
+        let heard = HeardRefreshes()
+        await sync.setRefreshObserver { scope, outcome, _ in heard.add(scope, outcome) }
+        _ = await sync.refresh(scope: .all)
+        XCTAssertEqual(heard.all.map(\.0), [.all])
+        XCTAssertEqual(heard.all.map(\.1), [.succeeded])
     }
 
     /// A reply sent from the composer with staged attachments is ONE
@@ -1404,6 +1461,13 @@ class ItemsSyncTests: XCTestCase {
             try await Task.sleep(nanoseconds: 20_000_000)
         }
     }
+}
+
+private final class HeardRefreshes: @unchecked Sendable {
+    private let lock = NSLock()
+    private var heard: [(ItemsScope, ItemsRefreshOutcome)] = []
+    func add(_ scope: ItemsScope, _ outcome: ItemsRefreshOutcome) { lock.withLock { heard.append((scope, outcome)) } }
+    var all: [(ItemsScope, ItemsRefreshOutcome)] { lock.withLock { heard } }
 }
 
 final class ItemsSyncPoolTests: ItemsSyncTests {

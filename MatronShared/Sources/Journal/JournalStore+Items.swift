@@ -485,6 +485,19 @@ extension JournalStore {
         try db.read { db in try Self.itemsRequest(scope).fetchAll(db).map(\.item) }
     }
 
+    /// The open items awaiting the user, newest update first — the top of
+    /// the For you list. Served by the `item_state_rank` index, so it reads
+    /// the open rows only: at launch it returns long before a read of
+    /// every item would.
+    public func needsUserItems() throws -> [TrackerItem]? {
+        try db.read { db in
+            try ItemRecord
+                .filter(Column("state") == ItemState.open.rawValue && Column("awaiting") == ItemAwaiting.user.rawValue)
+                .order(Column("updated_at").desc)
+                .fetchAll(db).map(\.item)
+        }
+    }
+
     public func itemsStream(scope: ItemsScope) -> AsyncStream<[TrackerItem]> {
         let name: StaticString = scope == .all ? "itemsStream.all" : "itemsStream.convo"
         let observation = ValueObservation.measuredTrackingConstantRegion(name, in: metrics) { db in try Self.itemsRequest(scope).fetchAll(db).map(\.item) }

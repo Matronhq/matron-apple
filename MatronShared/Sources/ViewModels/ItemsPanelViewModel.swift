@@ -30,12 +30,17 @@ public protocol ItemsStoreReading: Sendable {
     var usesChangeFeed: Bool { get }
     /// The sections for a scope, kept by the store's items index.
     func itemSectionsStream(scope: ItemsScope) -> AsyncStream<ItemsIndexSections>
+    /// Only the open items that await the user, newest update first: the
+    /// rows at the top of For you, read without the thousands of closed
+    /// items behind them. `nil` from a store that cannot serve it.
+    func needsUserItems() throws -> [TrackerItem]?
 }
 extension JournalStore: ItemsStoreReading {}
 
 public extension ItemsStoreReading {
     /// Test doubles without an index serve the observation path.
     var usesChangeFeed: Bool { false }
+    func needsUserItems() throws -> [TrackerItem]? { nil }
     func itemSectionsStream(scope: ItemsScope) -> AsyncStream<ItemsIndexSections> { AsyncStream { $0.finish() } }
 }
 
@@ -185,6 +190,11 @@ public final class ItemsPanelViewModel {
     public let convoID: String?
     public var scope: ItemsScope { didSet { if scope != oldValue { resubscribe() } } }
     public private(set) var sections = Sections()
+    /// Whether the store has delivered anything yet.
+    @ObservationIgnored private var hasPublished = false
+    /// Called once, when the first rows from the store are published.
+    /// The app's launch timings read it.
+    @ObservationIgnored public var onFirstPublish: (@MainActor () -> Void)?
     /// Items in THIS conversation awaiting the user — the toolbar badge.
     /// Scoped to `convoID` regardless of the panel's current `scope`, so
     /// switching the list to "All" doesn't inflate the chat's badge.
@@ -323,6 +333,12 @@ public final class ItemsPanelViewModel {
     /// Off the main actor. Not on the change-feed path (`readsItemsIndex`),
     /// where the store's items index keeps the sections in order as items
     /// change; this goes with the flag.
+    /// Off the main actor, like the full read: at launch the store's queue
+    /// is busy and this must not hold up a frame.
+    private nonisolated static func readNeedsUser(from store: any ItemsStoreReading) async -> [TrackerItem]? {
+        (try? store.needsUserItems()) ?? nil
+    }
+
     private nonisolated static func deriveSections(from items: [TrackerItem]) async -> Sections {
         sections(from: items)
     }
@@ -447,8 +463,22 @@ public final class ItemsPanelViewModel {
                 }
             }
         } else {
+            // The app-wide list, nothing drawn yet: the rows that need the
+            // user first. The full read behind them decodes every item the
+            // device holds, closed ones included, and For you would sit
+            // empty until it returned.
+            let needsYouFirst = convoID == nil && scope == .all && !hasPublished
             itemsTask = Task { [weak self] in
-                guard let stream = self?.store.itemsStream(scope: scope) else { return }
+                guard let store = self?.store else { return }
+                if needsYouFirst, let first = await Self.readNeedsUser(from: store), !first.isEmpty {
+                    guard let self, !Task.isCancelled else { return }
+                    if !self.hasPublished {
+                        var early = Sections()
+                        early.needsYou = first
+                        self.submit(early, scope: scope, generation: generation)
+                    }
+                }
+                let stream = store.itemsStream(scope: scope)
                 for await items in stream {
                     // Every item write re-fires the `.all` stream with every
                     // item ever synced (5,088 on one real store); the
@@ -500,6 +530,10 @@ public final class ItemsPanelViewModel {
     /// the value moved on some toolchains, and every notification re-runs
     /// the bodies that read it.
     private func publish(_ derived: Sections, scope: ItemsScope) {
+        if !hasPublished {
+            hasPublished = true
+            onFirstPublish?()
+        }
         var next = derived
         // Ranks staged by a drag still in flight win over the store's, also
         // for an emission that waited in the gate since before the drag.

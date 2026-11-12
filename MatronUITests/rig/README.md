@@ -242,3 +242,34 @@ MATRON_APP_SUPPORT_OVERRIDE=$RIG/mac-support <Debug MatronMac binary> \
 # Simulator:
 xcrun simctl launch <udid> chat.matron.app -projects.timeline YES
 ```
+
+## Launch timing rig (cold launch and return to the foreground)
+
+Its own journal, folder and ports, so it runs beside the rig above. The
+journal holds 5,000 closed items and 40 that need the user, and the app
+reaches it through `latency-proxy.mjs`, which holds every chunk for 75 ms
+each way. Build Release with the probe flag, signed:
+
+```bash
+RIG_UDID=<a booted simulator>
+xcodebuild build -project Matron.xcodeproj -scheme Matron -configuration Release \
+  -destination "id=$RIG_UDID" -derivedDataPath /tmp/launch-dd \
+  'SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) MATRON_PERF_PROBE'
+RIG_UDID=$RIG_UDID RIG_APP=/tmp/launch-dd/Build/Products/Release-iphonesimulator/Matron.app \
+  MatronUITests/rig/launch-rig.sh
+RIG_UDID=$RIG_UDID MatronUITests/rig/launch-timing.sh cold 5
+RIG_UDID=$RIG_UDID MatronUITests/rig/launch-timing.sh resume 4
+```
+
+`cold` prints the launch marks, in seconds from process start: the first
+list on screen, For you drawn from the cache, the socket up, For you
+matching the journal, and the catch-up done. `resume` backgrounds the app,
+stalls its socket as a sleeping phone's network does, files sixty comments
+on fifteen items and one new question, brings the app back, and prints how
+long For you took to match the journal and when the last item refetch went
+out. `RIG_RESEED=0` on `launch-rig.sh` keeps the journal and reinstalls
+only the app, to compare two builds on the same data.
+
+If a simulator still shows the notification alert from an earlier install,
+restart it: the alert keeps the scene inactive and `resume` prints nothing.
+Stop the rig with `pkill -f launch-rig-journal; pkill -f latency-proxy.mjs`.
