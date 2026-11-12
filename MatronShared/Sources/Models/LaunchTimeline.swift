@@ -233,8 +233,6 @@ public final class LaunchTimeline: @unchecked Sendable {
         func seconds(_ value: TimeInterval) -> String { String(format: "%.1f s", value) }
         if let storeOpen = record.storeOpen { parts.append("store \(seconds(storeOpen))") }
         if let paint = record.firstListPaint { parts.append("first list \(seconds(paint))") }
-        if let cached = record.forYouCached { parts.append("For you \(seconds(cached))") }
-        if let fresh = record.forYouFresh { parts.append("For you fresh \(seconds(fresh))") }
         if let catchUp = record.catchUpComplete { parts.append("catch-up \(seconds(catchUp))") }
         if let migration = record.migration { parts.append("migration \(seconds(migration))") }
         return parts.isEmpty ? "—" : parts.joined(separator: " · ")

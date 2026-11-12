@@ -34,6 +34,13 @@ net.createServer((client) => {
   const pair = { stalled: false };
   live.add(pair);
   client.on('close', () => live.delete(pair));
+  // One line per request, with the time it left the app: the timing
+  // script reads when the tracker requests went out.
+  client.on('data', (chunk) => {
+    const head = chunk.subarray(0, 200).toString('latin1');
+    const request = /^(GET|POST|PUT|DELETE) (\S+)/.exec(head);
+    if (request) console.log(`${new Date().toISOString()} ${request[1]} ${request[2].split('?')[0]}`);
+  });
   relay(client, upstream, pair);
   relay(upstream, client, pair);
 }).listen(listenPort, '127.0.0.1', () => console.log(`proxy ${listenPort} -> ${targetPort}, ${delayMs} ms each way`));

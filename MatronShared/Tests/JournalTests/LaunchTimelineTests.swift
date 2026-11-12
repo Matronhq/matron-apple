@@ -158,4 +158,17 @@ final class LaunchTimelineTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(timeline.record.migration), 1.0, accuracy: 0.001,
                        "a second migration report must not overwrite the first launch's duration")
     }
+
+    /// The For you marks land in the persisted record, first one winning.
+    func testForYouMarksAreRecordedAndSummarised() throws {
+        let (timeline, defaults) = makeTimeline([0.9, 1.0, 1.3])
+        timeline.mark(.forYouCached)
+        timeline.mark(.connected)
+        timeline.mark(.forYouFresh)
+        timeline.mark(.forYouFresh) // first one wins
+        let record = try XCTUnwrap(LaunchTimeline.currentLaunch(defaults: defaults))
+        XCTAssertEqual(record.forYouCached ?? 0, 0.9, accuracy: 0.001)
+        XCTAssertEqual(record.connected ?? 0, 1.0, accuracy: 0.001)
+        XCTAssertEqual(record.forYouFresh ?? 0, 1.3, accuracy: 0.001)
+    }
 }

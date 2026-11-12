@@ -57,8 +57,8 @@ session = {'userID': 'demo', 'deviceID': str(login['device_id']),
 open(sys.argv[1] + '/sessions/matron.journal.session.json', 'w').write(json.dumps(session))
 PYEOF
 
-# First launch: the notification alert and the initial sync of every item.
-xcrun simctl launch "$UDID" chat.matron.app -sync.scope for_you >/dev/null
+# First launch: the initial sync of every item.
+SIMCTL_CHILD_MATRON_PERF_NO_PUSH_PROMPT=1 xcrun simctl launch "$UDID" chat.matron.app -sync.scope for_you >/dev/null
 sleep "${RIG_FIRST_SYNC_S:-45}"
 xcrun simctl terminate "$UDID" chat.matron.app 2>/dev/null || true
 echo "launch rig ready"
