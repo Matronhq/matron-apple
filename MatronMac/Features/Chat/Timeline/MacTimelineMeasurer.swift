@@ -66,8 +66,10 @@ final class MacTimelineMeasureCache {
                         forKey: Self.key(roomID: roomID, content: content, width: width))
     }
 
-    /// Test seam: what memory pressure does to the `NSCache`.
-    func removeAllForTesting() {
+    /// Drops every measurement — what memory pressure does to the `NSCache`,
+    /// and what sign-out does, since the entries hold rendered copies of the
+    /// account's messages.
+    func removeAll() {
         cache.removeAllObjects()
     }
 

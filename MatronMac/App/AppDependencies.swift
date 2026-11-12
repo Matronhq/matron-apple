@@ -949,6 +949,9 @@ final class AppDependencies {
         // The previous account's notifications stay in Notification Center
         // otherwise, previews and all.
         UNUserNotificationCenter.current().removeAllDeliveredNotifications()
+        // The timeline's process-wide measurement memo holds rendered copies
+        // of the previous account's messages.
+        MacTimelineMeasureCache.shared.removeAll()
         try? auth.clearSession()
     }
 
