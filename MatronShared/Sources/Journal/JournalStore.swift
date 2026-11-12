@@ -1943,29 +1943,6 @@ public final class JournalStore: @unchecked Sendable {
         try chatListRecords(db).map { applyReadTimeSnippetTTL($0, now: now) }
     }
 
-    /// Every conversation id in the mirror — including hidden rows and
-    /// subagent children, which `conversations()` filters out — ordered
-    /// most-recently-active first. Backs the search-history backfill sweep:
-    /// hidden and child conversations still hold searchable messages, and
-    /// activity ordering indexes the conversations the user is most likely
-    /// to search before the long tail. (DESC puts NULL activity rows last,
-    /// same as `conversations()`.)
-    ///
-    /// `async` for the same reason as `conversationOriginLabels()`: the
-    /// only caller is the backfill task in `AppDependencies`, which is
-    /// `@MainActor`-isolated, so the synchronous form ran this full-table
-    /// read on the main thread on every sweep — live samples of a 7k-row
-    /// store put it inside main-thread hangs. The async read runs off the
-    /// main actor (`readOffCaller`), which is free until the ids come back.
-    public func allConversationIDs() async throws -> [String] {
-        try await readOffCaller { db in
-            try String.fetchAll(db, sql: """
-                SELECT id FROM conversation
-                ORDER BY last_activity_ts DESC, last_seq DESC
-                """)
-        }
-    }
-
     /// A synchronous `db.read` hopped off the caller's actor, for the
     /// `async` reads main-actor callers await.
     ///

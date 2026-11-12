@@ -320,14 +320,16 @@ final class JournalStoreMissionsTests: XCTestCase {
 
     // MARK: Dashboard reads (spec 2026-09-28 §3.7)
 
-    func testAllMissionConversationsAreGroupedByMission() throws {
+    func testAllMissionConversationsAreGroupedByMission() async throws {
         let store = try makeStore()
         try store.replaceMissionConversations(missionID: "ms_1", [
             MissionConversation(id: "c2", title: "B", box: "box-2", state: "running"),
             MissionConversation(id: "c1", title: "A", box: nil, state: "done"),
         ])
         try store.replaceMissionConversations(missionID: "ms_2", [MissionConversation(id: "c9", title: "Z", box: nil, state: "waiting")])
-        let all = try store.allMissionConversations()
+        var iterator = store.allMissionConversationsStream().makeAsyncIterator()
+        let first = await iterator.next()
+        let all = try XCTUnwrap(first)
         XCTAssertEqual(all["ms_1"]?.map(\.id), ["c1", "c2"])
         XCTAssertEqual(all["ms_2"]?.map(\.id), ["c9"])
         XCTAssertNil(all["ms_3"])
@@ -452,15 +454,17 @@ final class JournalStoreMissionsTests: XCTestCase {
         XCTAssertEqual(grouped.count, 1, "an item on no mission is not grouped anywhere")
     }
 
-    func testLatestSummaryTOCsPickTheNewestEntryPerConversation() throws {
+    func testLatestSummaryTOCsPickTheNewestEntryPerConversation() async throws {
         let store = try makeStore()
-        try store.db.write { db in
+        try await store.db.write { db in
             try db.execute(sql: """
                 INSERT INTO summary_entry(convo_id, seq, toc, detail, created_at) VALUES
                 ('c1', 5, 'Old heading', '', 1), ('c1', 9, 'Newest heading', '', 2), ('c2', 3, 'Only one', '', 1)
                 """)
         }
-        XCTAssertEqual(try store.latestSummaryTOCs(), ["c1": "Newest heading", "c2": "Only one"])
+        var iterator = store.latestSummaryTOCsStream().makeAsyncIterator()
+        let tocs = await iterator.next()
+        XCTAssertEqual(tocs, ["c1": "Newest heading", "c2": "Only one"])
     }
 
     /// The dashboard re-runs this after every summary write. Walking the

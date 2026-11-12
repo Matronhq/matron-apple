@@ -25,7 +25,7 @@ final class JournalStoreItemsTests: XCTestCase {
         XCTAssertEqual(try store.items(scope: .all).count, 2)
         try store.upsertItems([item("it_1", num: 1, state: .closed, updated: 5)])
         XCTAssertEqual(try store.item(id: "it_1")?.state, .closed)
-        XCTAssertEqual(try store.itemsMaxUpdatedAt(), Date(timeIntervalSince1970: 5))
+        XCTAssertEqual(try store.item(id: "it_1")?.updatedAt, Date(timeIntervalSince1970: 5))
         XCTAssertEqual(try store.needsUserCounts(), ["c2": 1])
     }
 
@@ -247,10 +247,15 @@ final class JournalStoreItemsTests: XCTestCase {
         XCTAssertNil(labels["c3"], "an empty title is omitted from the map, box or not")
         XCTAssertEqual(labels["c4"], "Empty agent name", "an agent row with an empty name falls back to the title alone")
 
-        XCTAssertEqual(try store.conversationOriginLabel(id: "c1"), "dev-mac \u{00B7} Missions plan")
-        XCTAssertEqual(try store.conversationOriginLabel(id: "c2"), "No box")
-        XCTAssertNil(try store.conversationOriginLabel(id: "c3"), "empty title is nil from the single-id lookup too")
-        XCTAssertNil(try store.conversationOriginLabel(id: "c4-does-not-exist"), "unknown id is nil")
+        func origin(_ id: String) async -> JournalStore.ConversationOrigin? {
+            var iterator = store.conversationOriginStream(id: id).makeAsyncIterator()
+            return await iterator.next()
+        }
+        let c1 = await origin("c1"), c2 = await origin("c2"), c3 = await origin("c3"), unknown = await origin("c4-does-not-exist")
+        XCTAssertEqual(c1, .init(exists: true, label: "dev-mac \u{00B7} Missions plan"))
+        XCTAssertEqual(c2, .init(exists: true, label: "No box"))
+        XCTAssertEqual(c3, .init(exists: true, label: nil), "empty title is nil from the single-id stream too")
+        XCTAssertEqual(unknown, .unknown, "unknown id is nil")
     }
 
     /// For you rows show an item's mission chip, so an item on the mission

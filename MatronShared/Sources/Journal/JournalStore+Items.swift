@@ -270,7 +270,7 @@ public struct ItemOutboxRecord: Codable, FetchableRecord, PersistableRecord, Equ
 extension JournalStore {
     /// `"<box name> · <title>"` when a conversation has a known, non-empty
     /// agent box name, else the title alone. The one place this formatting
-    /// happens — `conversationOriginLabels()` and `conversationOriginLabel(id:)`
+    /// happens — `conversationOriginLabels()` and `conversationOriginStream(id:)`
     /// both call it, so the list rows and the item-detail origin button can
     /// never drift apart on separator or fallback rule.
     private static func originLabel(title: String, agentName: String?) -> String {
@@ -347,18 +347,11 @@ extension JournalStore {
         return parts.isEmpty ? nil : parts.joined(separator: " \u{00B7} ")
     }
 
-    /// Same label as `conversationOriginLabels()`, for one conversation.
-    /// `nil` when the conversation is unknown or has an empty title, same
-    /// discipline as the map form.
-    public func conversationOriginLabel(id: String) throws -> String? {
-        try db.read { db in try Self.conversationOrigin(db, id: id).label }
-    }
-
     /// One conversation as the item detail's owner row reads it (mission
     /// 10570): whether this device has its row, and its origin label.
     public struct ConversationOrigin: Equatable, Sendable {
         public let exists: Bool
-        /// `conversationOriginLabel(id:)`'s label: `nil` when unknown or
+        /// Same label as `conversationOriginLabels()`: `nil` when unknown or
         /// untitled.
         public let label: String?
         public init(exists: Bool, label: String?) { self.exists = exists; self.label = label }
@@ -605,10 +598,6 @@ extension JournalStore {
     private static func threadOrder(_ a: ItemCommentRecord, _ b: ItemCommentRecord) -> Bool {
         if a.createdAt != b.createdAt { return a.createdAt < b.createdAt }
         return a.id.utf8.lexicographicallyPrecedes(b.id.utf8)
-    }
-
-    public func itemsMaxUpdatedAt() throws -> Date? {
-        try db.read { db in date(try Int64.fetchOne(db, sql: "SELECT MAX(updated_at) FROM item")) }
     }
 
     /// The persisted refresh watermark for this scope, or `nil` if it has

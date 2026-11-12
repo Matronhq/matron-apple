@@ -541,10 +541,6 @@ extension JournalStore {
         return Dictionary(grouping: rows, by: \.missionId).mapValues { $0.map(\.conversation) }
     }
 
-    public func allMissionConversations() throws -> [String: [MissionConversation]] {
-        try db.read(Self.allMissionConversationsQuery)
-    }
-
     public func allMissionConversationsStream() -> AsyncStream<[String: [MissionConversation]]> {
         Self.stream(ValueObservation.measuredTrackingConstantRegion("allMissionConversationsStream", in: metrics, Self.allMissionConversationsQuery).removeDuplicates(), in: db)
     }
@@ -615,8 +611,6 @@ extension JournalStore {
         let rows = try Row.fetchAll(db, sql: latestSummaryTOCsSQL)
         return Dictionary(rows.map { ($0["c"] as String, $0["toc"] as String) }, uniquingKeysWith: { first, _ in first })
     }
-
-    public func latestSummaryTOCs() throws -> [String: String] { try db.read(Self.latestSummaryTOCsQuery) }
 
     public func latestSummaryTOCsStream() -> AsyncStream<[String: String]> {
         Self.stream(ValueObservation.measuredTrackingConstantRegion("latestSummaryTOCsStream", in: metrics, Self.latestSummaryTOCsQuery).removeDuplicates(), in: db)
