@@ -47,7 +47,6 @@ let package = Package(
             name: "MatronSync",
             dependencies: [
                 "MatronModels",
-                "MatronStorage",
                 // Journal Task 10: JournalSyncConformance.swift bridges
                 // JournalSyncEngine into the SyncService protocol.
                 // MatronJournal never imports MatronSync back, so this
@@ -60,7 +59,6 @@ let package = Package(
             name: "MatronChat",
             dependencies: [
                 "MatronModels",
-                "MatronSync",
                 // Phase 5 Task 5: TimelineItem.Kind gains `.toolCall` /
                 // `.askUser` cases that wrap MatronEvents DTOs. The
                 // dependency only pulls in pure value types — no
@@ -158,8 +156,6 @@ let package = Package(
         .target(
             name: "MatronSearch",
             dependencies: [
-                "MatronModels",
-                "MatronStorage",
                 .product(name: "GRDB", package: "GRDB.swift"),
             ],
             path: "Sources/Search"
@@ -170,7 +166,6 @@ let package = Package(
             name: "MatronJournal",
             dependencies: [
                 "MatronModels",
-                "MatronStorage",
                 "MatronSearch",
                 "MatronEvents",
                 .product(name: "GRDB", package: "GRDB.swift"),
@@ -207,10 +202,10 @@ let package = Package(
             path: "Sources/Share"
         ),
         .testTarget(name: "ShareTests", dependencies: ["MatronShare", "MatronJournal", "MatronModels"], path: "Tests/ShareTests"),
-        .testTarget(name: "VoiceTests", dependencies: ["MatronVoice", "MatronModels", "MatronEvents", "MatronJournal", "MatronChat"], path: "Tests/VoiceTests"),
+        .testTarget(name: "VoiceTests", dependencies: ["MatronVoice", "MatronModels", "MatronJournal"], path: "Tests/VoiceTests"),
         .testTarget(name: "StorageTests", dependencies: ["MatronStorage"], path: "Tests/StorageTests"),
         .testTarget(name: "AuthTests", dependencies: ["MatronAuth", "MatronModels", "MatronStorage", "MatronJournal"], path: "Tests/AuthTests"),
-        .testTarget(name: "ChatTests", dependencies: ["MatronChat", "MatronEvents", "MatronJournal", "MatronModels", "MatronSync"], path: "Tests/ChatTests"),
+        .testTarget(name: "ChatTests", dependencies: ["MatronChat", "MatronEvents", "MatronJournal", "MatronModels"], path: "Tests/ChatTests"),
         .testTarget(name: "ViewModelTests", dependencies: ["MatronViewModels", "MatronAuth", "MatronChat", "MatronEvents", "MatronModels", "MatronStorage", "MatronSearch", "MatronJournal"], path: "Tests/ViewModelTests"),
         .testTarget(
             name: "DesignSystemSnapshotTests",

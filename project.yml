@@ -501,12 +501,6 @@ targets:
       - package: MatronShared
         product: MatronStorage
       - package: MatronShared
-        product: MatronSync
-      - package: MatronShared
-        product: MatronChat
-      - package: MatronShared
-        product: MatronViewModels
-      - package: MatronShared
         product: MatronJournal
 
   MatronNSE:
