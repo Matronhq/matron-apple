@@ -161,7 +161,7 @@ final class LaunchTimelineTests: XCTestCase {
 
     /// The For you marks land in the persisted record, first one winning.
     func testForYouMarksAreRecordedAndSummarised() throws {
-        let (timeline, defaults) = makeTimeline([0.9, 1.0, 1.3])
+        let (timeline, defaults) = makeTimeline([0.9, 1.0, 1.3, 9.9])
         timeline.mark(.forYouCached)
         timeline.mark(.connected)
         timeline.mark(.forYouFresh)

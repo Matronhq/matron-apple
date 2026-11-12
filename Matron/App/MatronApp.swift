@@ -116,7 +116,7 @@ struct MatronApp: App {
                             // socket has been checked, replaced and caught
                             // up. It needs the network, not the socket.
                             MatronFileLog.append("foreground")
-                            Task { await dependencies.itemsSync(for: session).refresh(scope: .all) }
+                            dependencies.refreshForYou(for: session)
                             // Foreground sweep (spec §3.4): a process that
                             // has been backgrounded past the hour sweeps now
                             // rather than waiting out the in-process timer,

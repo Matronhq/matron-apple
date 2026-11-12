@@ -1262,7 +1262,8 @@ class ItemsSyncTests: XCTestCase {
         // Let the six markers be read while the first refetch is held.
         try await Task.sleep(nanoseconds: 100_000_000)
         api.releaseItemGate()
-        try await waitUntil { api.itemIDsFetched.contains("it_new") }
+        // Both ride the same batch, in either order.
+        try await waitUntil { api.itemIDsFetched.contains("it_new") && api.itemIDsFetched.contains("it_busy") }
         XCTAssertEqual(api.itemIDsFetched.filter { $0 == "it_busy" }.count, 1,
                        "five markers waiting for one item cost one request")
     }

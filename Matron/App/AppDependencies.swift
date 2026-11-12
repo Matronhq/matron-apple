@@ -193,6 +193,10 @@ final class AppDependencies {
         /// Handle for the `maintenance.start()` kickoff — awaited before
         /// `stop()` in the sign-out teardown, same rule as `itemsStartTask`.
         var maintenanceStartTask: Task<Void, Never>?
+        /// Waits for the socket's first answer, for the launch timings.
+        /// Cancelled on sign-out: offline, it would otherwise wait on the
+        /// engine's state for good and keep the engine and store alive.
+        var connectedMarkTask: Task<Void, Never>?
         init(api: JournalAPI, store: JournalStore, engine: JournalSyncEngine, items: ItemsSync, missions: MissionsSync,
              projects: ProjectsSync, coordinator: CoordinatorSync, notify: NotifySettingsStore,
              defaults: NewChatDefaultsStore, userSettings: UserSettingsStore, briefing: LatestBriefingStore, pins: PinsStore,
@@ -427,7 +431,7 @@ final class AppDependencies {
         core.projectsStartTask = Task { await projects.start() }
         core.coordinatorStartTask = Task { await coordinator.start() }
         // Launch timing: the socket answering its hello.
-        Task {
+        core.connectedMarkTask = Task {
             for await state in engine.stateStream() {
                 switch state {
                 case .catchingUp, .running:
@@ -534,6 +538,15 @@ final class AppDependencies {
     /// `runIfDue()` on it.
     func journalMaintenance(for session: UserSession) -> JournalMaintenance {
         core(for: session).maintenance
+    }
+
+    /// Asks the journal what changed in the tracker, now: the app has come
+    /// to the foreground, and For you should not wait for the socket to be
+    /// checked, replaced and caught up. A refresh already running is
+    /// joined, not repeated.
+    func refreshForYou(for session: UserSession) {
+        let items = core(for: session).items
+        Task { await items.refresh(scope: .all) }
     }
 
     /// The session's `MissionsSync` actor — marker refetches and the
@@ -1086,6 +1099,7 @@ final class AppDependencies {
                 //    resume after the wipe below and re-stamp
                 //    `maintenance_last_run` on an empty `meta`, so `stop()`
                 //    awaits it (see `JournalMaintenance.stop`).
+                core.connectedMarkTask?.cancel()
                 await core.maintenanceStartTask?.value
                 await core.maintenance.stop()
                 // Best-effort server-side sign-out while the API still holds

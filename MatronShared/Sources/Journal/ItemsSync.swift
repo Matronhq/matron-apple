@@ -172,6 +172,9 @@ public actor ItemsSync {
     /// item's refetch waited behind all of them.
     private var pendingMarkerIDs: [String] = []
     private var markerDrain: Task<Void, Never>?
+    /// Names the drain `markerDrain` holds, so one that `stop()` cancelled
+    /// cannot clear the slot of the drain a later `start()` made.
+    private var markerDrainGeneration = 0
     /// How many items' refetches run at once while markers are waiting.
     static let markerFetchWidth = 4
     /// Told how each list refresh went and how long it took. The app's
@@ -307,7 +310,7 @@ public actor ItemsSync {
         stopped = true
         let mt = markerTask; let st = stateTask; let rt = retryTask; let sh = sharedTask
         let md = markerDrain
-        markerTask = nil; stateTask = nil; retryTask = nil; sharedTask = nil
+        markerTask = nil; stateTask = nil; retryTask = nil; sharedTask = nil; markerDrain = nil
         pendingMarkerIDs.removeAll()
         mt?.cancel(); st?.cancel(); rt?.cancel(); sh?.cancel(); md?.cancel()
         let refreshes = Array(inFlightRefreshes.values)
@@ -645,13 +648,15 @@ public actor ItemsSync {
         applyCommentTap(marker)
         if !pendingMarkerIDs.contains(marker.itemID) { pendingMarkerIDs.append(marker.itemID) }
         guard markerDrain == nil else { return }
-        markerDrain = Task { [weak self] in await self?.drainMarkers() }
+        markerDrainGeneration += 1
+        let generation = markerDrainGeneration
+        markerDrain = Task { [weak self] in await self?.drainMarkers(generation: generation) }
     }
 
     /// Refetches the items whose markers are waiting, a few at a time. An
     /// item marked again while its refetch runs is queued again, so the
     /// last fetch of an item always starts after its last marker.
-    private func drainMarkers() async {
+    private func drainMarkers(generation: Int) async {
         while !pendingMarkerIDs.isEmpty, !stopped, !Task.isCancelled {
             let batch = Array(pendingMarkerIDs.prefix(Self.markerFetchWidth))
             pendingMarkerIDs.removeFirst(batch.count)
@@ -659,7 +664,7 @@ public actor ItemsSync {
                 for id in batch { group.addTask { await self.refreshItem(id: id) } }
             }
         }
-        markerDrain = nil
+        if markerDrainGeneration == generation { markerDrain = nil }
     }
 
     public func refreshItem(id: String) async {

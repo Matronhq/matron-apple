@@ -35,11 +35,18 @@ net.createServer((client) => {
   live.add(pair);
   client.on('close', () => live.delete(pair));
   // One line per request, with the time it left the app: the timing
-  // script reads when the tracker requests went out.
+  // script reads when the tracker requests went out. Requests are read
+  // from the bytes as they pass, joined across chunks: a request line may
+  // be split between two, and one chunk may hold several requests.
+  let pending = '';
   client.on('data', (chunk) => {
-    const head = chunk.subarray(0, 200).toString('latin1');
-    const request = /^(GET|POST|PUT|DELETE) (\S+)/.exec(head);
-    if (request) console.log(`${new Date().toISOString()} ${request[1]} ${request[2].split('?')[0]}`);
+    pending += chunk.toString('latin1');
+    const lines = pending.split('\r\n');
+    pending = lines.pop().slice(-2048);
+    for (const line of lines) {
+      const request = /^(GET|POST|PUT|DELETE) (\S+) HTTP\/1\.[01]$/.exec(line);
+      if (request) console.log(`${new Date().toISOString()} ${request[1]} ${request[2].split('?')[0]}`);
+    }
   });
   relay(client, upstream, pair);
   relay(upstream, client, pair);
