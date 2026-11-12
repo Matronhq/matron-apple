@@ -213,7 +213,7 @@ struct ChatListView: View {
         }
         .sheet(isPresented: $showingSearch) {
             // Phase 6 (Search): dedicated two-section search screen. Built with
-            // the current chat-list snapshot so chat (title/bot) hits resolve
+            // the current chat-list snapshot so chat (title) hits resolve
             // without another fetch. Selecting a result dismisses the sheet and
             // routes through `onOpenChat` (MatronApp owns the nav path).
             if let deps, let session {

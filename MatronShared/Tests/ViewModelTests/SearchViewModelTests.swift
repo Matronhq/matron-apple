@@ -64,7 +64,7 @@ final class SearchViewModelTests: XCTestCase {
     }
 
     @MainActor
-    func test_chatHits_filterByTitleOrBotName() {
+    func test_chatHits_filterByTitle() {
         let claude = BotIdentity(matrixID: "@claude:s", displayName: "Claude", avatarURL: nil)
         let chats = [
             ChatSummary(id: "!1:s", title: "Auth bug", bot: claude, lastActivity: nil, unreadCount: 0),
@@ -73,6 +73,33 @@ final class SearchViewModelTests: XCTestCase {
         let vm = SearchViewModel(search: FakeSearchService(), allChats: chats)
         vm.query = "auth"
         XCTAssertEqual(vm.chatHits.map(\.id), ["!1:s"])
+    }
+
+    /// Every chat carries the same placeholder bot identity, so its name
+    /// says nothing about the chat: searching for it must not match every
+    /// chat, only those whose title holds the word.
+    @MainActor
+    func test_chatHits_ignoreTheSharedBotName() {
+        let claude = BotIdentity(matrixID: "agent:claude", displayName: "Claude", avatarURL: nil)
+        let chats = [
+            ChatSummary(id: "!1:s", title: "Auth bug", bot: claude, lastActivity: nil, unreadCount: 0),
+            ChatSummary(id: "!2:s", title: "Claude settings", bot: claude, lastActivity: nil, unreadCount: 0),
+        ]
+        let vm = SearchViewModel(search: FakeSearchService(), allChats: chats)
+        vm.query = "claude"
+        XCTAssertEqual(vm.chatHits.map(\.id), ["!2:s"])
+    }
+
+    /// A chat hit's caption is the chat's latest message, as in the chat
+    /// list — never the shared bot name — and absent when there is none.
+    @MainActor
+    func test_chatHitCaption_isTheSnippet_orNothing() {
+        let claude = BotIdentity(matrixID: "agent:claude", displayName: "Claude", avatarURL: nil)
+        let withSnippet = ChatSummary(id: "!1:s", title: "Auth bug", bot: claude, lastActivity: nil,
+                                      unreadCount: 0, snippet: "Fixed in the last commit")
+        let without = ChatSummary(id: "!2:s", title: "Refactor", bot: claude, lastActivity: nil, unreadCount: 0)
+        XCTAssertEqual(SearchViewModel.chatHitCaption(for: withSnippet), "Fixed in the last commit")
+        XCTAssertNil(SearchViewModel.chatHitCaption(for: without))
     }
 
     /// A view model given `liveChats` reads the current list whenever it

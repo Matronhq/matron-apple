@@ -6,7 +6,7 @@ import MatronViewModels
 import MatronDesignSystem  // SearchResultRow
 
 /// iOS search screen — pushed from the chat list. Two sections: Chats
-/// (title/bot matches, filtered in-memory from the chat-list snapshot) and
+/// (title matches, filtered in-memory from the chat-list snapshot) and
 /// Messages (FTS hits via `SearchViewModel.search()`), under the row for a
 /// query that is a number (`#412`). Tapping a result routes back through
 /// `onSelectChat` / `onSelectMessage` / `onSelectNumber`.
@@ -52,7 +52,9 @@ struct SearchView: View {
                                     roomBoxNames: line.roomBoxNames,
                                     roomBoxShorts: line.roomBoxShorts,
                                     colorScheme: colorScheme)
-                                Text(chat.bot.displayName).font(.caption).foregroundStyle(.secondary)
+                                if let caption = SearchViewModel.chatHitCaption(for: chat) {
+                                    Text(caption).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                }
                             }
                         }
                     }
@@ -81,7 +83,7 @@ struct SearchView: View {
                 }
             }
             if viewModel.query.isEmpty {
-                Section { Text("Search across chat titles, bots, and messages.").foregroundStyle(.secondary) }
+                Section { Text("Search across chat titles and messages.").foregroundStyle(.secondary) }
             } else if viewModel.hasNoResults && !viewModel.isSearching {
                 Section { Text(viewModel.emptyResultsMessage).foregroundStyle(.secondary) }
             }
