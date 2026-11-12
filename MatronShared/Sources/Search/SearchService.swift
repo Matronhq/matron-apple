@@ -1,8 +1,7 @@
 import Foundation
 
-/// Local full-text search index over decrypted message bodies. Backed by
-/// SQLite/FTS5 in production (`SearchServiceLive`); fakeable for view-model and
-/// backfill tests.
+/// Local full-text search index over message bodies. Backed by SQLite/FTS5
+/// in production (`SearchServiceLive`); fakeable for view-model tests.
 public protocol SearchService: Sendable {
     /// Inserts a single message into the index. Idempotent on (roomID, eventID).
     func index(roomID: String, eventID: String, sender: String, timestamp: Date, body: String) async throws

@@ -13,16 +13,12 @@ import MatronStorage
 import MatronSync
 import MatronViewModels
 
-/// Task 12 (Phase 7): wires the Mac app onto the matron-journal stack
-/// instead of the Matrix SDK. Same shape as the iOS `AppDependencies`
-/// (Task 11) — one `JournalCore` (API client + local SQLite mirror + sync
-/// engine) per signed-in session; every per-session / per-room service
-/// factory below is a thin wrapper over the same core so the sync engine,
-/// the store, and the API client stay singletons for the session's
-/// lifetime — same motivation as the pre-journal
-/// `syncCache`/`mediaCache`/`chatCache` per-session caches this replaces.
-///
-/// Built entirely on the journal stack; the Matrix SDK is gone from the repo.
+/// Wires the Mac app onto the journal stack. Same shape as the iOS
+/// `AppDependencies` — one `JournalCore` (API client + local SQLite mirror
+/// + sync engine) per signed-in session; every per-session / per-room
+/// service factory below is a thin wrapper over the same core so the sync
+/// engine, the store, and the API client stay singletons for the session's
+/// lifetime.
 @MainActor
 final class AppDependencies {
     let auth: AuthService

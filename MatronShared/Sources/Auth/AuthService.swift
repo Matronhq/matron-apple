@@ -68,7 +68,7 @@ public struct TwoFactorEnrolment: Equatable, Sendable {
 }
 
 public protocol AuthService: Sendable {
-    /// Probes the server URL by hitting `/_matrix/client/versions`.
+    /// Probes the server URL: checks that a journal server answers there.
     /// Returns supported login flows.
     func probe(_ rawURL: String) async throws -> ServerCapabilities
 

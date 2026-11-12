@@ -28,8 +28,8 @@ public enum MatronCommand: String, CaseIterable, Sendable {
 public extension Notification.Name {
     /// Constructs a stable, distinct `Notification.Name` per `MatronCommand`
     /// case. The key prefix scopes notifications to Matron so the global
-    /// `NotificationCenter` doesn't collide with anything else (SDK,
-    /// system, third parties).
+    /// `NotificationCenter` doesn't collide with anything else (system,
+    /// third parties).
     static func matronCommand(_ cmd: MatronCommand) -> Notification.Name {
         Notification.Name("chat.matron.command.\(cmd.rawValue)")
     }
@@ -50,10 +50,6 @@ public extension Notification.Name {
 /// Find in Chat / Search All Chats / Go to Number / Refresh are per window
 /// (`MacNavigationActions`), not bus commands: a post would open the bar,
 /// or the field, in every window.
-///
-/// Task 12 dropped the Help menu's `.verifyDevice` / `.showRecoveryKey`
-/// items (and their listeners) along with the rest of the verification
-/// UI — the journal stack has no verification concept yet.
 struct ChatCommands: Commands {
     /// The key window's Back/Forward (spec 2026-09-23 §5), published by
     /// its `MacChatListView`. Read from the focused scene instead of posted

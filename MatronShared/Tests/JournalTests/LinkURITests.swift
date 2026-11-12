@@ -50,7 +50,7 @@ final class LinkURITests: XCTestCase {
 
     func test_parse_cleartextHttpToNonLocalhost_isMalformed() {
         // Mirrors ServerURLValidator's policy: plain http is only for a
-        // local dev homeserver, never a real LAN/Wi-Fi host — a QR code
+        // local dev server, never a real LAN/Wi-Fi host — a QR code
         // pointed at cleartext http on a real IP would leak the session
         // token to anyone on the network path.
         let raw = "matron://link?v=1&server=http%3A%2F%2F192.168.1.10%3A8787&code=KTNM-3VQ8"

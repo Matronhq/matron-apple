@@ -17,7 +17,7 @@ import MatronViewModels
 /// row and the resolved `Image` is handed to `AttachmentImage`.
 struct TimelineItemView: View {
     let item: TimelineItem
-    /// Optional resolver for `mxc://` image URLs. `nil` keeps the legacy
+    /// Optional resolver for image attachment URLs. `nil` keeps the
     /// placeholder rendering for previews and tests that don't wire up a
     /// `ChatViewModel`. Production usage in `ChatView` always passes
     /// `viewModel.image(for:)`.
@@ -36,7 +36,7 @@ struct TimelineItemView: View {
     /// can present the fullscreen viewer without a second fetch.
     /// `nil` keeps existing test sites compiling unchanged.
     var onTapImage: ((URL, Image) -> Void)? = nil
-    /// File-attachment tap handler — receives the `mxc://` URL plus
+    /// File-attachment tap handler — receives the attachment URL plus
     /// the original filename so the parent can stage the bytes to a
     /// temp file and present `ShareLink` (iOS) / `NSWorkspace.open`
     /// (Mac).
@@ -567,7 +567,7 @@ struct TimelineItemView: View {
     }
 
     /// Composes the accessibility label for a row. "Me" rather than the
-    /// raw matrix ID so VoiceOver doesn't leak the user's full handle on
+    /// raw sender id so VoiceOver doesn't leak the user's full handle on
     /// every own-message read-out (QA finding #13).
     static func accessibilityLabel(for item: TimelineItem, body: String) -> String {
         let senderName = item.isOwn ? "Me" : displayName(for: item.sender)
@@ -628,9 +628,8 @@ struct TimelineItemView: View {
         TimelineSenderLabels.avatarSender(for: item, hasMultipleSenders: hasMultipleSenders)
     }
 
-    /// Phase 2 placeholder for member display names: take the local part of
-    /// the Matrix ID without the leading `@` sigil. Phase 5+ can resolve
-    /// from member events when those land in the SDK bridge.
+    /// Display name for a sender id (see
+    /// `TimelineSenderLabels.displayName(for:)`).
     /// `internal static` so unit tests in `MatronTests` can pin the
     /// formatting without instantiating the SwiftUI view.
     static func displayName(for senderID: String) -> String {

@@ -26,10 +26,8 @@ import MatronViewModels
 ///
 /// Long-press menu and swipe surface Archive, wired to
 /// `ChatService.setArchived(_:archived:)`; the Archived row at the foot of
-/// the list opens `ArchivedChatsView`. Pull-to-refresh hits
-/// `ChatService.refresh()` which makes the next room-list snapshot
-/// re-sync. The `+` toolbar button's sheet binding is in place but the
-/// `NewChatSheet` itself lands in Task 14.
+/// the list opens `ArchivedChatsView`. Pull-to-refresh goes through
+/// `ChatListViewModel.refresh()` (see the `.refreshable` below).
 struct ChatListView: View {
     @State var viewModel: ChatListViewModel
     /// Whether this view starts and cancels `viewModel` itself. The app
@@ -82,7 +80,7 @@ struct ChatListView: View {
     /// `connectionStatusLabel` — no async glue inside the View, just a
     /// `@State` mirror of the upstream stream.
     @State private var connectionState: SyncBannerState = .connecting
-    /// Tracks whether sliding sync has ever been observed `.running` in
+    /// Tracks whether sync has ever been observed `.running` in
     /// this session, so the inline status can pick "Connecting…" vs
     /// "Reconnecting…" for the connecting state. Sticky once true —
     /// resets only when the View itself remounts (e.g. sign-out + back-in).
@@ -445,12 +443,9 @@ struct ChatListView: View {
             .listStyle(.plain)
             .modifier(pinSheets)
             .refreshable {
-                // Phase 2.5: pull-to-refresh drives a one-shot
-                // `client.rooms()` snapshot through the live broadcaster
-                // pipe via `ChatListViewModel.refresh()` →
-                // `ChatService.forceSnapshot()`. Pre-2.5 this called
-                // `chat.refresh()`, a `sync.waitUntilReady()` no-op once
-                // running, so the gesture was purely cosmetic.
+                // Re-fetches the conversation summaries from the server via
+                // `ChatListViewModel.refresh()` →
+                // `ChatService.forceSnapshot()`.
                 await viewModel.refresh()
             }
         }

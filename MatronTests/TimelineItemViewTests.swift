@@ -5,9 +5,8 @@ import MatronEvents
 import MatronModels
 @testable import Matron
 
-/// Pins the formatting of `TimelineItemView.displayName(for:)`. The function
-/// is a Phase-2 placeholder that takes the Matrix ID's local part — without
-/// the leading `@` sigil — until member events round-trip from the SDK.
+/// Pins the formatting of `TimelineItemView.displayName(for:)`: the local
+/// part of an `@local:server`-style id, without the leading `@` sigil.
 final class TimelineItemViewTests: XCTestCase {
 
     func test_displayName_stripsAtSigil_andServerSuffix() {

@@ -40,7 +40,7 @@ public enum LinkURI {
     }
 
     /// `https` is always fine; cleartext `http` is only fine for a local
-    /// dev homeserver, never a real host reached over Wi-Fi/LAN — a QR
+    /// dev server, never a real host reached over Wi-Fi/LAN — a QR
     /// code encoding cleartext http to a real IP would leak the session
     /// token to anyone on the network path. Mirrors (manually, since
     /// `ServerURLValidator` doesn't expose this as a reusable helper)

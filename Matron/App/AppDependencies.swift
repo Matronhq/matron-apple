@@ -14,15 +14,11 @@ import MatronSync
 import MatronViewModels
 import MatronVoice
 
-/// Task 11 (Phase 7): wires the iOS app onto the matron-journal stack
-/// instead of the Matrix SDK. One `JournalCore` (API client + local SQLite
-/// mirror + sync engine) is built per signed-in session; every per-session
-/// / per-room service factory below is a thin wrapper over the same core so
-/// the sync engine, the store, and the API client stay singletons for the
-/// session's lifetime — same motivation as the pre-journal
-/// `syncCache`/`mediaCache`/`chatCache` per-session caches this replaces.
-///
-/// Built entirely on the journal stack; the Matrix SDK is gone from the repo.
+/// Wires the iOS app onto the journal stack. One `JournalCore` (API client
+/// + local SQLite mirror + sync engine) is built per signed-in session;
+/// every per-session / per-room service factory below is a thin wrapper
+/// over the same core so the sync engine, the store, and the API client
+/// stay singletons for the session's lifetime.
 @MainActor
 final class AppDependencies {
     let auth: AuthService

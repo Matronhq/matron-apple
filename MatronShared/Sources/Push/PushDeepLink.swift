@@ -5,13 +5,12 @@ import Foundation
 /// the Mac's `MacNotificationHandler` so both platforms agree on the
 /// payload contract.
 ///
-/// The push relay (`matron-journal` `src/push.js`) carries the
-/// conversation id ONLY as `thread-id` inside the `aps` dictionary — it
-/// sends no top-level custom key, and without `mutable-content: 1` the
-/// NSE that would have rewritten one never runs. Reading `room_id` alone
-/// therefore never matched anything and every tap opened the app without
-/// navigating. `room_id` stays as the preferred key so an NSE rewrite or
-/// a future relay custom key keeps working without an app change.
+/// The push relay (the journal server) sets `mutable-content: 1` on every
+/// alert, so on iOS the notification service extension runs and copies the
+/// payload's `convo_id` into `room_id` (and the thread identifier). The Mac
+/// has no such extension, so the conversation id is also read from
+/// `thread-id` inside the `aps` dictionary, where the relay puts it too.
+/// `room_id` is preferred when present.
 public enum PushDeepLink {
     public static func roomID(fromUserInfo userInfo: [AnyHashable: Any]) -> String? {
         if let explicit = userInfo["room_id"] as? String, !explicit.isEmpty {

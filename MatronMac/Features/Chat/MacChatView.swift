@@ -740,8 +740,8 @@ struct MacChatView: View {
 
     private var chatColumn: some View {
         VStack(spacing: 0) {
-            // QA finding #10: mirror the iOS error banner. Sliding-sync
-            // timeouts now surface here instead of leaving the user
+            // Mirrors the iOS error banner: timeline failures surface
+            // here instead of leaving the user
             // staring at an empty scroll view.
             if let errorMessage = viewModel.error {
                 Text(errorMessage)
@@ -800,7 +800,7 @@ struct MacChatView: View {
                 // Settled-empty branch — see iOS `ChatView` and
                 // `ChatViewModel.settledEmpty`. The debounced flag keeps
                 // the placeholder from flashing on cold-start warm-up OR a
-                // transient sliding-sync timeline reset.
+                // transient timeline reset.
                 EmptyChatPlaceholder(botName: chatTitle)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -1144,7 +1144,7 @@ private struct MacTimelineListContent: View, Equatable {
     /// ignoring it is safe; `nil` where the screen has no mission page
     /// (sub-chat panes).
     let onOpenMission: ((String) -> Void)?
-    /// Carries the tapped image's `mxc://` URL alongside the resolved
+    /// Carries the tapped image's attachment URL alongside the resolved
     /// `Image` so the presenter can look up its native pixel size.
     let onPreviewImage: (URL, Image) -> Void
     /// Plays a tapped audio/video file attachment in the app

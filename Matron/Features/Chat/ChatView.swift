@@ -496,8 +496,8 @@ struct ChatView: View {
             if viewModel.settledEmpty && viewModel.error == nil {
                 // Settled-empty branch: gated on the debounced
                 // `settledEmpty` (not raw `items.isEmpty`) so the
-                // placeholder doesn't flash during sliding-sync warm-up
-                // OR a transient timeline reset — both produce a
+                // placeholder doesn't flash while the first snapshot loads
+                // OR on a transient timeline reset — both produce a
                 // momentary empty `items` that repopulates within a tick.
                 // See `ChatViewModel.settledEmpty`.
                 EmptyChatPlaceholder(botName: chatTitle)

@@ -23,12 +23,10 @@ public enum ServerURLValidator {
             throw ValidationError.noHost
         }
         // `https://` everywhere except localhost-ish dev hosts. Plain http
-        // to localhost is the standard pattern for talking to a local dev
-        // homeserver (Docker matron-server in tests/integration runs on
-        // http://localhost:6167; Element Web + matrix-js-sdk accept the
-        // same exception). Production matron-server always runs behind
-        // HTTPS, so the carve-out can't expose remote credentials over
-        // plaintext.
+        // to localhost is the standard pattern for talking to a locally-run
+        // journal server (e.g. http://127.0.0.1:9810). A real server always
+        // runs behind HTTPS, so the carve-out can't expose remote
+        // credentials over plaintext.
         let isLocalhostHost = host == "localhost"
             || host == "127.0.0.1"
             || host == "::1"

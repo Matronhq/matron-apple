@@ -10,7 +10,8 @@ enum TimelineSenderLabels {
         return item.sender
     }
 
-    /// Local part of a Matrix-style id without the `@` sigil.
+    /// Local part of an `@local:server`-style id without the `@` sigil;
+    /// any other id (e.g. a journal sender) comes back up to its first `:`.
     static func displayName(for senderID: String) -> String {
         let withoutSigil = senderID.hasPrefix("@") ? String(senderID.dropFirst()) : senderID
         return withoutSigil.split(separator: ":").first.map(String.init) ?? senderID

@@ -215,9 +215,7 @@ final class SearchViewModelTests: XCTestCase {
         XCTAssertNil(unknown.boxLetter)
     }
 
-    /// Task 11 (journal rewire): `SearchViewModel` no longer tracks backfill
-    /// progress (`applyBackfillProgress`/`observeBackfill` were dropped
-    /// along with the Matrix-SDK-only backfill machinery), so the empty
+    /// `SearchViewModel` doesn't track backfill progress, so the empty
     /// state is always the plain "No results." message.
     @MainActor
     func test_emptyState_showsNoResults() async {

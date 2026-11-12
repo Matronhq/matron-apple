@@ -33,7 +33,7 @@
 		<string>$(AppIdentifierPrefix)chat.matron</string>
 	</array>
 	<!--
-		Phase 4 Task 12: APNs environment for Release / App Store
+		APNs environment for Release / App Store
 		builds. Pairs with the journal server sending through production
 		APNs for tokens registered with `environment: prod` (Release
 		builds send `.prod` — see AppDependencies.pushEnvironment).

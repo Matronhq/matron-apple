@@ -34,7 +34,7 @@ public enum MatronItemLink {
         /// Hosts don't open it; they offer to copy it instead
         /// (`BlockedLinkPrompt`).
         case blocked(URL)
-        /// Consume silently — matrix-internal URLs, and item links when no
+        /// Consume silently — legacy matrix/mxc URLs, and item links when no
         /// in-app handler is installed.
         case swallow
         /// A well-formed `matron://consent/…` link — the
@@ -179,7 +179,8 @@ public enum MatronItemLink {
             // URL" sheet: swallow instead.
             return .swallow
         case "matrix", "mxc":
-            // Swallowed until permalink / content-URI handling lands.
+            // Legacy links old message text can still carry. Nothing can
+            // open them.
             return .swallow
         default:
             // Only web and email links reach the OS. Text in a message or

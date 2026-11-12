@@ -13,7 +13,7 @@ import MatronViewModels
 /// `MatronDesignSystem/StateBridges.swift`.
 struct MacTimelineItemView: View {
     let item: TimelineItem
-    /// Optional resolver for `mxc://` image URLs. `nil` keeps the legacy
+    /// Optional resolver for image attachment URLs. `nil` keeps the
     /// placeholder rendering for previews and tests that don't wire up a
     /// `ChatViewModel`.
     var resolveImage: ((URL) -> Image?)? = nil
@@ -27,7 +27,7 @@ struct MacTimelineItemView: View {
     /// Delete handler for the same rows, wired to `viewModel.discardSend(itemID:)`.
     var onDiscard: ((String) -> Void)? = nil
     /// Image-attachment tap handler — mirrors the iOS surface, plus the
-    /// `mxc://` URL so the presenter can look up the bitmap's native
+    /// attachment URL so the presenter can look up the bitmap's native
     /// pixel size for the fullscreen sheet.
     var onTapImage: ((URL, Image) -> Void)? = nil
     /// File-attachment tap handler — mirrors the iOS surface.

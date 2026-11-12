@@ -347,8 +347,8 @@ extension JournalStore {
         return parts.isEmpty ? nil : parts.joined(separator: " \u{00B7} ")
     }
 
-    /// One conversation as the item detail's owner row reads it (mission
-    /// 10570): whether this device has its row, and its origin label.
+    /// One conversation as the item detail's owner row reads it: whether
+    /// this device has its row, and its origin label.
     public struct ConversationOrigin: Equatable, Sendable {
         public let exists: Bool
         /// Same label as `conversationOriginLabels()`: `nil` when unknown or

@@ -3,17 +3,15 @@
 <!--
 	Debug-only entitlements for the Mac target. Intentionally OMITS
 	`com.apple.security.app-sandbox` so XCUITest's runner can establish
-	its XPC connection to the host app for the integration harness —
-	sandboxed Mac apps can't be UI-tested without ad-hoc signing +
-	provisioning gymnastics, and the harness is the higher-value
-	tradeoff. Release entitlements (MatronMac.entitlements) DO include
+	its XPC connection to the host app for the UI tests — sandboxed Mac
+	apps can't be UI-tested without ad-hoc signing + provisioning
+	gymnastics, and the UI tests are the higher-value tradeoff. Release entitlements (MatronMac.entitlements) DO include
 	`com.apple.security.app-sandbox` for App Store distribution.
 
 	Acknowledged risk: sandbox-related bugs (Keychain scoping, file-
 	system access, network behaviour) won't surface in Debug builds —
 	they only show up at Release / TestFlight. Mitigation is manual
-	smoke on signed Release builds (per the Phase 3 workflow in
-	docs/HANDOVER.md). Per-config wiring lives in project.yml at the
+	smoke on signed Release builds. Per-config wiring lives in project.yml at the
 	MatronMac target's settings.configs.Debug / settings.configs.Release
 	split.
 
@@ -28,26 +26,23 @@
 	<key>com.apple.security.files.user-selected.read-write</key>
 	<true/>
 	<!--
-		Keychain access group, parity with Release. Required for
-		`RecoveryKeyManager.generateAndPersist` to write the recovery
-		key into the user's Keychain — without it, `SecItemAdd` returns
-		errSecMissingEntitlement (-34018) on every call and the user
-		sees "Couldn't auto-store your recovery key" inline. The group
-		string uses Xcode's `$(AppIdentifierPrefix)` build-time
-		substitution; ad-hoc-signed harness builds (which set
-		CODE_SIGN_IDENTITY=-) won't validate it (the entitlement is
-		checked against the AppID at runtime), so they'll still hit
-		-34018 — but the view-model already handles that path via
-		`PersistenceError.keychainWriteFailedButKeyAvailable`. Properly
-		signed dev builds (Personal Team or the org team)
-		get a working Keychain write at runtime.
+		Keychain access group, parity with Release. Required for the
+		signed-in session's Keychain item (`KeychainStore.sessionStore()`
+		uses the data-protection keychain) — without it, every call
+		returns errSecMissingEntitlement (-34018). The group string uses
+		Xcode's `$(AppIdentifierPrefix)` build-time substitution; an
+		ad-hoc-signed build (CODE_SIGN_IDENTITY=-) can't validate it (the
+		entitlement is checked against the AppID at runtime), still hits
+		-34018, and keeps the session in a file instead. Properly signed
+		dev builds (Personal Team or the org team) get a working Keychain
+		at runtime.
 	-->
 	<key>keychain-access-groups</key>
 	<array>
 		<string>$(AppIdentifierPrefix)chat.matron</string>
 	</array>
 	<!--
-		Phase 4 Task 12: APNs environment for Debug builds. Pairs with
+		APNs environment for Debug builds. Pairs with
 		the journal server routing through sandbox APNs for tokens
 		registered with `environment: sandbox` (Debug builds send
 		`.sandbox` — see AppDependencies.pushEnvironment). A mismatch is
@@ -56,11 +51,10 @@
 
 		**macOS-specific key**: macOS uses
 		`com.apple.developer.aps-environment` (NOT the iOS-only bare
-		`aps-environment`). Initial Task 12 commit landed the iOS form
-		on Mac, which fails to grant push capability — `NSApplication.registerForRemoteNotifications()`
-		never produces a token. Bug spotted by cursor on PR #5 review;
-		the right key per Apple's macOS entitlements docs is the
-		`com.apple.developer.*` namespaced form.
+		`aps-environment`). The iOS form on Mac fails to grant push
+		capability — `NSApplication.registerForRemoteNotifications()`
+		never produces a token. The right key per Apple's macOS
+		entitlements docs is the `com.apple.developer.*` namespaced form.
 	-->
 	<key>com.apple.developer.aps-environment</key>
 	<string>development</string>

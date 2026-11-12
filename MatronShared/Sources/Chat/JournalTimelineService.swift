@@ -16,8 +16,8 @@ private extension Duration {
     }
 }
 
-/// `TimelineService` over the local journal mirror (Phase 7 replacement for
-/// the Matrix-SDK-backed `TimelineServiceLive`). One instance per open room.
+/// `TimelineService` over the local journal mirror. One instance per open
+/// conversation.
 ///
 /// `items()` merges three inputs into a single snapshot stream:
 ///  1. `store.eventsStream(convoID:sinceSeq:)` — a tail-anchored window, not
