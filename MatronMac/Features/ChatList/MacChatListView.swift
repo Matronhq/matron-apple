@@ -578,6 +578,7 @@ struct MacChatListView: View {
             }
             .modifier(MacVoiceNoteIndicatorBar(session: voiceNotes, onOpen: openVoiceNoteTarget))
             .modifier(MacMarkdownPreviewInspector(model: markdownPreview))
+            .modifier(MacDetailColumnDiagnostics(voiceNotes: voiceNotes, markdownPreview: markdownPreview))
             // Below this the sidebar gives way first; see
             // `MacMarkdownPanelLayout` for the panel's share of it.
             .navigationSplitViewColumnWidth(min: Self.detailMinWidth, ideal: Self.detailMinWidth)

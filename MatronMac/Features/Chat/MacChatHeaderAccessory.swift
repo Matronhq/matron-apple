@@ -512,10 +512,13 @@ final class MacChatHeaderAccessory: NSTitlebarAccessoryViewController {
         guard width > 0, abs(view.frame.width - total) > 0.5 else { return }
         widthConstraint?.constant = total
         view.setFrameSize(NSSize(width: total, height: view.frame.height))
+        // A resize re-lays the title bar: see `MacDetailColumnLog`.
+        MacDetailColumnLog.note("header width \(Int(total))")
     }
 
     func attach(_ host: NSView) {
         hosts.add(host)
+        if isHidden { MacDetailColumnLog.note("header shown") }
         isHidden = false
     }
 
@@ -527,6 +530,7 @@ final class MacChatHeaderAccessory: NSTitlebarAccessoryViewController {
         model.props = nil
         model.item = nil
         isHidden = true
+        MacDetailColumnLog.note("header hidden")
     }
 }
 
