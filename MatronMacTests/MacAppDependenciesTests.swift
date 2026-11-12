@@ -172,7 +172,7 @@ final class MacAppDependenciesTests: XCTestCase {
 
     /// The process-wide timeline measurement memo holds rendered copies of
     /// the previous account's messages — sign-out purges it, as on iOS.
-    func test_signOut_purgesTheTimelineMeasureCache() {
+    func test_signOut_purgesTheTimelineMeasureCache() async {
         deps = AppDependencies()
         let content = TimelineRowContent.text(TextRowContent(
             itemID: "1", body: "secret", isOwn: false, sendState: .sent,
@@ -183,6 +183,9 @@ final class MacAppDependenciesTests: XCTestCase {
         XCTAssertNotNil(cache.measurement(roomID: roomID, content: content, width: 500))
         deps.signOut()
         XCTAssertNil(cache.measurement(roomID: roomID, content: content, width: 500))
+        // The teardown wipes the shared search index; let it finish here
+        // rather than during a later test.
+        await deps.awaitPendingTeardown()
     }
 
     /// App shell (spec §1): the Decisions instance has no home conversation
