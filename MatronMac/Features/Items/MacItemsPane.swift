@@ -464,22 +464,16 @@ struct MacItemDetailHost: View {
     /// message bodies so an item link works here too — and so no `matron://`
     /// URL reaches `NSWorkspace`, which has no handler for the scheme.
     private func openLink(_ url: URL) {
-        switch MatronItemLink.action(for: url, numbers: trackerNumberLinks?.origin) {
-        // Through the relay, not straight to `openTrackerItem`: a chip tap
-        // is a tap like any other and must share the body's staleness gate.
-        case .openTrackerItem(let number): itemLinkRelay.action(number)
-        case .openConsent(let consent): openConsent(consent)
-        // Through the window/shell's conversation-link host, like a body
-        // link: it checks the conversation is known before navigating.
-        case .openConversation(let convoID): openConversationLink?(convoID)
-        case .openPage(let link): openPageLink?(link)
-        case .openTrackerNumber(let number):
-            trackerNumberLinks?.open(number, url: url, openItem: itemLinkRelay.action, openPage: openPageLink,
-                                     openWeb: TrackerNumberLinks.openInBrowser)
-        case .swallow: break
-        case .system(let url): NSWorkspace.shared.open(url)
-        case .blocked(let url): BlockedLinkPrompt.present(url)
-        }
+        // Item links go through the relay, not straight to `openTrackerItem`:
+        // a chip tap is a tap like any other and must share the body's
+        // staleness gate. Conversation links go through the window/shell's
+        // conversation-link host, like a body link: it checks the
+        // conversation is known before navigating.
+        LinkTapRouter(openTrackerItem: itemLinkRelay.action, openConversation: openConversationLink,
+                      openPageLink: openPageLink, openConsent: openConsent,
+                      trackerNumberLinks: trackerNumberLinks,
+                      openExternally: { NSWorkspace.shared.open($0) })
+            .route(url)
     }
 
     /// A consent chip: a spawn ask's card lives in this item's

@@ -86,47 +86,39 @@ public struct MarkdownText: View {
                        openConversation: ((String) -> Void)? = nil,
                        openPage: ((MatronPageLink) -> Void)? = nil,
                        numbers: TrackerNumberLinks? = nil) -> OpenURLAction.Result {
-        switch MatronItemLink.action(for: url, numbers: numbers?.origin) {
-        case .openTrackerItem(let number):
+        // http(s) and mailto are left to the system handler (browser,
+        // deep-link app, mail) through `.systemAction`, so the router opens
+        // nothing for them itself.
+        let router = LinkTapRouter(openTrackerItem: openItem, openConversation: openConversation,
+                                   openPageLink: openPage, trackerNumberLinks: numbers,
+                                   openExternally: { _ in })
+        switch router.route(url) {
+        case .trackerItem:
             // `matron://item/<n>` — resolved in-app. Handled
             // either way: the scheme is not registered with the OS, so
             // falling through would surface a "no handler" sheet.
-            if let openItem {
-                openItem(number)
-            } else {
+            if openItem == nil {
                 // Redacted: never the query — see `MatronItemLink.redactedForLog`.
                 Self.log.debug("No tracker-item handler installed for \(MatronItemLink.redactedForLog(url), privacy: .public)")
             }
-            return .handled
-        case .openConversation(let convoID):
+        case .conversation:
             // `matron://convo/<id>` — in-app or nowhere,
             // for the same reason as an item link.
-            if let openConversation {
-                openConversation(convoID)
-            } else {
+            if openConversation == nil {
                 Self.log.debug("No conversation handler installed for \(MatronItemLink.redactedForLog(url), privacy: .public)")
             }
-            return .handled
-        case .openPage(let link):
+        case .page:
             // `matron://mission/<n>` / `matron://project/<n>` — in-app or
             // nowhere, like the two above.
-            if let openPage {
-                openPage(link)
-            } else {
+            if openPage == nil {
                 Self.log.debug("No page-link handler installed for \(MatronItemLink.redactedForLog(url), privacy: .public)")
             }
-            return .handled
-        case .openTrackerNumber(let number):
-            // A shareable link. The user's own is looked up, then opened
-            // through the item or page opener above; another person's goes
-            // to the host's read-only viewer; the browser when the
-            // app cannot show what it names.
-            if let numbers {
-                numbers.open(number, url: url, openItem: openItem, openPage: openPage,
-                             openWeb: TrackerNumberLinks.openInBrowser)
-            }
-            return .handled
-        case .swallow, .openConsent:
+        case .trackerNumber, .blocked:
+            // A shareable link is opened by the router through the openers
+            // above (or the browser); a scheme the app won't hand to the OS
+            // gets the copy prompt.
+            break
+        case .swallowed, .consent:
             // Legacy `matrix:` / `mxc:` links, which nothing can open, and
             // any `matron://`
             // we don't understand. `.handled` keeps the OS from surfacing a
@@ -134,17 +126,10 @@ public struct MarkdownText: View {
             // `matron://rlink` / `matron://link` carries its pairing secret
             // in the query, which must never reach the log store.
             Self.log.debug("Suppressed in-app open for URL: \(MatronItemLink.redactedForLog(url), privacy: .public)")
-            return .handled
-        case .system:
-            // http(s) and mailto → the system handler (browser, deep-link
-            // app, mail).
+        case .external:
             return .systemAction
-        case .blocked(let url):
-            // Any other scheme is never handed to the OS from message text;
-            // the user is told and offered the link to copy.
-            MainActor.assumeIsolated { BlockedLinkPrompt.present(url) }
-            return .handled
         }
+        return .handled
     }
 
     private static let log = Logger(subsystem: "chat.matron", category: "MarkdownText")

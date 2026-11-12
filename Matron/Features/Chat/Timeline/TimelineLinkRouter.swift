@@ -3,11 +3,11 @@ import MatronDesignSystem
 import MatronModels
 
 /// Link taps from the UIKit timeline's text views and table grids. The
-/// decision is `MatronItemLink.action(for:)` — the policy `MarkdownText`
-/// and the Mac's `SelectableMessageText` share — so the three renderers
-/// cannot drift. Item, conversation, mission and project links resolve
-/// in-app (the `matron` scheme is registered with nothing); with no handler
-/// installed they are swallowed, never handed to the OS.
+/// dispatch is `LinkTapRouter` — the one `MarkdownText` and the Mac's
+/// `SelectableMessageText` use too — so the renderers cannot drift. Item,
+/// conversation, mission and project links resolve in-app (the `matron`
+/// scheme is registered with nothing); with no handler installed they are
+/// swallowed, never handed to the OS.
 struct TimelineLinkRouter {
     var openTrackerItem: ((Int) -> Void)?
     var openConversation: ((String) -> Void)?
@@ -20,43 +20,18 @@ struct TimelineLinkRouter {
     /// app won't hand to the OS.
     var presentBlocked: @MainActor (URL) -> Void = { BlockedLinkPrompt.present($0) }
 
-    enum Outcome: Equatable {
-        case trackerItem(Int)
-        case conversation(String)
-        case page(MatronPageLink)
-        case trackerNumber(Int)
-        case swallowed
-        case external(URL)
-        /// Not a web or email link: not opened, the copy prompt shown.
-        case blocked(URL)
-    }
+    typealias Outcome = LinkTapRouter.Outcome
 
     @MainActor
     @discardableResult
     func route(_ url: URL) -> Outcome {
-        switch MatronItemLink.action(for: url, numbers: trackerNumberLinks?.origin) {
-        case .openTrackerNumber(let number):
-            trackerNumberLinks?.open(number, url: url, openItem: openTrackerItem, openPage: openPageLink,
-                                     openWeb: openExternally)
-            return .trackerNumber(number)
-        case .openTrackerItem(let number):
-            openTrackerItem?(number)
-            return .trackerItem(number)
-        case .openConversation(let convoID):
-            openConversation?(convoID)
-            return .conversation(convoID)
-        case .openPage(let link):
-            openPageLink?(link)
-            return .page(link)
-        case .swallow, .openConsent:
-            return .swallowed
-        case .system(let url):
-            openExternally(url)
-            return .external(url)
-        case .blocked(let url):
-            presentBlocked(url)
-            return .blocked(url)
-        }
+        // A shareable link the app cannot show goes through `openExternally`
+        // too, like any web link from the timeline.
+        LinkTapRouter(openTrackerItem: openTrackerItem, openConversation: openConversation,
+                      openPageLink: openPageLink, trackerNumberLinks: trackerNumberLinks,
+                      openExternally: openExternally, openTrackerNumberOnWeb: openExternally,
+                      presentBlocked: presentBlocked)
+            .route(url)
     }
 
     /// Whether UIKit's own default link action (Safari / universal links)
