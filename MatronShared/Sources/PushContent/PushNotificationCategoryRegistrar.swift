@@ -6,9 +6,12 @@ import UserNotifications
 /// notification with buttons, and by the app at launch for the common ones.
 ///
 /// Registering replaces the whole set, so each call reads the current set
-/// and adds to it. The order of use is kept in the app group's defaults,
-/// which the app and the extension share, so the oldest categories can make
-/// way for new ones.
+/// and adds to it. Two notifications arriving together (or the app and the
+/// extension) would otherwise each write a set without the other's
+/// category, so the read, the write and the wait for it to land run one at
+/// a time, under a lock file in the app group both processes share. The
+/// order of use is kept in the app group's defaults, so the oldest
+/// categories can make way for new ones.
 public enum PushNotificationCategoryRegistrar {
     static let orderKey = "matron.item.category-order"
     public static let appGroup = "group.chat.matron"
@@ -16,7 +19,19 @@ public enum PushNotificationCategoryRegistrar {
     public static func ensure(labels: [String],
                               center: UNUserNotificationCenter = .current(),
                               defaults: UserDefaults? = UserDefaults(suiteName: appGroup),
-                              then done: @escaping @Sendable () -> Void = {}) {
+                              then finished: @escaping @Sendable () -> Void = {}) {
+        // `flock` blocks, so it gets a thread of its own, never the caller's.
+        DispatchQueue.global(qos: .userInitiated).async {
+            let lock = RegistrationLock.acquire()
+            ensureLocked(labels: labels, center: center, defaults: defaults) {
+                lock?.release()
+                finished()
+            }
+        }
+    }
+
+    private static func ensureLocked(labels: [String], center: UNUserNotificationCenter, defaults: UserDefaults?,
+                                     then done: @escaping @Sendable () -> Void) {
         center.getNotificationCategories { existing in
             let order = defaults?.stringArray(forKey: orderKey) ?? []
             guard let next = PushNotificationActions.adding(labels: labels, to: existing, order: order) else {
@@ -42,5 +57,32 @@ public enum PushNotificationCategoryRegistrar {
                 waitUntilRegistered(identifier, center: center, attemptsLeft: attemptsLeft - 1, then: done)
             }
         }
+    }
+}
+
+/// An exclusive lock across the app and its extensions, for the length of
+/// one registration. Without the app group (an unsigned build) there is no
+/// shared file and no lock, which leaves the behaviour as it was.
+private final class RegistrationLock: @unchecked Sendable {
+    private let descriptor: Int32
+
+    private init(descriptor: Int32) { self.descriptor = descriptor }
+
+    static func acquire() -> RegistrationLock? {
+        guard let container = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: PushNotificationCategoryRegistrar.appGroup) else { return nil }
+        let descriptor = open(container.appendingPathComponent("notification-categories.lock").path,
+                              O_CREAT | O_RDWR, 0o600)
+        guard descriptor >= 0 else { return nil }
+        guard flock(descriptor, LOCK_EX) == 0 else {
+            close(descriptor)
+            return nil
+        }
+        return RegistrationLock(descriptor: descriptor)
+    }
+
+    func release() {
+        flock(descriptor, LOCK_UN)
+        close(descriptor)
     }
 }

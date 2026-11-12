@@ -99,7 +99,8 @@ final class PushContentTests: XCTestCase {
         XCTAssertNil(n.userInfo["box"])
         XCTAssertEqual(n.userInfo["room_id"] as? String, "c-1")
         XCTAssertEqual((n.userInfo["seq"] as? NSNumber)?.int64Value, 42)
-        XCTAssertEqual(PushNotificationActions.answer(actionIdentifier: PushNotificationActions.actionIdentifier(1), userInfo: n.userInfo),
+        XCTAssertEqual(PushNotificationActions.answer(actionIdentifier: PushNotificationActions.actionIdentifier(1),
+                                                      category: n.categoryIdentifier, userInfo: n.userInfo),
                        .init(itemID: "it_1", label: "Wait", replyTo: "ic_2"))
     }
 
@@ -138,12 +139,21 @@ final class PushNotificationActionsTests: XCTestCase {
 
     func test_answer_onlyForAButtonThatIsThere() {
         let info: [AnyHashable: Any] = ["item_id": "it_1", "item_actions": ["Ship", "Wait"]]
-        XCTAssertEqual(PushNotificationActions.answer(actionIdentifier: "matron.item.action.0", userInfo: info),
+        let category = PushNotificationActions.categoryIdentifier(for: ["Ship", "Wait"])
+        XCTAssertEqual(PushNotificationActions.answer(actionIdentifier: "matron.item.action.0", category: category, userInfo: info),
                        .init(itemID: "it_1", label: "Ship", replyTo: nil))
-        XCTAssertNil(PushNotificationActions.answer(actionIdentifier: "matron.item.action.2", userInfo: info))
-        XCTAssertNil(PushNotificationActions.answer(actionIdentifier: "matron.item.action.-1", userInfo: info))
-        XCTAssertNil(PushNotificationActions.answer(actionIdentifier: UNNotificationDefaultActionIdentifier, userInfo: info))
-        XCTAssertNil(PushNotificationActions.answer(actionIdentifier: "matron.item.action.0", userInfo: ["item_actions": ["Ship"]]))
+        XCTAssertNil(PushNotificationActions.answer(actionIdentifier: "matron.item.action.2", category: category, userInfo: info))
+        XCTAssertNil(PushNotificationActions.answer(actionIdentifier: "matron.item.action.-1", category: category, userInfo: info))
+        XCTAssertNil(PushNotificationActions.answer(actionIdentifier: UNNotificationDefaultActionIdentifier, category: category, userInfo: info))
+        XCTAssertNil(PushNotificationActions.answer(actionIdentifier: "matron.item.action.0", category: category, userInfo: ["item_actions": ["Ship", "Wait"]]))
+    }
+
+    func test_answer_refusesLabelsThatAreNotTheOnesTheCategoryShows() {
+        // Shown with the notice's "Seen" button, but carrying another label.
+        let seen = PushNotificationActions.categoryIdentifier(for: ["Seen"])
+        let info: [AnyHashable: Any] = ["item_id": "it_1", "item_actions": ["Approve"]]
+        XCTAssertNil(PushNotificationActions.answer(actionIdentifier: "matron.item.action.0", category: seen, userInfo: info))
+        XCTAssertNil(PushNotificationActions.answer(actionIdentifier: "matron.item.action.0", category: "", userInfo: info))
     }
 
     func test_adding_keepsOtherCategories_skipsWhatIsThere_andDropsTheOldestPastTheCap() throws {

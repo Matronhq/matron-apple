@@ -80,10 +80,16 @@ public enum PushNotificationActions {
     /// What a tap on a button means: which item, which label, and the
     /// comment the button belonged to. Nil when the notification carries no
     /// item or the identifier names no button on it.
-    public static func answer(actionIdentifier: String, userInfo: [AnyHashable: Any]) -> Answer? {
+    ///
+    /// `category` is the category the notification was shown with. The
+    /// labels must be the ones that category is named after, so the label
+    /// sent is always the label the user saw on the button: a notification
+    /// cannot show one list's buttons and answer with another's.
+    public static func answer(actionIdentifier: String, category: String, userInfo: [AnyHashable: Any]) -> Answer? {
         guard let index = index(ofActionIdentifier: actionIdentifier),
               let itemID = userInfo[Key.itemID] as? String, !itemID.isEmpty,
-              let labels = userInfo[Key.itemActions] as? [String], labels.indices.contains(index)
+              let labels = userInfo[Key.itemActions] as? [String], labels.indices.contains(index),
+              categoryIdentifier(for: labels) == category
         else { return nil }
         return Answer(itemID: itemID, label: labels[index], replyTo: userInfo[Key.itemReplyTo] as? String)
     }

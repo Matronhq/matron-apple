@@ -72,7 +72,8 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         // send. If it fails, the notification comes back saying so, and a
         // tap on it opens the item.
         if let answer = PushNotificationActions.answer(
-            actionIdentifier: response.actionIdentifier, userInfo: userInfo) {
+            actionIdentifier: response.actionIdentifier,
+            category: response.notification.request.content.categoryIdentifier, userInfo: userInfo) {
             let original = response.notification.request.content
             Task { @MainActor in
                 let sent = await self.answerItem?(answer) ?? false
