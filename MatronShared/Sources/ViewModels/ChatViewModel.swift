@@ -511,7 +511,7 @@ public final class ChatViewModel {
             // participating in day bucketing — the filter here is
             // what kept that fix in place.
             if case .stateChange = item.kind { continue }
-            // `.askUserAnswer` is pendingAsk bookkeeping (button
+            // `.askUserAnswer` is answered-prompt bookkeeping (button
             // responses are hidden, matching Matron X) — keep it out
             // of the rows AND out of day bucketing, same reasoning as
             // the virtual stateChange filter above. Bridge release rows
@@ -1478,7 +1478,7 @@ public final class ChatViewModel {
     /// `matron.answeredPrompts.<roomID>` so push re-decryption /
     /// re-opening the room can't re-pop an already-answered sheet.
     /// Cross-DEVICE answers are detected from the timeline instead —
-    /// see `pendingAsk()`.
+    /// see `isPromptAnswered(_:)` and `persistVisibleAnswers()`.
     private var answeredPromptIDs: Set<String>
 
     private var answeredPromptsDefaultsKey: String {
@@ -2451,53 +2451,6 @@ public final class ChatViewModel {
 
     // MARK: - Ask-user prompts (Phase 5 Task 11)
 
-    /// The most recent ask-user prompt the user still needs to answer,
-    /// or nil. Views key the sheet presentation off this from
-    /// `.onChange(of: viewModel.items)`.
-    ///
-    /// A prompt counts as answered when ANY of:
-    /// - it was answered/dismissed on this device
-    ///   (`answeredPromptIDs`, UserDefaults-persisted);
-    /// - the timeline contains a `chat.matron.button_response` for it
-    ///   (`.askUserAnswer`) — covers the user's other devices, which
-    ///   per-device bookkeeping can't see (Task 13's cross-platform
-    ///   smoke test);
-    /// - the timeline contains one of the user's own replies
-    ///   (`m.in_reply_to`) targeting it — same cross-device story for
-    ///   the `ask_user` text-reply channel.
-    ///
-    /// Already-expired prompts are skipped entirely: popping a sheet
-    /// whose `awaitExpiry` would immediately dismiss it is just a
-    /// flash of dead UI.
-    public func pendingAsk() -> AskUserPromptContext? {
-        persistVisibleAnswers()
-        var answeredInTimeline: Set<String> = []
-        for item in items {
-            // `isOwn` on BOTH paths: a `button_response` / reply only
-            // counts as OUR answer if it came from this Matrix user
-            // (this device or another of ours — both `isOwn`). In a
-            // multi-user room another member's button answer must NOT
-            // suppress the prompt for us (bugbot "Others' button answers
-            // dismiss sheet").
-            if case .askUserAnswer(let promptID, _) = item.kind,
-               !promptID.isEmpty, item.isOwn {
-                answeredInTimeline.insert(promptID)
-            }
-            if item.isOwn, let target = item.inReplyToEventID {
-                answeredInTimeline.insert(target)
-            }
-        }
-        for item in items.reversed() {
-            guard case .askUser(let id, let evt) = item.kind else { continue }
-            if answeredPromptIDs.contains(id) { continue }
-            if answeredInTimeline.contains(id) { continue }
-            if queuedReleaseAnswer(forPrompt: id) != nil { continue }
-            if let expiresAt = evt.expiresAt, Date.now >= expiresAt { continue }
-            return AskUserPromptContext(id: id, event: evt)
-        }
-        return nil
-    }
-
     /// The bridge's durable resolution for a busy-queue card (keyed by the
     /// card's event id), or `nil` while the card is still live. The mapper
     /// hides each `queued_release` prompt_reply as an answer row keyed
@@ -2544,9 +2497,8 @@ public final class ChatViewModel {
     /// resolved prompt looks unanswered again and accepts a duplicate
     /// reply (bugbot "Cross-device answers not persisted"). Folding the
     /// answer into the UserDefaults set the moment it's first seen makes
-    /// the resolved state sticky. The old half-sheet folded inside
-    /// `pendingAsk()` on every `items` change; the inline cards no
-    /// longer call `pendingAsk()`, so the views drive this on `items`.
+    /// the resolved state sticky. The views drive this on every `items`
+    /// change.
     ///
     /// Intersected with the prompts actually present: `answeredInTimeline`
     /// also holds the user's replies to ORDINARY messages, and persisting
@@ -2577,10 +2529,9 @@ public final class ChatViewModel {
     /// our devices (an `isOwn` `button_response` or `m.in_reply_to` reply
     /// for it is in the current timeline). Another user's button answer
     /// in a multi-member room does NOT count (bugbot "Others' button
-    /// answers dismiss sheet"). Distinct from `pendingAsk()`'s
-    /// "should a prompt pop" test: this answers "is THIS prompt resolved",
+    /// answers dismiss sheet"). It answers "is THIS prompt resolved",
     /// which the views use to decide whether an already-open sheet should
-    /// close. Critically it does NOT key on `pendingAsk()` returning nil —
+    /// close. An empty `items` reads as NOT answered —
     /// a transient sliding-sync clear empties `items` momentarily, and an
     /// open sheet must not drop on that (bugbot "Ask sheet drops on
     /// clear") nor be yanked to a newer prompt (bugbot "New prompt
@@ -2751,21 +2702,6 @@ public final class ChatViewModel {
         receiveSnapshot(items.filter { $0.id != "eph:\(messageRef)" })
     }
     #endif
-}
-
-/// Identifiable payload for the ask-user sheet presentation —
-/// `.sheet(item:)` keys on the prompt's event ID, so a NEW prompt
-/// arriving while a sheet is up swaps the content, while re-snapshots
-/// of the SAME prompt leave the presented sheet untouched.
-public struct AskUserPromptContext: Identifiable, Equatable, Sendable {
-    /// The prompt's Matrix event ID.
-    public let id: String
-    public let event: AskUserEvent
-
-    public init(id: String, event: AskUserEvent) {
-        self.id = id
-        self.event = event
-    }
 }
 
 /// Single-shot signal used by `ChatViewModel.start()` to bridge "first

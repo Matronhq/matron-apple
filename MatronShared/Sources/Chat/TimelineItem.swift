@@ -18,7 +18,7 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
     public let isOwn: Bool
     public let sendState: SendState
     /// Event ID this message replies to (`m.in_reply_to`), if any.
-    /// Phase 5: lets `ChatViewModel.pendingAsk()` mark an `ask_user`
+    /// Phase 5: lets `ChatViewModel.isPromptAnswered(_:)` mark an `ask_user`
     /// prompt answered when a reply targeting it appears in the
     /// timeline — including replies sent from the user's other
     /// devices, which per-device `UserDefaults` bookkeeping can't see.
@@ -68,7 +68,7 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
         /// this answers (from the `chat.matron.button_answer`
         /// relation). NOT rendered — Matron X hides button responses
         /// from the timeline entirely, own and others' — but kept in
-        /// the snapshot so `ChatViewModel.pendingAsk()` can mark the
+        /// the snapshot so `ChatViewModel.isPromptAnswered(_:)` can mark the
         /// prompt answered across devices.
         case askUserAnswer(promptEventID: String, selectedValues: [String])
         /// The journal's agent-chat consent card — one agent asking to talk

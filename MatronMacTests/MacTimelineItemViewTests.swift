@@ -53,7 +53,7 @@ final class MacTimelineItemViewTests: XCTestCase {
 
 
     func test_shouldRender_returnsFalse_forAskUserAnswer() {
-        // Phase 5: button responses are pendingAsk bookkeeping, never
+        // Phase 5: button responses are answered-prompt bookkeeping, never
         // rendered (Matron X hides them too).
         let item = TimelineItem(
             id: "a", sender: "@me:s",

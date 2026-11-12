@@ -2300,7 +2300,7 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertTrue(vm.settledEmpty, "after content ended the resume window, normal empty debounce resumes")
     }
 
-    // MARK: - pendingAsk (Phase 5 Task 11)
+    // MARK: - Ask-user prompts (Phase 5 Task 11)
 
     private static let askDefaultsKey = "matron.answeredPrompts.!ask-room:s"
 
@@ -2406,17 +2406,6 @@ final class ChatViewModelTests: XCTestCase {
     }
 
     @MainActor
-    func test_pendingAsk_skipsReleaseResolvedCard() async {
-        MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey)
-        defer { MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey) }
-        let vm = await makeAskVM(items: [
-            queuedCardItem(id: "$1", promptID: "pr_a"),
-            releaseItem(id: "$9", promptID: "pr_a"),
-        ])
-        XCTAssertNil(vm.pendingAsk())
-    }
-
-    @MainActor
     func test_queuedRelease_earliestWins_sendThenExpired() async {
         // The realistic double-release: a committed `send` that was never
         // acked, then boot reconcile's terminal `expired` for the same
@@ -2450,62 +2439,7 @@ final class ChatViewModelTests: XCTestCase {
     }
 
     @MainActor
-    func test_pendingAsk_returnsMostRecentUnansweredPrompt() async {
-        MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey)
-        defer { MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey) }
-        let vm = await makeAskVM(items: [askItem(id: "$1"), askItem(id: "$2")])
-        XCTAssertEqual(vm.pendingAsk()?.id, "$2")
-    }
-
-    @MainActor
-    func test_pendingAsk_excludesAnsweredPrompts_evenAfterRedelivery() async {
-        MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey)
-        defer { MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey) }
-        let vm = await makeAskVM(items: [askItem(id: "$1")])
-        XCTAssertNotNil(vm.pendingAsk())
-
-        vm.markPromptAnswered("$1")
-
-        // Simulate push re-decrypt: a fresh VM (new launch) receives
-        // the same event again — the UserDefaults persistence is what
-        // stops the re-pop.
-        let vm2 = await makeAskVM(items: [askItem(id: "$1")])
-        XCTAssertNil(vm2.pendingAsk(), "answered prompt must not re-pop")
-    }
-
-    @MainActor
-    func test_pendingAsk_surfacesOlderPrompt_onceNewestIsAnswered() async {
-        // Contract behind the sheet's `onDismiss` re-query (PR #6
-        // bugbot pass 1): with two unanswered prompts in the timeline,
-        // closing/answering the newest must surface the older one on
-        // the next query — not leave it hidden until a later snapshot.
-        MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey)
-        defer { MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey) }
-        let vm = await makeAskVM(items: [askItem(id: "$1"), askItem(id: "$2")])
-        XCTAssertEqual(vm.pendingAsk()?.id, "$2")
-
-        vm.markPromptAnswered("$2")
-        XCTAssertEqual(vm.pendingAsk()?.id, "$1", "older unanswered prompt must surface next")
-    }
-
-    @MainActor
-    func test_pendingAsk_clearedBy_buttonResponseInTimeline() async {
-        // Cross-device: the answer arrives as a chat.matron.
-        // button_response event in the timeline, not via this
-        // device's UserDefaults.
-        MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey)
-        defer { MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey) }
-        let answer = TimelineItem(
-            id: "$2", sender: "@me:s", timestamp: .now,
-            kind: .askUserAnswer(promptEventID: "$1", selectedValues: ["yes"]),
-            isOwn: true
-        )
-        let vm = await makeAskVM(items: [askItem(id: "$1"), answer])
-        XCTAssertNil(vm.pendingAsk())
-    }
-
-    @MainActor
-    func test_pendingAsk_clearedBy_ownReplyInTimeline() async {
+    func test_isPromptAnswered_byOwnReplyInTimeline() async {
         // Cross-device for the ask_user text channel: one of the
         // user's own messages replying (m.in_reply_to) to the prompt.
         MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey)
@@ -2517,37 +2451,14 @@ final class ChatViewModelTests: XCTestCase {
             inReplyToEventID: "$1"
         )
         let vm = await makeAskVM(items: [askItem(id: "$1"), reply])
-        XCTAssertNil(vm.pendingAsk())
-    }
-
-    @MainActor
-    func test_pendingAsk_persistsCrossDeviceAnswer_acrossSnapshots() async {
-        // Bugbot PR #6 finding "cross-device answers not persisted":
-        // once a snapshot shows the answer event, the answered state
-        // must be folded into UserDefaults — a later snapshot (or a
-        // fresh timeline whose encrypted answer lags decryption) that
-        // contains the prompt WITHOUT the answer must not re-pop it.
-        MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey)
-        defer { MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey) }
-        let answer = TimelineItem(
-            id: "$2", sender: "@me:s", timestamp: .now,
-            kind: .askUserAnswer(promptEventID: "$1", selectedValues: ["yes"]),
-            isOwn: true
-        )
-        let vm = await makeAskVM(items: [askItem(id: "$1"), answer])
-        XCTAssertNil(vm.pendingAsk(), "answer visible in timeline")
-
-        // Fresh VM, prompt present but answer event missing (decrypt
-        // lag / re-delivery window) — persisted knowledge must hold.
-        let vm2 = await makeAskVM(items: [askItem(id: "$1")])
-        XCTAssertNil(vm2.pendingAsk(), "cross-device answer must survive the snapshot losing the answer event")
+        XCTAssertTrue(vm.isPromptAnswered("$1"))
     }
 
     @MainActor
     func test_persistVisibleAnswers_keepsInlineCardResolved_acrossSnapshots() async {
         // Bugbot PR #10 finding "cross-device answers not persisted":
         // the inline AskUserCard reads answered-state via
-        // `isPromptAnswered`, not `pendingAsk()`. The views call
+        // `isPromptAnswered`. The views call
         // `persistVisibleAnswers()` on every snapshot, so once the answer
         // event is seen it's folded into UserDefaults. A later snapshot
         // that drops the answer event (or a fresh launch whose encrypted
@@ -2574,9 +2485,11 @@ final class ChatViewModelTests: XCTestCase {
     }
 
     @MainActor
-    func test_pendingAsk_notClearedBy_othersReplies() async {
+    func test_persistVisibleAnswers_ignoresOthersAnswers() async {
         // A reply from someone ELSE (e.g. the bot threading a follow-
-        // up onto its own prompt) must not count as the user's answer.
+        // up onto its own prompt), or another member's button answer in
+        // a multi-user room, must not count as the user's answer — not
+        // live, and not once folded into the persisted set.
         MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey)
         defer { MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey) }
         let botReply = TimelineItem(
@@ -2585,34 +2498,18 @@ final class ChatViewModelTests: XCTestCase {
             isOwn: false,
             inReplyToEventID: "$1"
         )
-        let vm = await makeAskVM(items: [askItem(id: "$1"), botReply])
-        XCTAssertEqual(vm.pendingAsk()?.id, "$1")
-    }
-
-    @MainActor
-    func test_pendingAsk_notClearedBy_othersButtonResponse() async {
-        // A `button_response` from ANOTHER member (isOwn=false) in a
-        // multi-user room must not suppress the prompt for us (bugbot
-        // "Others' button answers dismiss sheet").
-        MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey)
-        defer { MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey) }
         let othersAnswer = TimelineItem(
-            id: "$2", sender: "@someone-else:s", timestamp: .now,
-            kind: .askUserAnswer(promptEventID: "$1", selectedValues: ["yes"]),
+            id: "$3", sender: "@someone-else:s", timestamp: .now,
+            kind: .askUserAnswer(promptEventID: "$4", selectedValues: ["yes"]),
             isOwn: false
         )
-        let vm = await makeAskVM(items: [askItem(id: "$1"), othersAnswer])
-        XCTAssertEqual(vm.pendingAsk()?.id, "$1", "another user's button answer must not count as ours")
-    }
-
-    @MainActor
-    func test_pendingAsk_skipsExpiredPrompts() async {
-        MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey)
-        defer { MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey) }
-        let vm = await makeAskVM(items: [
-            askItem(id: "$1", expiresAt: Date.now.addingTimeInterval(-10))
-        ])
-        XCTAssertNil(vm.pendingAsk(), "expired prompt must not pop a dead sheet")
+        let vm = await makeAskVM(items: [askItem(id: "$1"), botReply, askItem(id: "$4"), othersAnswer])
+        vm.persistVisibleAnswers()
+        XCTAssertFalse(vm.isPromptAnswered("$1"))
+        XCTAssertFalse(vm.isPromptAnswered("$4"))
+        let vm2 = await makeAskVM(items: [askItem(id: "$1"), askItem(id: "$4")])
+        XCTAssertFalse(vm2.isPromptAnswered("$1"))
+        XCTAssertFalse(vm2.isPromptAnswered("$4"))
     }
 
     // MARK: - isPromptAnswered (open-sheet close decision; bugbot PR #6)
@@ -2667,7 +2564,7 @@ final class ChatViewModelTests: XCTestCase {
         }
         // New ViewModel instance, same room → loads from UserDefaults.
         let vm2 = await makeAskVM(items: [askItem(id: "$persist-1")])
-        XCTAssertNil(vm2.pendingAsk())
+        XCTAssertTrue(vm2.isPromptAnswered("$persist-1"))
     }
 
     // MARK: - Inline ask-user cards (askViewModel cache + answerSummary)
