@@ -326,8 +326,6 @@ final class MacChatListCell: MacDrawnCellView {
         return string
     }
 
-    static var cachedStringCountForTesting: Int { strings.count }
-
     static func badgeString(_ text: String, color: NSColor) -> NSAttributedString {
         NSAttributedString(string: text, attributes: [.font: Fonts.badge, .foregroundColor: color])
     }

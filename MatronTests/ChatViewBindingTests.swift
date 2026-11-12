@@ -47,10 +47,7 @@ private final class FakeChatForStrip: ChatService, @unchecked Sendable {
     func children(of parentConvoID: String) -> AsyncStream<[SubChatSummary]> {
         AsyncStream { $0.finish() }
     }
-    func createChat(with botID: String) async throws -> String { "!stub:server" }
-    func refresh() async throws {}
     func forceSnapshot() async throws {}
-    func mute(roomID: String) async throws {}
 }
 
 final class ChatViewBindingTests: XCTestCase {

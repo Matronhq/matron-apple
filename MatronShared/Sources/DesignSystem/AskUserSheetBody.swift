@@ -55,8 +55,7 @@ public struct AskUserSheetBody: View {
 
             case .choice(let options, let allowOther):
                 // One tap answers — a light accent-tinted chip per option, no
-                // radio + Send round-trip (parity with the web/desktop clients
-                // and the bridge's Matrix buttons). The binding write lands
+                // radio + Send round-trip (parity with the web/desktop clients). The binding write lands
                 // synchronously before `onSend()`, so the ViewModel's send
                 // reads the fresh selection. When any option's label leads with
                 // a glyph (e.g. "⚡ Send now") every row reserves the fixed

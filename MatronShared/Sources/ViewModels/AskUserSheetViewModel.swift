@@ -16,7 +16,7 @@ import MatronEvents
 @MainActor
 public final class AskUserSheetViewModel {
     public let event: AskUserEvent
-    /// The Matrix event ID of the prompt — the reply's correlation
+    /// The prompt's journal seq — the reply's correlation
     /// target, and the View's `.task(id:)` key for the expiry timer.
     public let promptEventID: String
     public var textInput: String = ""
@@ -59,8 +59,8 @@ public final class AskUserSheetViewModel {
     /// commitment. Dismissing the sheet while the send is suspended on
     /// the timeline call does NOT revoke the in-flight answer — same
     /// convention as closing a composer after hitting send in any
-    /// messaging app — and the SDK's FFI send isn't cooperatively
-    /// cancellable mid-flight anyway, so a cancellation check here
+    /// messaging app — and a send already handed to the sync engine
+    /// isn't cancellable mid-flight anyway, so a cancellation check here
     /// could only skip `onClose()`, not stop the wire write.
     /// "Dismissal = declining" applies to prompts dismissed WITHOUT
     /// Send. The view-layer `closeAskUserSheet` carries a same-prompt

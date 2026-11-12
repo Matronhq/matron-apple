@@ -148,14 +148,11 @@ public final class ChatListViewModel {
         self.gate = gate
     }
 
-    /// Subscribes to the long-lived `ChatService.chatSummaries()` stream
-    /// (Phase 2.5). The stream yields the broadcaster's latest snapshot
-    /// immediately on register, then a fresh snapshot for every diff the
-    /// `RoomListSubscription` reports — so an empty first yield (sliding
-    /// sync still warming up) just means the next yield will arrive when
-    /// rooms land. The pre-Phase-2.5 30×1s retry loop existed only to
-    /// mask that one-shot empty-first-snapshot race; with the long-lived
-    /// stream it's pure dead code.
+    /// Subscribes to the long-lived `ChatService.chatSummaries()` stream.
+    /// The stream yields the current list immediately, then a fresh
+    /// snapshot whenever the mirror's conversations change — so an empty
+    /// first yield (first sync still running) just means the next yield
+    /// will arrive when conversations land.
     public func start() {
         observationTask?.cancel()
         observationTask = Task { [weak self] in
@@ -316,17 +313,14 @@ public final class ChatListViewModel {
         if error != nil { error = nil }
     }
 
-    /// iOS pull-to-refresh / Mac `⌘R` entry point. Drives a one-shot
-    /// `client.rooms()` snapshot through the live broadcaster pipe via
-    /// `ChatService.forceSnapshot()` — the active `start()` stream
-    /// receives the extra yield. The live `RoomListSubscription` and its
-    /// per-room handles stay alive; refresh adds a snapshot, never tears
-    /// the listener down.
     /// See `ChatService.listDidAppear()`.
     public func listDidAppear() async {
         await chat.listDidAppear()
     }
 
+    /// iOS pull-to-refresh / Mac `⌘R` entry point: re-fetches the summaries
+    /// via `ChatService.forceSnapshot()`; the active `start()` stream sees
+    /// the result. Never tears the stream down.
     public func refresh() async {
         do {
             try await chat.forceSnapshot()
@@ -340,11 +334,8 @@ public final class ChatListViewModel {
 
     /// Cancels the in-flight observation task. Call from `View.onDisappear`,
     /// or when the session changes / user signs out, so the underlying
-    /// AsyncStream's continuation is released. Phase 2.5 flipped
-    /// `chatSummaries()` to a long-lived broadcaster stream; cancelling
-    /// here unregisters this consumer's continuation without disturbing
-    /// the upstream `RoomListSubscription`, so re-`start()` after a
-    /// session swap reuses the warm listener.
+    /// AsyncStream's continuation is released. Cancelling here ends only
+    /// this consumer's subscription; other consumers are undisturbed.
     public func cancel() {
         observationTask?.cancel()
         observationTask = nil

@@ -23,10 +23,9 @@ final class ServerURLValidatorTests: XCTestCase {
         }
     }
 
-    /// Plain `http://localhost` is allowed — matron's integration harness
-    /// (Docker matron-server) listens on `http://localhost:6167` and
-    /// Element Web does the same. Production homeservers always run
-    /// behind HTTPS so the carve-out can't expose remote creds.
+    /// Plain `http://localhost` is allowed, for a locally-run dev server.
+    /// A real server always runs behind HTTPS, so the carve-out can't
+    /// expose remote creds.
     func test_allows_HTTP_localhost() throws {
         let url = try ServerURLValidator.normalize("http://localhost:6167")
         XCTAssertEqual(url.absoluteString, "http://localhost:6167")

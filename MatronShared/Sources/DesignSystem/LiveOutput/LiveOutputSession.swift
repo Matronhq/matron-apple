@@ -312,10 +312,4 @@ public final class LiveOutputSessionStore {
             sessions[toolUseID]?.suspend()
         }
     }
-
-    /// Suspends every live session's socket. For whole-app scopes (e.g.
-    /// backgrounding); chat teardown should use `suspendSessions(in:)`.
-    public func suspendAll() {
-        for session in sessions.values { session.suspend() }
-    }
 }

@@ -4,11 +4,10 @@ import MatronModels
 
 /// DTO consumed by the UI for a single timeline row.
 ///
-/// Wraps the SDK's opaque `MatrixRustSDK.TimelineItem` (which is a Rust handle)
-/// in a small, value-typed Swift enum so views, view-models, and tests don't
-/// need to touch FFI types. `id` is the SDK's `TimelineUniqueId.id` — stable
-/// across the local-echo → remote-event transition, so list-diffing in
-/// SwiftUI stays smooth as a sent message is acknowledged by the homeserver.
+/// A small value type mapped from a journal event (`JournalTimelineMapper`)
+/// or from an outbox row, so views, view-models and tests never touch the
+/// journal's wire types. `id` is the journal seq for a mirrored event, or
+/// `echo:<localID>` for the local echo of a message still being sent.
 public struct TimelineItem: Identifiable, Equatable, Sendable {
     public let id: String
     public let sender: String
@@ -42,10 +41,8 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
         /// Member joins, name changes, profile updates — anything that's a
         /// state event we still want to render as a small inline notice.
         case stateChange(text: String)
-        /// `chat.matron.tool_call` event (spec §4.1). Phase 5 — renders
-        /// as a `ToolCallCard` (Task 8). `eventID` is the underlying
-        /// Matrix event ID, kept on the case so `m.replace` updates
-        /// can be correlated against an in-flight running tool call.
+        /// A journal `tool_output` event. Renders as a `ToolCallCard`.
+        /// `eventID` is the journal seq.
         case toolCall(eventID: String, ToolCallEvent)
         /// Journal `diff` event — a file-edit snippet the bridge publishes
         /// when the agent edits/writes a file (replaces the old
@@ -57,17 +54,13 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
         /// command's output from the bridge's viewer WebSocket — the
         /// journal-protocol port of matron-web's live-output tile.
         case liveOutput(eventID: String, LiveOutputEvent)
-        /// `chat.matron.ask_user` event (spec §4.2). Phase 5 — renders
-        /// as a half-sheet on iOS / fixed-size sheet on Mac (Task 9).
-        /// `eventID` is the underlying Matrix event ID, used by the
-        /// sheet's reply path to set `m.in_reply_to` so the bot can
-        /// correlate the answer.
+        /// A journal `prompt` event: the agent asking the user something.
+        /// Renders as an inline ask-user card. `eventID` is the journal
+        /// seq, which the answer names so the agent can correlate it.
         case askUser(eventID: String, AskUserEvent)
-        /// A `chat.matron.button_response` answer to a buttons prompt
-        /// (Matron X protocol). `promptEventID` is the buttons event
-        /// this answers (from the `chat.matron.button_answer`
-        /// relation). NOT rendered — Matron X hides button responses
-        /// from the timeline entirely, own and others' — but kept in
+        /// An answer to a prompt (a journal `prompt_reply`).
+        /// `promptEventID` names the prompt it answers. NOT rendered —
+        /// answers are hidden from the timeline, own and others' — but kept in
         /// the snapshot so `ChatViewModel.isPromptAnswered(_:)` can mark the
         /// prompt answered across devices.
         case askUserAnswer(promptEventID: String, selectedValues: [String])
@@ -100,8 +93,7 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
         case spawnOutcomeRow(eventID: String, SpawnOutcome)
         /// Tracker marker (spec 2026-09-08): created/closed render as a
         /// compact card, commented/reopened as a one-line note; reordered
-        /// never reaches the timeline. `eventID` is the journal seq —
-        /// there is no underlying Matrix event to correlate against, the
+        /// never reaches the timeline. `eventID` is the journal seq; the
         /// row exists purely to surface the marker inline.
         case itemMarker(eventID: String, ItemMarkerEvent)
         /// Mission milestone marker (spec 2026-09-10). The event's own seq
@@ -139,15 +131,15 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
         /// as `.toolCall`). `command` is nil until a `sync` frame supplies
         /// meta — appends never carry it.
         case toolStreamLive(messageRef: String, command: String?, text: String, headTruncated: Bool)
-        /// Catch-all for events we don't render specially yet (encrypted but
-        /// undecryptable, polls, stickers, etc.). UI shows a placeholder so
-        /// the event isn't silently dropped.
+        /// Catch-all for journal event types this build doesn't render (or
+        /// whose payload didn't parse). UI shows a placeholder so the event
+        /// isn't silently dropped.
         case unknown(eventType: String)
     }
 
     /// Source compatibility shim — the enum lives in `MatronModels` as
     /// `TimelineSendState` so `MatronDesignSystem` can bridge it without
-    /// transitively pulling `MatrixRustSDK`. Existing call sites
+    /// depending on `MatronChat`. Existing call sites
     /// referencing `TimelineItem.SendState` keep compiling unchanged.
     public typealias SendState = TimelineSendState
 

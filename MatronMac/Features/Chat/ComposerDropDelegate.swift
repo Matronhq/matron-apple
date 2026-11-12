@@ -117,8 +117,8 @@ struct ComposerDropDelegate: DropDelegate {
     /// Resolves an `NSItemProvider` to a local file URL the composer can
     /// attach. Internal so the test target can exercise it directly.
     /// Returns a `Result` so caller can distinguish "provider didn't
-    /// carry a usable representation" from a real load error — the SDK
-    /// callback's `Error?` parameter previously got dropped, hiding
+    /// carry a usable representation" from a real load error — the
+    /// item provider callback's `Error?` parameter previously got dropped, hiding
     /// decode / permission failures.
     ///
     /// A drop that carries a file URL passes straight through. Providers

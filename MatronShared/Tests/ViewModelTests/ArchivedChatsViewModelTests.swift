@@ -50,10 +50,7 @@ private actor FakeArchiveService: ChatService {
         return AsyncStream { $0.yield(rows) }
     }
     nonisolated func children(of parentConvoID: String) -> AsyncStream<[SubChatSummary]> { AsyncStream { $0.finish() } }
-    func createChat(with botID: String) async throws -> String { "" }
-    func refresh() async throws {}
     func forceSnapshot() async throws {}
-    func mute(roomID: String) async throws {}
     func setArchived(_ roomIDs: [String], archived: Bool) async {
         if !archived { unarchived.append(roomIDs) }
     }

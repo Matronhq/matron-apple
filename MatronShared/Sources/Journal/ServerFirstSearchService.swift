@@ -147,17 +147,5 @@ public final class ServerFirstSearchService: SearchService, Sendable {
     public func removeAll(eventIDs: [String]) async throws { try await local?.removeAll(eventIDs: eventIDs) }
     public func pruneRooms(containing infix: String) async throws { try await local?.pruneRooms(containing: infix) }
     public func wipe() async throws { try await local?.wipe() }
-    public func recordBackfillProgress(roomID: String, indexedCount: Int, oldestEventID: String?, complete: Bool) async throws {
-        try await local?.recordBackfillProgress(roomID: roomID, indexedCount: indexedCount,
-                                                oldestEventID: oldestEventID, complete: complete)
-    }
-    public func backfillComplete(roomID: String) async throws -> Bool {
-        try await local?.backfillComplete(roomID: roomID) ?? false
-    }
-    public func backfillOldestEventID(roomID: String) async throws -> String? {
-        try await local?.backfillOldestEventID(roomID: roomID)
-    }
     public func resetBackfill() async throws { try await local?.resetBackfill() }
-    public func eventCount(roomID: String) async throws -> Int { try await local?.eventCount(roomID: roomID) ?? 0 }
-    public func contains(eventID: String) async throws -> Bool { try await local?.contains(eventID: eventID) ?? false }
 }

@@ -3,18 +3,18 @@ import SwiftUI
 import ImageIO
 import MatronModels
 
-/// Resolves `mxc://` URLs (the only kind Matrix events carry for image and
-/// file attachments) into raw bytes the UI can decode. Image attachments
-/// in `TimelineItem.image(url:…)` carry an `mxc://` URL that must be
-/// downloaded through the SDK's authenticated-media endpoint — the bytes
-/// can't be fetched with a plain `URLSession`.
+/// Resolves attachment URLs (`<server>/media/<blob ref>`, as carried by
+/// `TimelineItem.image(url:…)` / `.file(url:…)`) into raw bytes the UI can
+/// decode. The bytes need the session's credentials (`JournalAPI`), so they
+/// can't be fetched with a plain `URLSession`. The `mxcURL:` parameter
+/// labels are historical; they take these URLs.
 ///
 /// Lives in `MatronChat` (next to `TimelineService`) rather than its own
-/// SPM target so the protocol-and-fake pattern matches the rest of Phase 1.
+/// SPM target, with the same protocol-and-fake pattern.
 public protocol MediaService: Sendable {
-    /// Resolve an `mxc://` URL to image data. Returns `nil` if the URL is
-    /// not an `mxc://` URL or if the SDK cannot fetch it (network error,
-    /// missing media, decryption failure).
+    /// Resolve an attachment URL to image data. Returns `nil` if the URL is
+    /// not one of this server's media URLs or the fetch fails (network
+    /// error, missing media).
     func image(for mxc: URL) async -> Data?
 
     /// Like `fetchBytes(mxcURL:)` but distinguishes a definitive "this blob
@@ -39,8 +39,7 @@ public enum MediaFetchOutcome: Sendable {
 
 public extension MediaService {
     /// Default: no status information available, so a nil byte result is a
-    /// plain (retryable) failure. Fakes and the SDK-backed service get this
-    /// for free; `JournalMediaService` overrides it to surface the 404.
+    /// plain (retryable) failure. Fakes get this for free; `JournalMediaService` overrides it to surface the 404.
     func fetchOutcome(mxcURL: URL) async -> MediaFetchOutcome {
         if let data = await image(for: mxcURL) { return .data(data) }
         return .failure
@@ -50,9 +49,9 @@ public extension MediaService {
 public extension MediaService {
     /// Generic bytes accessor used by the fullscreen-attachment
     /// preview path (file attachments → temp-file → QuickLook /
-    /// ShareLink). The underlying SDK call (`getMediaContent`) is
-    /// kind-agnostic; the existing `image(for:)` already returns the
-    /// raw bytes — `fetchBytes(mxcURL:)` exists as a clearer name
+    /// ShareLink). The media fetch is kind-agnostic; the existing
+    /// `image(for:)` already returns the raw bytes — `fetchBytes(mxcURL:)`
+    /// exists as a clearer name
     /// for non-image call sites so the public surface signals intent
     /// without needing two parallel implementations on the live
     /// service. Default implementation forwards to `image(for:)`.

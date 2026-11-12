@@ -1,9 +1,10 @@
 import UserNotifications
 
-/// Journal-era NSE: the server (once APNs lands, v1-completion) sends
-/// alert-carrying payloads in plaintext — no per-message crypto bootstrap.
-/// This extension only normalises the payload: ensure a visible title and
-/// keep convo_id in userInfo so the host app can deep-link on tap.
+/// The journal server sends alert payloads in plaintext with
+/// `mutable-content: 1`, so iOS runs this extension on each one. It only
+/// normalises the payload: ensures a visible title, groups the alert by
+/// conversation, and copies `convo_id` into userInfo's `room_id` so the
+/// host app can deep-link on tap.
 final class NotificationService: UNNotificationServiceExtension {
     override func didReceive(
         _ request: UNNotificationRequest,
@@ -14,7 +15,7 @@ final class NotificationService: UNNotificationServiceExtension {
         if content.title.isEmpty { content.title = "Matron" }
         if let convoID = content.userInfo["convo_id"] as? String {
             content.threadIdentifier = convoID
-            // Host deep-link path reads room_id (Matrix-era key, kept for reuse).
+            // The host's deep-link path (`PushDeepLink`) reads room_id.
             var userInfo = content.userInfo
             userInfo["room_id"] = convoID
             content.userInfo = userInfo

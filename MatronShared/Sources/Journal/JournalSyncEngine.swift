@@ -824,9 +824,6 @@ public actor JournalSyncEngine {
 
     // MARK: Sync scope
 
-    /// The scope this engine names in its hello.
-    public func currentSyncScope() -> SyncScope { syncScope }
-
     /// Switches this device's sync scope and reconnects under it.
     ///
     /// To `forYou`: the mirror stays as it is, and the switch point is

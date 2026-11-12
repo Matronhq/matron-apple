@@ -75,9 +75,7 @@ struct MatronApp: App {
                     // Push pipeline: request permission, register for
                     // remote notifications, and wire the delegate's device-
                     // token callback straight to the journal server's
-                    // `/push/register` endpoint (no client-provider /
-                    // pusher-base dance needed — that was Matrix-SDK-only
-                    // machinery Task 11 drops).
+                    // `/push/register` endpoint.
                     .task(id: session.userID) {
                         let pushService = dependencies.pushService(for: session)
                         appDelegate.registerDeviceToken = { token in
@@ -239,9 +237,8 @@ struct MatronApp: App {
     }
 
     /// Restores any persisted journal session (Keychain-backed, keyed
-    /// `"matron.journal.session"`); a first launch after this task simply
-    /// finds no session and falls through to the SignInView. No migration
-    /// from the old Matrix-SDK session store — Task 11 amendment 5.
+    /// `"matron.journal.session"`); a first launch finds no session and
+    /// falls through to the SignInView.
     private func bootstrap() async {
         dependencies.installLifecycleHooks()
         // Before any session is published: a restored session whose device

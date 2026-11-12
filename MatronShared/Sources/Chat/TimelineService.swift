@@ -4,41 +4,33 @@ import MatronModels
 /// Per-room timeline access. One `TimelineService` per open room.
 ///
 /// `items()` is the read side: an `AsyncStream` of full snapshots, newest
-/// item last. The live impl rebuilds each snapshot by applying SDK
-/// `TimelineDiff`s to an in-memory ordered map keyed by event id, so
-/// SwiftUI list-diffing stays cheap as messages arrive.
+/// item last, built from the local journal mirror (see
+/// `JournalTimelineService`).
 ///
-/// The send and pagination methods are the write side; they delegate
-/// straight to the SDK's `Timeline` and return once the SDK has accepted
-/// the request (server-side delivery confirmation arrives later through
-/// `items()` when the local echo is replaced by the remote event).
+/// The send and pagination methods are the write side; they return once
+/// the request is accepted locally (a queued outbox row, a sent frame), and
+/// delivery shows up later through `items()` when the journal event
+/// replaces the local echo.
 public protocol TimelineService: Sendable {
     /// AsyncStream of full timeline snapshots. Newest item last.
     ///
-    /// `AsyncThrowingStream` so sync-readiness failures and SDK
-    /// resolution errors (`TimelineServiceError.roomNotFound`) bubble to
-    /// the consumer instead of being swallowed by `continuation.finish()`
-    /// — `ChatViewModel` surfaces the message in `error` so the View can
-    /// render a banner / `ContentUnavailableView` overlay (QA finding #10).
+    /// `AsyncThrowingStream` so failures bubble to the consumer instead of
+    /// being swallowed by `continuation.finish()` — `ChatViewModel`
+    /// surfaces the message in `error` so the View can render a banner /
+    /// `ContentUnavailableView` overlay.
     func items() -> AsyncThrowingStream<[TimelineItem], Error>
 
     /// Sends a plain text message. Body may include markdown.
-    /// Returns when the SDK has accepted the send (not when the server confirms it).
+    /// Returns when the send is queued (not when the server confirms it).
     ///
-    /// When `inReplyTo` is non-nil the wire content carries
-    /// `m.relates_to.m.in_reply_to.event_id` (the SDK's `sendReply`
-    /// adds the rich-reply fallback automatically) so a bot can
-    /// correlate the message with the prompt it answers — the
-    /// `chat.matron.ask_user` reply contract (spec §4.2).
+    /// When `inReplyTo` is non-nil (a prompt's seq) the text goes as a
+    /// reply to that prompt, so the agent can correlate the answer.
     func sendText(_ body: String, inReplyTo: String?) async throws
 
-    /// Sends a `chat.matron.button_response` answer to a
-    /// `chat.matron.buttons` prompt (the live bridge / Matron X
-    /// protocol — see `AskUserEvent.ReplyChannel.buttonResponse`).
-    /// `selectedValues` carries the chosen buttons' wire `value`
-    /// fields; the plaintext fallback `body` is the values joined
-    /// with ", " — byte-compatible with Matron X's
-    /// `TimelineController.sendButtonResponse`.
+    /// Answers a buttons prompt (see
+    /// `AskUserEvent.ReplyChannel.buttonResponse`). `selectedValues`
+    /// carries the chosen buttons' wire `value` fields, sent joined with
+    /// ", " as the reply's choice.
     func sendButtonResponse(selectedValues: [String], inReplyTo promptEventID: String) async throws
 
     /// Answers a busy-queue card with an edit choice (`edit`, `edit_save`,
@@ -47,7 +39,7 @@ public protocol TimelineService: Sendable {
     /// through `any TimelineService` reaches the journal implementation.
     func sendQueuedEdit(choice: String, text: String?, inReplyTo promptEventID: String) async throws
 
-    /// Sends an image attachment as an `m.image` event.
+    /// Sends an image attachment.
     ///
     /// `caption` is the composer text the attachment left with. It rides on
     /// the event itself rather than following as a separate message so the
@@ -56,7 +48,7 @@ public protocol TimelineService: Sendable {
     /// file path (see the bridge's `lib/iv-uploads.js`).
     func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?) async throws
 
-    /// Sends a file attachment as an `m.file` event. `caption` behaves
+    /// Sends a file attachment. `caption` behaves
     /// exactly as it does for `sendImage`.
     func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?) async throws
 
@@ -85,8 +77,8 @@ public protocol TimelineService: Sendable {
                   batch: AttachmentBatchTag?,
                   progress: (@Sendable (Double) -> Void)?) async throws
 
-    /// Asks the SDK to paginate older history. UI subscribes via `items()`.
-    /// Returns `true` if the SDK has reached the start of the room's
+    /// Loads older history. UI subscribes via `items()`.
+    /// Returns `true` once the start of the conversation's
     /// history (further calls would be no-ops); `false` otherwise. The
     /// view-model uses this to short-circuit the topmost-row `.onAppear`
     /// trigger once we've back-filled the entire room.

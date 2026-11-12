@@ -36,10 +36,7 @@ private final class StubMedia: MediaService, @unchecked Sendable {
 private final class StubChat: ChatService, @unchecked Sendable {
     func children(of parentConvoID: String) -> AsyncStream<[SubChatSummary]> { AsyncStream { $0.finish() } }
     func chatSummaries() -> AsyncThrowingStream<[ChatSummary], Error> { AsyncThrowingStream { $0.finish() } }
-    func createChat(with botID: String) async throws -> String { "!x:s" }
-    func refresh() async throws {}
     func forceSnapshot() async throws {}
-    func mute(roomID: String) async throws {}
 }
 
 /// A Mac window holds one chat, so one composer: it answers the menu bus

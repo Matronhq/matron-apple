@@ -5,7 +5,6 @@ import MatronModels
 public enum AuthError: Error, Equatable {
     case invalidServerURL(ServerURLValidator.ValidationError)
     case serverUnreachable
-    case ssoNotSupported
     case invalidCredentials
     /// The password was right; the user must now enter an authenticator or
     /// recovery code (`verifyTwoFactor`).
@@ -69,7 +68,7 @@ public struct TwoFactorEnrolment: Equatable, Sendable {
 }
 
 public protocol AuthService: Sendable {
-    /// Probes the server URL by hitting `/_matrix/client/versions`.
+    /// Probes the server URL: checks that a journal server answers there.
     /// Returns supported login flows.
     func probe(_ rawURL: String) async throws -> ServerCapabilities
 

@@ -36,12 +36,7 @@ final class ServerFirstSearchServiceTests: XCTestCase {
         func index(roomID: String, eventID: String, sender: String, timestamp: Date, body: String) async throws {}
         func remove(eventID: String) async throws {}
         func wipe() async throws {}
-        func recordBackfillProgress(roomID: String, indexedCount: Int, oldestEventID: String?, complete: Bool) async throws {}
-        func backfillComplete(roomID: String) async throws -> Bool { false }
-        func backfillOldestEventID(roomID: String) async throws -> String? { nil }
         func resetBackfill() async throws {}
-        func eventCount(roomID: String) async throws -> Int { 0 }
-        func contains(eventID: String) async throws -> Bool { false }
     }
 
     private func hit(_ id: String, room: String) -> SearchHit {

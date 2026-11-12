@@ -210,7 +210,7 @@ struct MacChatListView: View {
     /// `ConnectionStatusBanner` directly — no async glue inside the
     /// View, just a `@State` mirror of the upstream stream.
     @State private var connectionState: SyncBannerState = .connecting
-    /// Tracks whether sliding sync has ever been observed `.running` in
+    /// Tracks whether sync has ever been observed `.running` in
     /// this session, so the banner can pick "Connecting…" vs
     /// "Reconnecting…" copy. Sticky once true.
     @State private var hasEverConnected: Bool = false

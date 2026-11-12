@@ -1661,12 +1661,7 @@ actor RecordingSearchService: SearchService {
     func remove(eventID: String) async throws {}
     func query(_ text: String, limit: Int) async throws -> [SearchHit] { [] }
     func wipe() async throws {}
-    func recordBackfillProgress(roomID: String, indexedCount: Int, oldestEventID: String?, complete: Bool) async throws {}
-    func backfillComplete(roomID: String) async throws -> Bool { false }
-    func backfillOldestEventID(roomID: String) async throws -> String? { nil }
     func resetBackfill() async throws { resetBackfillCalls += 1 }
-    func eventCount(roomID: String) async throws -> Int { entries.count }
-    func contains(eventID: String) async throws -> Bool { entries.contains { $0.eventID == eventID } }
 }
 
 /// Local stub for the snapshot_required engine tests — deliberately separate

@@ -61,10 +61,7 @@ private final class NoMedia: MediaService, @unchecked Sendable {
 private final class NoChat: ChatService, @unchecked Sendable {
     func chatSummaries() -> AsyncThrowingStream<[ChatSummary], Error> { AsyncThrowingStream { $0.finish() } }
     func children(of parentConvoID: String) -> AsyncStream<[SubChatSummary]> { AsyncStream { $0.finish() } }
-    func createChat(with botID: String) async throws -> String { "!x:s" }
-    func refresh() async throws {}
     func forceSnapshot() async throws {}
-    func mute(roomID: String) async throws {}
 }
 
 /// Drives a real conversation switch: `MacChatListView` keys `MacChatView`
@@ -163,7 +160,7 @@ final class MacItemsPaneLayoutTests: XCTestCase {
         let split = try XCTUnwrap(Self.find(NSSplitView.self, in: window.contentView),
                                   "the chat area must be wide enough for the side-by-side split; hierarchy:\n\(Self.dump(window.contentView))")
         XCTAssertGreaterThan(split.frame.height, 600,
-                             "split height \(split.frame.height): after a switch the pane split should still fill the 700 pt window (item #76)")
+                             "split height \(split.frame.height): after a switch the pane split should still fill the 700 pt window")
         XCTAssertNotNil(Self.find(ComposerTextView.self, in: split), "the composer must be mounted beside the pane")
         window.orderOut(nil)
     }
@@ -209,7 +206,7 @@ final class MacItemsPaneLayoutTests: XCTestCase {
         // window has a small minY; a mid-window composer means the column
         // collapsed to its content height.
         XCTAssertLessThan(inWindow.minY, 150,
-                          "composer minY \(inWindow.minY): the chat column should fill the window (item #76)",
+                          "composer minY \(inWindow.minY): the chat column should fill the window",
                           file: file, line: line)
         XCTAssertNotNil(Self.find(NSSplitView.self, in: window.contentView) as NSView?,
                         "sanity: the pane branch (an HSplitView) is what got laid out", file: file, line: line)

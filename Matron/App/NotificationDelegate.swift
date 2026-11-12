@@ -94,8 +94,7 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     /// account's post-verify branch (which would then deep-link a
     /// signed-in user into a room from the previous account — at
     /// best a confusing redirect, at worst a privacy leak in the
-    /// brief moment before SDK access checks reject it). Cursor PR
-    /// #5 second-pass finding "live taps leave stale pending rooms".
+    /// brief moment before access checks reject it).
     func clearPendingRoomID() {
         pendingRoomID = nil
         NotificationSeenInbox.shared.clear()

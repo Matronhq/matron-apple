@@ -195,14 +195,13 @@ final class SearchServiceLiveTests: XCTestCase {
             try await svc.index(roomID: "p:sub:a\(n % 4)", eventID: "s\(n)", sender: "s", timestamp: at(Double(n)), body: "sub \(n)")
         }
         try await svc.index(roomID: "p", eventID: "top", sender: "s", timestamp: at(1), body: "keep this")
-        try await svc.recordBackfillProgress(roomID: "p:sub:a1", indexedCount: 1, oldestEventID: "s1", complete: true)
+        try insertBackfillRow(roomID: "p:sub:a1")
         try await svc.pruneRooms(containing: ":sub:")
         let subs = try await svc.query("sub", limit: 10)
         XCTAssertEqual(subs.count, 0)
         let kept = try await svc.query("keep", limit: 10)
         XCTAssertEqual(kept.map(\.id), ["top"])
-        let bookkeeping = try await svc.backfillComplete(roomID: "p:sub:a1")
-        XCTAssertFalse(bookkeeping)
+        XCTAssertEqual(try backfillRowCount(roomID: "p:sub:a1"), 0)
         try assertFTSIntegrity()
         // Done is remembered: rows indexed afterwards are left alone.
         try await svc.index(roomID: "p:sub:later", eventID: "late", sender: "s", timestamp: at(9), body: "sub late")
@@ -215,6 +214,33 @@ final class SearchServiceLiveTests: XCTestCase {
     /// against the content table). Throws SQLITE_CORRUPT when the two diverge —
     /// e.g. ghost entries left by a REPLACE that deleted a content row without
     /// firing the delete trigger.
+    /// Rows of `messages` for `roomID`, read straight from the file.
+    private func messageCount(roomID: String) throws -> Int {
+        try DatabaseQueue(path: url.path).read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM messages WHERE room_id = ?", arguments: [roomID]) ?? 0
+        }
+    }
+
+    private func isIndexed(eventID: String) throws -> Bool {
+        try DatabaseQueue(path: url.path).read { db in
+            try Int.fetchOne(db, sql: "SELECT 1 FROM messages WHERE event_id = ?", arguments: [eventID]) != nil
+        }
+    }
+
+    /// Backfill bookkeeping is only ever cleared now; tests seed a row by hand.
+    private func insertBackfillRow(roomID: String) throws {
+        try DatabaseQueue(path: url.path).write { db in
+            try db.execute(sql: "INSERT INTO indexed_rooms(room_id, backfill_complete) VALUES (?, 1)",
+                           arguments: [roomID])
+        }
+    }
+
+    private func backfillRowCount(roomID: String) throws -> Int {
+        try DatabaseQueue(path: url.path).read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM indexed_rooms WHERE room_id = ?", arguments: [roomID]) ?? 0
+        }
+    }
+
     private func assertFTSIntegrity(file: StaticString = #filePath, line: UInt = #line) throws {
         let queue = try DatabaseQueue(path: url.path)
         XCTAssertNoThrow(
@@ -292,8 +318,7 @@ final class SearchServiceLiveTests: XCTestCase {
             SearchIndexEntry(roomID: "!r:s", eventID: "$3", sender: "@b:s", timestamp: ts, body: "batch row three"),
         ])
         try assertFTSIntegrity()
-        let count = try await svc.eventCount(roomID: "!r:s")
-        XCTAssertEqual(count, 3)
+        XCTAssertEqual(try messageCount(roomID: "!r:s"), 3)
         let hits = try await svc.query("batch row", limit: 10)
         XCTAssertEqual(hits.count, 2)
         // Changed body via batch must replace, not duplicate (UPSERT path).
@@ -309,8 +334,7 @@ final class SearchServiceLiveTests: XCTestCase {
 
     func test_indexBatch_empty_isNoOp() async throws {
         try await svc.indexBatch([])
-        let count = try await svc.eventCount(roomID: "!r:s")
-        XCTAssertEqual(count, 0)
+        XCTAssertEqual(try messageCount(roomID: "!r:s"), 0)
     }
 
     func test_remove_clearsFTSRow() async throws {
@@ -319,49 +343,17 @@ final class SearchServiceLiveTests: XCTestCase {
         try await svc.remove(eventID: "$1")
         let hits = try await svc.query("secret", limit: 10)
         XCTAssertEqual(hits.count, 0, "redacted event must no longer match in FTS")
-        let exists = try await svc.contains(eventID: "$1")
-        XCTAssertFalse(exists)
-    }
-
-    func test_eventCount_perRoom() async throws {
-        try await svc.index(roomID: "!a:s", eventID: "$1", sender: "@x:s", timestamp: Date(), body: "one")
-        try await svc.index(roomID: "!a:s", eventID: "$2", sender: "@x:s", timestamp: Date(), body: "two")
-        try await svc.index(roomID: "!b:s", eventID: "$3", sender: "@x:s", timestamp: Date(), body: "three")
-        let a = try await svc.eventCount(roomID: "!a:s")
-        let b = try await svc.eventCount(roomID: "!b:s")
-        XCTAssertEqual(a, 2)
-        XCTAssertEqual(b, 1)
-    }
-
-    func test_recordAndReadBackfill() async throws {
-        try await svc.recordBackfillProgress(roomID: "!r:s", indexedCount: 100, oldestEventID: "$old", complete: true)
-        let done = try await svc.backfillComplete(roomID: "!r:s")
-        XCTAssertTrue(done)
-    }
-
-    func test_backfillOldestEventID_roundTrips() async throws {
-        let before = try await svc.backfillOldestEventID(roomID: "!r:s")
-        XCTAssertNil(before, "no progress row yet")
-        try await svc.recordBackfillProgress(roomID: "!r:s", indexedCount: 3, oldestEventID: "42", complete: false)
-        let after = try await svc.backfillOldestEventID(roomID: "!r:s")
-        XCTAssertEqual(after, "42")
-        // Upsert path: a later record replaces the resume point.
-        try await svc.recordBackfillProgress(roomID: "!r:s", indexedCount: 6, oldestEventID: "17", complete: false)
-        let updated = try await svc.backfillOldestEventID(roomID: "!r:s")
-        XCTAssertEqual(updated, "17")
+        XCTAssertFalse(try isIndexed(eventID: "$1"))
     }
 
     func test_resetBackfill_clearsBookkeepingButKeepsMessages() async throws {
         try await svc.index(roomID: "!r:s", eventID: "$1", sender: "@a:s",
                             timestamp: Date(), body: "still searchable after reset")
-        try await svc.recordBackfillProgress(roomID: "!r:s", indexedCount: 1, oldestEventID: "$1", complete: true)
+        try insertBackfillRow(roomID: "!r:s")
 
         try await svc.resetBackfill()
 
-        let done = try await svc.backfillComplete(roomID: "!r:s")
-        XCTAssertFalse(done, "reset must clear the complete flag")
-        let oldest = try await svc.backfillOldestEventID(roomID: "!r:s")
-        XCTAssertNil(oldest)
+        XCTAssertEqual(try backfillRowCount(roomID: "!r:s"), 0, "reset must clear the bookkeeping")
         let hits = try await svc.query("searchable", limit: 10)
         XCTAssertEqual(hits.count, 1, "indexed messages must survive a bookkeeping reset")
     }

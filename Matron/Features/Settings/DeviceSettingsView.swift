@@ -5,10 +5,8 @@ import MatronViewModels
 import MatronJournal
 import MatronVoice
 
-/// Settings → Device surface. Task 11 strips the verification / recovery-key
-/// sections (Matrix-SDK-only concepts the journal stack has no equivalent
-/// for yet) down to a read-only account summary: userID, deviceID, and
-/// homeserver host. The Devices row (journal PR #19) pushes the roster +
+/// Settings → Device surface: a read-only account summary (userID,
+/// deviceID, and server host). The Devices row pushes the roster +
 /// pairing screen; `devicesAPI`, `linkAPI`, and `onSignOut` are all optional
 /// so previews / tests keep rendering the summary without a live API or
 /// sign-out wiring.

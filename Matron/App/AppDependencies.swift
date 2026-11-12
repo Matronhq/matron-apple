@@ -14,15 +14,11 @@ import MatronSync
 import MatronViewModels
 import MatronVoice
 
-/// Task 11 (Phase 7): wires the iOS app onto the matron-journal stack
-/// instead of the Matrix SDK. One `JournalCore` (API client + local SQLite
-/// mirror + sync engine) is built per signed-in session; every per-session
-/// / per-room service factory below is a thin wrapper over the same core so
-/// the sync engine, the store, and the API client stay singletons for the
-/// session's lifetime — same motivation as the pre-journal
-/// `syncCache`/`mediaCache`/`chatCache` per-session caches this replaces.
-///
-/// Built entirely on the journal stack; the Matrix SDK is gone from the repo.
+/// Wires the iOS app onto the journal stack. One `JournalCore` (API client
+/// + local SQLite mirror + sync engine) is built per signed-in session;
+/// every per-session / per-room service factory below is a thin wrapper
+/// over the same core so the sync engine, the store, and the API client
+/// stay singletons for the session's lifetime.
 @MainActor
 final class AppDependencies {
     let auth: AuthService
@@ -518,13 +514,6 @@ final class AppDependencies {
         core(for: session).maintenance
     }
 
-    /// Task 9 (items tracker): the session's `ItemsSync` actor — outbox
-    /// drain, marker refetches, reconnect refresh. One per session, same
-    /// instance the view-model factories below hand out.
-    func itemsSync(for session: UserSession) -> ItemsSync {
-        core(for: session).items
-    }
-
     /// The session's `MissionsSync` actor — marker refetches and the
     /// reconnect list refresh. One per session, same instance the view-model
     /// factories hand out.
@@ -656,13 +645,6 @@ final class AppDependencies {
 
     /// The Search page's query over everything (`GET /search/all`).
     func globalSearcher(for session: UserSession) -> any GlobalSearching {
-        core(for: session).api
-    }
-
-    /// Read surface for tracker create/comment/close flows that don't need
-    /// the full `ItemsPanelViewModel`/`ItemDetailViewModel` (e.g. a
-    /// standalone create sheet). Same session-scoped `JournalAPI`.
-    func itemsProvider(for session: UserSession) -> any ItemsProviding {
         core(for: session).api
     }
 
@@ -953,12 +935,6 @@ final class AppDependencies {
     /// layer having to parse the (opaque) child id. Synchronous store read.
     func parentConvoID(of convoID: String, for session: UserSession) -> String? {
         try? core(for: session).store.parentConvoID(of: convoID)
-    }
-
-    /// Whether `convoID` is a subagent child (has a parent). See
-    /// `parentConvoID(of:for:)`.
-    func isSubChat(_ convoID: String, for session: UserSession) -> Bool {
-        parentConvoID(of: convoID, for: session) != nil
     }
 
     /// Test seam: how many distinct rooms the timeline cache holds before

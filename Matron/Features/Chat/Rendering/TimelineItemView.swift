@@ -17,7 +17,7 @@ import MatronViewModels
 /// row and the resolved `Image` is handed to `AttachmentImage`.
 struct TimelineItemView: View {
     let item: TimelineItem
-    /// Optional resolver for `mxc://` image URLs. `nil` keeps the legacy
+    /// Optional resolver for image attachment URLs. `nil` keeps the
     /// placeholder rendering for previews and tests that don't wire up a
     /// `ChatViewModel`. Production usage in `ChatView` always passes
     /// `viewModel.image(for:)`.
@@ -36,7 +36,7 @@ struct TimelineItemView: View {
     /// can present the fullscreen viewer without a second fetch.
     /// `nil` keeps existing test sites compiling unchanged.
     var onTapImage: ((URL, Image) -> Void)? = nil
-    /// File-attachment tap handler — receives the `mxc://` URL plus
+    /// File-attachment tap handler — receives the attachment URL plus
     /// the original filename so the parent can stage the bytes to a
     /// temp file and present `ShareLink` (iOS) / `NSWorkspace.open`
     /// (Mac).
@@ -529,25 +529,13 @@ struct TimelineItemView: View {
             ActivityIndicatorRow(label: label)
 
         case .unknown(let eventType):
-            // Encrypted-but-not-yet-decrypted is the SDK's
-            // `MsgLikeKind.unableToDecrypt` mapped to
-            // `.unknown(eventType: "m.room.encrypted")`. matrix-rust-sdk
-            // retries decryption automatically as megolm keys arrive
-            // (key backup, key forwarding); the row is replaced via
-            // a `.set` diff once that succeeds. Friendlier copy than
-            // the raw "[unsupported event]" we use as a generic fallback.
+            // A journal row type this build doesn't know (or a known one
+            // whose payload didn't parse).
             HStack {
                 Spacer()
-                if eventType == "m.room.encrypted" {
-                    Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.secondary)
-                    Text("Encrypted message — waiting for key")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("[unsupported event: \(eventType)]")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
+                Text("[unsupported event: \(eventType)]")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                 Spacer()
             }
             .padding(.vertical, 4)
@@ -579,7 +567,7 @@ struct TimelineItemView: View {
     }
 
     /// Composes the accessibility label for a row. "Me" rather than the
-    /// raw matrix ID so VoiceOver doesn't leak the user's full handle on
+    /// raw sender id so VoiceOver doesn't leak the user's full handle on
     /// every own-message read-out (QA finding #13).
     static func accessibilityLabel(for item: TimelineItem, body: String) -> String {
         let senderName = item.isOwn ? "Me" : displayName(for: item.sender)
@@ -640,9 +628,8 @@ struct TimelineItemView: View {
         TimelineSenderLabels.avatarSender(for: item, hasMultipleSenders: hasMultipleSenders)
     }
 
-    /// Phase 2 placeholder for member display names: take the local part of
-    /// the Matrix ID without the leading `@` sigil. Phase 5+ can resolve
-    /// from member events when those land in the SDK bridge.
+    /// Display name for a sender id (see
+    /// `TimelineSenderLabels.displayName(for:)`).
     /// `internal static` so unit tests in `MatronTests` can pin the
     /// formatting without instantiating the SwiftUI view.
     static func displayName(for senderID: String) -> String {

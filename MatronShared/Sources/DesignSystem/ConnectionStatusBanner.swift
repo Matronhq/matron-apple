@@ -19,7 +19,7 @@ import SwiftUI
 ///     in `if state != .running { … }` but rendering the empty body
 ///     here lets the call site stay flat without an explicit guard.
 ///   * `.offline(reason:)` — opaque red strip with the reason. No
-///     progress indicator — the SDK handles retry; the banner just
+///     progress indicator — the sync engine handles retry; the banner just
 ///     reports the steady-state.
 public struct ConnectionStatusBanner: View {
     private let state: SyncBannerState
@@ -81,7 +81,7 @@ public struct ConnectionStatusBanner: View {
         HStack(spacing: 8) {
             Image(systemName: "wifi.slash")
                 .foregroundStyle(.white)
-            // Default copy when the SDK doesn't hand us a reason — the
+            // Default copy when the sync engine gives no reason — the
             // user still gets a meaningful signal ("you're offline")
             // without an empty trailing colon.
             Text(reason ?? "Offline")
@@ -104,7 +104,7 @@ public struct ConnectionStatusBanner: View {
 /// Local mirror of the connection-state enum the View consumes. Defined
 /// in `MatronDesignSystem` so the banner doesn't have to import
 /// `MatronSync` (the design-system target deliberately stays free of
-/// SDK / service-layer dependencies). Hosts in `Matron` / `MatronMac`
+/// service-layer dependencies). Hosts in `Matron` / `MatronMac`
 /// translate from `SyncConnectionState` to this local type at the
 /// boundary — mapping is identity-shaped, so the cost is one switch.
 public enum SyncBannerState: Equatable, Sendable {

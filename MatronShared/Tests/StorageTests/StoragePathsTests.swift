@@ -8,13 +8,12 @@ final class StoragePathsTests: XCTestCase {
         XCTAssertEqual(StoragePaths.appGroupIdentifier, "group.chat.matron")
     }
 
-    func test_iOS_cryptoStorePath_endsWithExpectedComponent() {
+    func test_iOS_searchDB_endsWithExpectedComponent() {
         // groupContainer is force-unwrapped in StoragePaths (entitlement
         // required at runtime). In the test runner the entitlement is absent
         // so we don't touch the property here; instead we test the exported
         // path-derivation helper that doesn't rely on the entitlement.
         let fake = URL(fileURLWithPath: "/tmp/test-group")
-        XCTAssertEqual(StoragePaths.cryptoStore(in: fake), fake.appendingPathComponent("crypto-store"))
         XCTAssertEqual(StoragePaths.searchDB(in: fake), fake.appendingPathComponent("matron-search.sqlite"))
     }
     #endif
@@ -45,10 +44,6 @@ final class StoragePathsTests: XCTestCase {
     func test_macOS_thisTestRun_isNotInTheUsersStore() {
         let real = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         XCTAssertFalse(StoragePaths.appSupport.path.hasPrefix(real.path), StoragePaths.appSupport.path)
-    }
-
-    func test_macOS_cryptoStorePath_isUnderAppSupport() {
-        XCTAssertEqual(StoragePaths.cryptoStorePath, StoragePaths.appSupport.appendingPathComponent("crypto-store"))
     }
 
     func test_macOS_searchDBPath_isUnderAppSupport() {
