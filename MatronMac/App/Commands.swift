@@ -14,9 +14,6 @@ public enum MatronCommand: String, CaseIterable, Sendable {
     case signOut
     case slashCommand
     case toggleSidebar
-    case increaseFontSize
-    case decreaseFontSize
-    case resetFontSize
     case refresh
     /// App shell (spec §5): nav-column selection — ⌘1 … ⌘6, top to
     /// bottom (`ChatCommands.navShortcuts`).
@@ -49,9 +46,6 @@ public extension Notification.Name {
 ///   - `.slashCommand`   — `MacChatView` (toggles `composerVM.palettePinnedOpen`)
 ///   - `.refresh`        — `MacChatView` (triggers `viewModel.refresh()`)
 ///   - `.showCoordinator/.showMissions/.showDecisions/.showConversations` — `MacChatListView` (sets `nav`)
-///
-/// Posted-but-unhandled (placeholder menu items, listeners land later):
-///   - `.increase/decrease/resetFontSize` — Phase 5+ design-system font scaling.
 ///
 /// Find in Chat / Search All Chats / Go to Number / Refresh are per window
 /// (`MacNavigationActions`), not bus commands: a post would open the bar,
@@ -98,7 +92,7 @@ struct ChatCommands: Commands {
         }
 
         // View menu — `.sidebar` is the system sidebar group; we add
-        // our toggle (mirrors ⌘⇧S) and font-size shortcuts after it.
+        // our toggle (mirrors ⌘⇧S) and the nav shortcuts after it.
         CommandGroup(after: .sidebar) {
             Button("Toggle Sidebar") { post(.toggleSidebar) }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
@@ -112,16 +106,6 @@ struct ChatCommands: Commands {
             Button("Refresh") { navigation?.refresh?() }
                 .keyboardShortcut(Self.refreshShortcut)
                 .disabled(navigation?.refresh == nil)
-            Divider()
-            // TODO Phase 5: wire font-size commands to a design-system
-            // scale environment; today the listeners are missing so the
-            // menu items / shortcuts post into the void.
-            Button("Increase Font Size") { post(.increaseFontSize) }
-                .keyboardShortcut("+", modifiers: .command)
-            Button("Decrease Font Size") { post(.decreaseFontSize) }
-                .keyboardShortcut("-", modifiers: .command)
-            // No shortcut: its listener never landed.
-            Button("Reset Font Size") { post(.resetFontSize) }
         }
 
         // Go menu — the key window's navigation history (spec 2026-09-23
