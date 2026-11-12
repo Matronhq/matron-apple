@@ -204,8 +204,7 @@ public enum SearchSchema {
         // Defensive check: confirm protection is set on the resulting file.
         // Device + signed builds only — the iOS Simulator doesn't enforce data
         // protection (the attribute reads back absent), so the assert would
-        // spuriously fire under xcodebuild test on a Simulator. Mirrors
-        // MatronApp's `#if !targetEnvironment(simulator)`-gated KeychainProbe.
+        // spuriously fire under xcodebuild test on a Simulator.
         let attrs = try FileManager.default.attributesOfItem(atPath: path.path)
         assert((attrs[.protectionKey] as? FileProtectionType) == indexFileProtection,
                "matron-search.sqlite has the wrong file protection class")

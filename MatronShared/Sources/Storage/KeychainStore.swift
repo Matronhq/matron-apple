@@ -119,50 +119,6 @@ public struct KeychainStore: SessionStore {
         }
     }
 
-    /// Recovery-key store factory. Funnels every recovery-key Keychain
-    /// construction through one place so the service name +
-    /// synchronizable flag stay in lockstep.
-    ///
-    /// **Wave 5 bugbot #3 revert.** Earlier waves passed an explicit
-    /// `accessGroup: KeychainAccessGroups.recovery` (which itself was a
-    /// `$(AppIdentifierPrefix)…` literal). That token only expands inside
-    /// signed entitlement plists, NOT in Swift string literals — so every
-    /// signed build returned `errSecMissingEntitlement` from
-    /// `SecItemAdd` / `SecItemCopyMatching` and the entire recovery-key
-    /// feature was non-functional outside the SPM test host. See
-    /// `KeychainAccessGroups.swift` for the full rationale.
-    ///
-    /// Today both apps declare exactly one entry in
-    /// `keychain-access-groups`, so omitting `kSecAttrAccessGroup` lets the
-    /// system fall back to "the first entry in `keychain-access-groups`" —
-    /// which is ours. That's the pre-Wave-3 shipping shape, and it works.
-    ///
-    /// **TODO Phase 4:** when iOS NSE adds a second access group, EITHER
-    /// keep the recovery group first in the entitlement (cheapest), OR
-    /// resolve the live access-group string at runtime via
-    /// `SecItemCopyMatching` with `kSecReturnAttributes: true` and cache
-    /// it (correct long-term — but requires making this factory async /
-    /// throws so it can wait on the first probe). Do NOT re-introduce a
-    /// `$(AppIdentifierPrefix)…` literal — `KeychainAccessGroups.swift`'s
-    /// docblock and the `RecoveryKeyManagerTests`/`KeychainProbeTests`
-    /// regression-guard tests are the trip-wire for this.
-    ///
-    /// `synchronizable: true` because recovery keys ride iCloud Keychain
-    /// to enable additional-device install without re-entering the key.
-    /// The team-prefixed `keychain-access-groups` entitlement we already
-    /// declare is sufficient for iCloud Keychain ride — no extra
-    /// `com.apple.developer.icloud-services` capability is required.
-    /// User must have iCloud Keychain enabled in System Settings for
-    /// the cross-device sync to actually take effect. Session 6
-    /// (2026-04-30) confirmed end-to-end persistence + sync on an
-    /// org-team-signed Mac Debug build with this exact shape.
-    public static func recoveryStore() -> KeychainStore {
-        return KeychainStore(
-            service: "chat.matron.recovery",
-            synchronizable: true
-        )
-    }
-
     /// Store for the signed-in session (`JournalAuthService`'s blob: access
     /// token, user and device ids). Use it through `SessionStores.live`,
     /// which falls back to a file when the Keychain is unusable.
@@ -172,9 +128,11 @@ public struct KeychainStore: SessionStore {
     ///   Keychain or a device backup restored elsewhere, and it is readable
     ///   once the device has been unlocked after boot (the app can still
     ///   restore it on a background launch).
-    /// - No explicit access group, for the reason given on
-    ///   `recoveryStore()`: the item lands in the first
+    /// - No explicit access group: the item lands in the first
     ///   `keychain-access-groups` entry, `$(AppIdentifierPrefix)chat.matron`.
+    ///   Never pass a `$(AppIdentifierPrefix)…` literal as the group: that
+    ///   token is only expanded in entitlement plists at signing time, so
+    ///   a Swift string carrying it fails with `errSecMissingEntitlement`.
     ///   The iOS share extension declares the same single entry, so it
     ///   reads the same item.
     /// - macOS uses the data-protection keychain. In the legacy login
