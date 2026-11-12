@@ -1,6 +1,7 @@
 import SwiftUI
 import MatronJournal
 import MatronModels
+import MatronStorage
 import MatronViewModels
 import MatronDesignSystem
 
@@ -77,6 +78,8 @@ struct MatronMacApp: App {
         // observes the domain: drop window frames saved under per-build
         // SwiftUI type names (see `StaleAutosaveKeys`).
         StaleAutosaveKeys.pruneAtLaunch()
+        // Once per install: drop what the Matrix-based builds left behind.
+        LegacyMatrixDataCleanup.runOnceAtLaunch()
         // Live updates to the window's lists wait while anything scrolls.
         MacLiveScrollHold.shared.install(gate: .shared)
         #if DEBUG

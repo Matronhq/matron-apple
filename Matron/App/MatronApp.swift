@@ -3,6 +3,7 @@ import UIKit
 import MatronAuth
 import MatronJournal
 import MatronModels
+import MatronStorage
 import MatronViewModels
 import MatronDesignSystem
 
@@ -54,6 +55,8 @@ struct MatronApp: App {
 
     init() {
         MatronDarkAppearance.install()
+        // Once per install: drop what the Matrix-based builds left behind.
+        LegacyMatrixDataCleanup.runOnceAtLaunch()
     }
 
     var body: some Scene {
