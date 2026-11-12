@@ -85,6 +85,7 @@ targets:
       - path: Shared/ItemThread
       # App code that is the same on iOS and Mac but needs each app's own
       # types (`AppDependencies`), so it can't live in MatronShared.
+      - path: Shared/App
       - path: Shared/Chat
     info:
       path: Matron/App/Info.plist
@@ -274,6 +275,7 @@ targets:
       - path: Shared/ItemThread
       # App code that is the same on iOS and Mac but needs each app's own
       # types (`AppDependencies`), so it can't live in MatronShared.
+      - path: Shared/App
       - path: Shared/Chat
     info:
       path: MatronMac/App/Info.plist
