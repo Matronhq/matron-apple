@@ -349,6 +349,6 @@ Needs a real iPhone and a journal that seals notification content. The simulator
 - [ ] A notice: hold the notification, tap Seen: the notice closes.
 - [ ] Tap an item's notification: the app opens on that item, not on its conversation.
 - [ ] Two questions from one conversation: both notifications stay. A follow-up comment on one of them replaces that one's notification.
-- [ ] Turn on airplane mode, tap a button on a notification: a notification comes back saying the answer was not sent; tapping it opens the item.
+- [ ] Turn on airplane mode, tap a button on a notification: a notification comes back saying the answer was not confirmed; tapping it opens the item.
 - [ ] Sign out and in again, then have an item filed: its notification still shows its text (the new session registered a new key).
 - [ ] Settings ▸ Notifications in the app, Coordinator mode: "Coordinator finished a turn" is off; the Coordinator finishing a turn sends nothing, an item for you still does.

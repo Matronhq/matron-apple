@@ -33,7 +33,10 @@ public enum PushNotificationActions {
     public static let noticeLabels = ["Seen"]
 
     public static func categoryIdentifier(for labels: [String]) -> String {
-        let digest = SHA256.hash(data: Data(labels.joined(separator: "\u{1F}").utf8))
+        // Each label with its length in front, so no two lists of labels
+        // hash the same input.
+        let encoded = labels.map { "\($0.utf8.count):\($0)" }.joined()
+        let digest = SHA256.hash(data: Data(encoded.utf8))
         return categoryPrefix + digest.prefix(8).map { String(format: "%02x", $0) }.joined()
     }
 

@@ -812,14 +812,15 @@ final class AppDependencies {
     }
 
     /// A button tapped on an item's notification: the same answer a tap on
-    /// the item's own button sends. It may run with the app launched in the
+    /// the item's own button sends (the label as both the action and the
+    /// comment's text). It may run with the app launched in the
     /// background and no session core built, so it uses the stored session
     /// and a plain API client. Returns whether the journal took the answer.
     func answerItem(fromNotification answer: PushNotificationActions.Answer) async -> Bool {
         guard let session = try? await auth.restoreSession() else { return false }
         let api = JournalAPI(serverURL: session.homeserverURL, token: session.accessToken)
         do {
-            _ = try await api.commentItem(id: answer.itemID, body: "", attachments: [], action: answer.label,
+            _ = try await api.commentItem(id: answer.itemID, body: answer.label, attachments: [], action: answer.label,
                                           replyTo: answer.replyTo, idempotencyKey: UUID().uuidString)
             return true
         } catch {

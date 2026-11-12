@@ -119,6 +119,10 @@ final class PushNotificationActionsTests: XCTestCase {
         XCTAssertEqual(a, PushNotificationActions.categoryIdentifier(for: ["Ship", "Wait"]))
         XCTAssertNotEqual(a, PushNotificationActions.categoryIdentifier(for: ["Wait", "Ship"]))
         XCTAssertNotEqual(a, PushNotificationActions.categoryIdentifier(for: ["ShipWait"]))
+        XCTAssertNotEqual(PushNotificationActions.categoryIdentifier(for: ["A\u{1F}B"]),
+                          PushNotificationActions.categoryIdentifier(for: ["A", "B"]))
+        XCTAssertNotEqual(PushNotificationActions.categoryIdentifier(for: ["1:A", "B"]),
+                          PushNotificationActions.categoryIdentifier(for: ["1", "A1:B"]))
         XCTAssertTrue(a.hasPrefix("matron.item."))
     }
 

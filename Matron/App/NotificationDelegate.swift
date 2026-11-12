@@ -76,7 +76,9 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
             let original = response.notification.request.content
             Task { @MainActor in
                 let sent = await self.answerItem?(answer) ?? false
-                if !sent { Self.reportUnsent(answer, original: original) }
+                // Before the completion handler: iOS may suspend the app
+                // the moment that is called.
+                if !sent { await Self.reportUnconfirmed(answer, original: original) }
                 completionHandler()
             }
             return
@@ -95,31 +97,36 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         // `tappedRoomID` holds.
         Task { @MainActor in
             if let seq { NotificationSeenInbox.shared.record(convoID: roomID, seq: seq) }
+            // Whichever was tapped last is the one to open.
             if let itemID, !itemID.isEmpty {
+                self.pendingRoomID = nil
                 self.pendingItemID = itemID
                 self.tappedItemID.send(itemID)
             } else {
+                self.pendingItemID = nil
                 self.pendingRoomID = roomID
                 self.tappedRoomID.send(roomID)
             }
         }
     }
 
-    /// An answer that did not reach the journal must not vanish with the
-    /// notification the user tapped it on. The replacement carries no
-    /// buttons: opening the item shows where it stands.
-    private static func reportUnsent(_ answer: PushNotificationActions.Answer, original: UNNotificationContent) {
+    /// An answer the journal did not confirm must not vanish with the
+    /// notification the user tapped it on. A failure does not say whether
+    /// the answer arrived (the reply may be what was lost), so this says
+    /// only that it is unconfirmed. The replacement carries no buttons:
+    /// opening the item shows where it stands.
+    private static func reportUnconfirmed(_ answer: PushNotificationActions.Answer, original: UNNotificationContent) async {
         let content = UNMutableNotificationContent()
         content.title = original.title
-        content.subtitle = "Not sent: \(answer.label)"
-        content.body = "Your answer did not reach the journal. Tap to open the item."
+        content.subtitle = "Not confirmed: \(answer.label)"
+        content.body = "Your answer may not have reached the journal. Open the item to check before answering again."
         content.threadIdentifier = original.threadIdentifier
         content.sound = .default
         var userInfo = original.userInfo
         userInfo[PushNotificationActions.Key.itemActions] = nil
         content.userInfo = userInfo
-        UNUserNotificationCenter.current().add(
-            UNNotificationRequest(identifier: "unsent-\(answer.itemID)", content: content, trigger: nil))
+        try? await UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: "unconfirmed-\(answer.itemID)", content: content, trigger: nil))
     }
 
     nonisolated func userNotificationCenter(
