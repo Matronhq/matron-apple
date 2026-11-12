@@ -226,8 +226,6 @@ targets:
       - package: MatronShared
         product: MatronStorage
       - package: MatronShared
-        product: MatronSync
-      - package: MatronShared
         product: MatronViewModels
       - package: MatronShared
         product: MatronDesignSystem
@@ -367,8 +365,6 @@ targets:
         product: MatronModels
       - package: MatronShared
         product: MatronStorage
-      - package: MatronShared
-        product: MatronSync
       - package: MatronShared
         product: MatronViewModels
       - package: MatronShared

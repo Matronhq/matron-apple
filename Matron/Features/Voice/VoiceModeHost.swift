@@ -71,9 +71,9 @@ final class VoiceModeSession {
             sender: deps.voiceSender(for: session), feed: feed, settings: settings,
             setScreenAwake: { if keepsScreenAwake { UIApplication.shared.isIdleTimerDisabled = $0 } })
         // A note kept while offline goes as soon as the socket is back.
-        let sync = deps.syncService(for: session)
+        let sync = deps.syncEngine(for: session)
         connectionTask = Task { [weak runner] in
-            for await state in await sync.stateStream() {
+            for await state in sync.stateStream() {
                 if case .running = state { runner?.connectionRestored() }
             }
         }

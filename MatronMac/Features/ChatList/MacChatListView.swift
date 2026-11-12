@@ -7,7 +7,6 @@ import MatronJournal
 import MatronModels
 import MatronPush
 import MatronSearch
-import MatronSync
 import MatronViewModels
 
 /// Un-gated breadcrumbs for detail-column lifecycle anomalies. The
@@ -205,7 +204,7 @@ struct MacChatListView: View {
     /// Wave 6 / live-test #1).
     var onSignOut: (() -> Void)? = nil
     /// Latest user-facing connection state, fed by the host's
-    /// `SyncService.stateStream()`. `.running` hides the banner;
+    /// `JournalSyncEngine.stateStream()`. `.running` hides the banner;
     /// `.connecting` / `.offline` render it. Drives
     /// `ConnectionStatusBanner` directly — no async glue inside the
     /// View, just a `@State` mirror of the upstream stream.
@@ -1270,8 +1269,8 @@ struct MacChatListView: View {
             // ChatListView wiring.
             .task(id: session?.userID) {
                 guard let deps, let session else { return }
-                let sync = deps.syncService(for: session)
-                for await state in await sync.stateStream() {
+                let sync = deps.syncEngine(for: session)
+                for await state in sync.stateStream() {
                     connectionState = .from(state)
                     // Catch-up counts: the socket IS established there, so a
                     // drop mid-replay should come back as "Reconnecting…".
@@ -1288,7 +1287,7 @@ struct MacChatListView: View {
             // host.
             .task(id: session?.userID) {
                 guard let deps, let session else { return }
-                for await born in await deps.syncService(for: session).newConversations() {
+                for await born in deps.syncEngine(for: session).newConversations() {
                     switch Self.arrival(of: born, selected: selectedSummaryID) {
                     case .open:
                         listLogger.notice("selection set by auto-open: \(born.id, privacy: .public)")

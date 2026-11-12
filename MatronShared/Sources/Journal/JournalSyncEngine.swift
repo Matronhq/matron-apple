@@ -61,9 +61,8 @@ public enum CoordinatorUpdate: Equatable, Sendable {
 /// Any failure converges to "reconnect and resume from the store cursor" —
 /// there is no other recovery path, so there is nothing to wedge.
 ///
-/// Lifecycle methods are named `beginSync()` / `endSync()` (not
-/// `start()` / `stop()`) so a later `SyncService` conformance shim can add
-/// protocol-named wrappers without colliding with these concrete methods.
+/// Lifecycle: `beginSync()` starts the reconnect loop (a no-op when it is
+/// already running), `endSync()` stops it.
 public actor JournalSyncEngine {
     private static let logger = os.Logger(subsystem: "chat.matron", category: "journal-sync")
     private let api: JournalAPI

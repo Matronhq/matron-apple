@@ -11,7 +11,6 @@ let package = Package(
         .library(name: "MatronAuth", targets: ["MatronAuth"]),
         .library(name: "MatronChat", targets: ["MatronChat"]),
         .library(name: "MatronStorage", targets: ["MatronStorage"]),
-        .library(name: "MatronSync", targets: ["MatronSync"]),
         .library(name: "MatronModels", targets: ["MatronModels"]),
         .library(name: "MatronViewModels", targets: ["MatronViewModels"]),
         .library(name: "MatronDesignSystem", targets: ["MatronDesignSystem"]),
@@ -43,18 +42,6 @@ let package = Package(
                 "MatronJournal",
             ],
             path: "Sources/Auth"
-        ),
-        .target(
-            name: "MatronSync",
-            dependencies: [
-                "MatronModels",
-                // Journal Task 10: JournalSyncConformance.swift bridges
-                // JournalSyncEngine into the SyncService protocol.
-                // MatronJournal never imports MatronSync back, so this
-                // doesn't create a cycle.
-                "MatronJournal",
-            ],
-            path: "Sources/Sync"
         ),
         .target(
             name: "MatronChat",
@@ -114,8 +101,7 @@ let package = Package(
                 // for service-layer → design-system enum mappings:
                 // `SyncBannerState.from(_:)` and `SendStateGlyph.from(_:)`
                 // both consume enums that live in `MatronModels`
-                // (`SyncConnectionState` moved here from `MatronSync` in
-                // the journal swap; `TimelineSendState` was always here).
+                // (`SyncConnectionState` and `TimelineSendState`).
                 // A leaf module with no SwiftUI surface, so the bridges
                 // live next to the target enums without creating a cycle.
                 "MatronModels",

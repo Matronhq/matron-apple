@@ -5,7 +5,6 @@ import MatronDesignSystem
 import MatronJournal
 import MatronModels
 import MatronSearch
-import MatronSync
 import MatronViewModels
 
 /// iOS chat-list screen. Phase 2 wires `NavigationLink(value:)` rows that
@@ -75,7 +74,7 @@ struct ChatListView: View {
     /// without the full nav stack still construct the view.
     var onOpenChat: ((String) -> Void)? = nil
     /// Latest user-facing connection state, fed by the host's
-    /// `SyncService.stateStream()`. `.running` hides the indicator;
+    /// `JournalSyncEngine.stateStream()`. `.running` hides the indicator;
     /// `.connecting` / `.offline` render the inline nav-bar
     /// `connectionStatusLabel` — no async glue inside the View, just a
     /// `@State` mirror of the upstream stream.
@@ -288,8 +287,8 @@ struct ChatListView: View {
         // `MatronApp` (one .task per long-lived async loop).
         .task(id: session?.userID) {
             guard let deps, let session else { return }
-            let sync = deps.syncService(for: session)
-            for await state in await sync.stateStream() {
+            let sync = deps.syncEngine(for: session)
+            for await state in sync.stateStream() {
                 connectionState = .from(state)
                 // Catch-up counts: the socket IS established there, so a
                 // drop mid-replay should come back as "Reconnecting…".

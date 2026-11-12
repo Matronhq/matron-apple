@@ -118,7 +118,7 @@ struct MatronMacApp: App {
                                      idealSize: CGSize(width: 1280, height: 860))
                     .environment(\.appDependencies, dependencies)
                     .environment(\.currentSession, session)
-                    .task { try? await dependencies.syncService(for: session).start() }
+                    .task { await dependencies.syncEngine(for: session).beginSync() }
                     // Push pipeline: request permission, register for
                     // remote notifications, and wire the delegate's
                     // device-token callback straight to the journal
@@ -139,7 +139,7 @@ struct MatronMacApp: App {
                     // while inactive. `NSApplication.didBecomeActiveNotification`
                     // is the Mac equivalent of iOS's `scenePhase == .active`.
                     .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-                        Task { await (dependencies.syncService(for: session) as? JournalSyncEngine)?.nudge() }
+                        Task { await dependencies.syncEngine(for: session).nudge() }
                         Task(priority: .utility) {
                             await dependencies.journalMaintenance(for: session).runIfDue()
                         }

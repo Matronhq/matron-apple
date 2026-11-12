@@ -72,7 +72,7 @@ struct MatronApp: App {
                     // render the Privacy section — sheets inherit the
                     // presenting hierarchy's environment.
                     .environment(\.appLockController, appLock)
-                    .task { try? await dependencies.syncService(for: session).start() }
+                    .task { await dependencies.syncEngine(for: session).beginSync() }
                     // Push pipeline: request permission, register for
                     // remote notifications, and wire the delegate's device-
                     // token callback straight to the journal server's
@@ -97,9 +97,9 @@ struct MatronApp: App {
                     .onChange(of: scenePhase) { _, phase in
                         if phase == .active {
                             Task {
-                                let engine = dependencies.syncService(for: session) as? JournalSyncEngine
-                                await engine?.nudge()
-                                await engine?.verifyConnection()
+                                let engine = dependencies.syncEngine(for: session)
+                                await engine.nudge()
+                                await engine.verifyConnection()
                             }
                             // Foreground sweep (spec §3.4): a process that
                             // has been backgrounded past the hour sweeps now
@@ -219,7 +219,7 @@ struct MatronApp: App {
                 DatabaseLifecycle.sceneDidChange(to: phase) {
                     guard let session else { return }
                     OutboxBackgroundGrace.holdIfNeeded(
-                        engine: dependencies.syncService(for: session) as? JournalSyncEngine)
+                        engine: dependencies.syncEngine(for: session))
                 }
             }
             // Shareable tracker links opened from outside the app

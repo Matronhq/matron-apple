@@ -10,7 +10,6 @@ import MatronModels
 import MatronPush
 import MatronSearch
 import MatronStorage
-import MatronSync
 import MatronViewModels
 
 /// Wires the Mac app onto the journal stack. Same shape as the iOS
@@ -306,13 +305,7 @@ final class AppDependencies {
         return core
     }
 
-    /// `any SyncService` (not `JournalSyncEngine` directly) so existing
-    /// view code calling `sync.start()` / `.stateStream()` keeps working
-    /// unchanged — `JournalSyncEngine` conforms via the
-    /// `JournalSyncConformance.swift` shim. Callers that need engine-only
-    /// behaviour (e.g. the foreground reconnect nudge) downcast with
-    /// `as? JournalSyncEngine`.
-    func syncService(for session: UserSession) -> any SyncService { core(for: session).engine }
+    func syncEngine(for session: UserSession) -> JournalSyncEngine { core(for: session).engine }
 
     func chatService(for session: UserSession) -> any ChatService {
         let core = core(for: session)
