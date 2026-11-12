@@ -31,29 +31,17 @@ enum MacDetailColumnLog {
 }
 
 /// Sits at the root of the detail column, outside everything that changes
-/// with the page shown: its `onAppear` fires again only when SwiftUI builds
-/// the column's content anew.
+/// with the page shown: its probe's `onAppear` fires again only when SwiftUI
+/// builds the column's content anew.
+///
+/// The modifier itself reads nothing, so it never re-evaluates the column.
+/// Everything observed is read by `MacDetailColumnProbe`, a leaf behind it.
 struct MacDetailColumnDiagnostics: ViewModifier {
     let voiceNotes: VoiceNoteSession?
     let markdownPreview: MarkdownPreviewModel
-    @Environment(\.controlActiveState) private var controlActiveState
 
     func body(content: Content) -> some View {
-        // Read in `body` so Observation re-runs it when either changes.
-        let pill = Self.pillState(voiceNotes)
-        let panelOpen = markdownPreview.isOpen
-        content
-            .background {
-                Color.clear
-                    .onAppear {
-                        MacDetailColumnLog.rootAppearances += 1
-                        MacDetailColumnLog.note("root appeared #\(MacDetailColumnLog.rootAppearances)")
-                    }
-                    .onDisappear { MacDetailColumnLog.note("root disappeared") }
-            }
-            .onChange(of: pill) { old, new in MacDetailColumnLog.note("voice-note pill \(old) -> \(new)") }
-            .onChange(of: panelOpen) { _, open in MacDetailColumnLog.note("markdown panel \(open ? "opened" : "closed")") }
-            .onChange(of: controlActiveState) { _, state in MacDetailColumnLog.note("window \(Self.name(state))") }
+        content.background { MacDetailColumnProbe(voiceNotes: voiceNotes, markdownPreview: markdownPreview) }
     }
 
     /// Which rows the voice-note pill shows; it sits in a safe-area inset at
@@ -65,6 +53,29 @@ struct MacDetailColumnDiagnostics: ViewModifier {
         if session.sendingTarget != nil { rows.append("sending") }
         if !session.failures.isEmpty { rows.append("failed×\(session.failures.count)") }
         return rows.isEmpty ? "none" : rows.joined(separator: "+")
+    }
+}
+
+/// An invisible leaf: a change it observes re-evaluates this view alone.
+private struct MacDetailColumnProbe: View {
+    let voiceNotes: VoiceNoteSession?
+    let markdownPreview: MarkdownPreviewModel
+    @Environment(\.controlActiveState) private var controlActiveState
+
+    var body: some View {
+        Color.clear
+            .onAppear {
+                MacDetailColumnLog.rootAppearances += 1
+                MacDetailColumnLog.note("root appeared #\(MacDetailColumnLog.rootAppearances)")
+            }
+            .onDisappear { MacDetailColumnLog.note("root disappeared") }
+            .onChange(of: MacDetailColumnDiagnostics.pillState(voiceNotes)) { old, new in
+                MacDetailColumnLog.note("voice-note pill \(old) -> \(new)")
+            }
+            .onChange(of: markdownPreview.isOpen) { _, open in
+                MacDetailColumnLog.note("markdown panel \(open ? "opened" : "closed")")
+            }
+            .onChange(of: controlActiveState) { _, state in MacDetailColumnLog.note("window \(Self.name(state))") }
     }
 
     private static func name(_ state: ControlActiveState) -> String {
