@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 import MatronViewModels
 
@@ -40,4 +39,3 @@ struct MacLockOverlay: View {
         // The host owns the once-per-activation automatic prompt.
     }
 }
-#endif

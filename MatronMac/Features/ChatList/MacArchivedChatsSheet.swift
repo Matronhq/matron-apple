@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 import MatronChat
 import MatronModels
@@ -129,4 +128,3 @@ struct MacArchivedChatsSheet: View {
         return "\(shown) of \(total)"
     }
 }
-#endif

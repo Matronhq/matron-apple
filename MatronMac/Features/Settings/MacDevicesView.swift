@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 import MatronChat
 import MatronDesignSystem
@@ -226,4 +225,3 @@ private struct DeviceRow: View {
         .padding(.vertical, 3)
     }
 }
-#endif

@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 import MatronJournal
 import MatronViewModels
@@ -35,4 +34,3 @@ struct MacForYouSettingsSection: View {
         .task { await store.refresh() }
     }
 }
-#endif

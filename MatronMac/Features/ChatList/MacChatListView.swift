@@ -616,13 +616,9 @@ struct MacChatListView: View {
             // is the only item in the sidebar section and packs
             // to its leading edge; the flexible spacer pushes it
             // to the sidebar's trailing edge.
-            // `ToolbarSpacer` needs the macOS 26 SDK (Swift 6.2
-            // toolchain) — CI's Xcode 16.4 compiles without it.
-            #if compiler(>=6.2)
             if #available(macOS 26.0, *) {
                 ToolbarSpacer(.flexible, placement: .primaryAction)
             }
-            #endif
             ToolbarItem(placement: .primaryAction) {
                 Button { showingNewChat = true } label: {
                     Image(systemName: "square.and.pencil")

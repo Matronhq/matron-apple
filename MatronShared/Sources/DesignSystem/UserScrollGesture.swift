@@ -13,31 +13,23 @@ public extension View {
     /// drift it's meant to heal. Gesture phases are unambiguous: only a
     /// real drag reports `.interacting`/`.tracking`.
     ///
-    /// On older OS versions this is a no-op and callers fall back to the
-    /// binding heuristic.
-    ///
     /// - Parameters:
     ///   - begin: the user put their finger down and started dragging.
     ///   - settle: scrolling came to rest (any cause — drag, fling,
     ///     programmatic scroll, drift correction).
-    @ViewBuilder
     func onUserScrollGesture(
         begin: @escaping () -> Void,
         settle: @escaping () -> Void
     ) -> some View {
-        if #available(iOS 18.0, macOS 15.0, *) {
-            self.onScrollPhaseChange { oldPhase, newPhase in
-                switch newPhase {
-                case .tracking, .interacting:
-                    begin()
-                case .idle where oldPhase != .idle:
-                    settle()
-                default:
-                    break
-                }
+        onScrollPhaseChange { oldPhase, newPhase in
+            switch newPhase {
+            case .tracking, .interacting:
+                begin()
+            case .idle where oldPhase != .idle:
+                settle()
+            default:
+                break
             }
-        } else {
-            self
         }
     }
 }

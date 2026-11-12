@@ -37,10 +37,6 @@ enum VoiceModeScreenMapping {
     }
 }
 
-// The sitting and its screen need `VoiceCapture`, which only an Xcode with
-// the iOS 26 SDK compiles (see `VoiceCapture.swift`).
-#if compiler(>=6.2)
-
 /// Everything one voice-mode sitting owns: the audio engine, the
 /// microphone, the voice, the feed and the runner that ties them to the
 /// engine. Built when the screen appears, torn down when it ends.
@@ -172,8 +168,6 @@ struct VoiceModeHost: View {
     }
 }
 
-#endif
-
 /// The cover the shell presents. Its own view so the availability check
 /// stays out of `AppShellView`'s body.
 struct VoiceModeCover: View {
@@ -184,15 +178,11 @@ struct VoiceModeCover: View {
     let onClose: () -> Void
 
     var body: some View {
-        #if compiler(>=6.2)
         if #available(iOS 26, *) {
             VoiceModeHost(entry: entry, session: session, deps: deps, settings: settings, onClose: onClose)
         } else {
             unavailable
         }
-        #else
-        unavailable
-        #endif
     }
 
     private var unavailable: some View {

@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 import AppKit
 import MatronJournal
@@ -95,4 +94,3 @@ struct MacTwoFactorRecoveryCodesView: View {
         }
     }
 }
-#endif

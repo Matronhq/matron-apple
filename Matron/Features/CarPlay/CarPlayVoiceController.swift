@@ -5,10 +5,6 @@ import MatronModels
 import MatronViewModels
 import MatronVoice
 
-// Voice mode needs `VoiceCapture`, which only an Xcode with the iOS 26 SDK
-// compiles (see `VoiceCapture.swift`).
-#if compiler(>=6.2)
-
 /// Voice mode on the car's display: a thin adapter between the voice
 /// engine and CarPlay's templates. It maps engine state to a voice-control
 /// template and that template's buttons to engine events; no voice logic
@@ -480,5 +476,3 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         controller?.enteredBackground()
     }
 }
-
-#endif

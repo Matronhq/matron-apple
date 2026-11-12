@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 import MatronModels
 import MatronDesignSystem
@@ -49,4 +48,3 @@ struct MacGeneralSettingsPane: View {
         .task { await deps.userSettings(for: session).refresh() }
     }
 }
-#endif

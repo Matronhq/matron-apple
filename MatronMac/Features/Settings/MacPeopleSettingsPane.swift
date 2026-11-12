@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 import AppKit
 import MatronModels
@@ -255,4 +254,3 @@ struct MacPeopleLinkPresenter: ViewModifier {
             }
     }
 }
-#endif
