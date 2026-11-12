@@ -1,15 +1,15 @@
-#if DEBUG
 import SwiftUI
 import CoreGraphics
 import MatronModels
+@testable import MatronDesignSystem
 
-/// Made-up weeks, cards and lists for previews and snapshot tests, with
+/// Made-up weeks, cards and lists for the timeline snapshot tests, with
 /// pictures drawn in code. Nothing here comes from a real account.
-public enum TimelineDemoData {
+enum TimelineDemoData {
     /// Thursday 5 November 2026, 15:00 in London.
-    public static let now = london(2026, 11, 5, hour: 15)
+    static let now = london(2026, 11, 5, hour: 15)
 
-    public static let weeks: [TimelineWeekSummary] = [
+    static let weeks: [TimelineWeekSummary] = [
         summary("2026-11-02", "Docs site got search; offline mode in beta.", moved: 9),
         summary("2026-10-26", "Themes reached sepia; cropper passed the samples.", moved: 7),
         summary("2026-10-19", "Offline browsing started; docs site design signed off.", moved: 6),
@@ -30,7 +30,7 @@ public enum TimelineDemoData {
 
     // MARK: Weeks
 
-    public static let thisWeek = week(
+    static let thisWeek = week(
         "2026-11-02", final: false,
         stories: [
             TimelineStory(project: mobileSearch, sentence: "Search works in both apps now, with recent searches kept on the phone.",
@@ -46,7 +46,7 @@ public enum TimelineDemoData {
         also: [project(20, "Release notes"), project(21, "Crash reporting"), project(22, "Settings search"),
                project(23, "Font picker"), project(24, "Keyboard shortcuts")])
 
-    public static let lastWeek = week(
+    static let lastWeek = week(
         "2026-10-26", final: true,
         stories: [
             TimelineStory(project: themes, sentence: "Sepia variants rendered for the first eight themes.",
@@ -61,11 +61,11 @@ public enum TimelineDemoData {
         also: [project(21, "Crash reporting"), project(25, "Onboarding emails")])
 
     /// A new user's first week: nothing has moved.
-    public static let emptyWeek = week("2026-11-02", final: false, stories: [], also: [])
+    static let emptyWeek = week("2026-11-02", final: false, stories: [], also: [])
 
     /// A busy week: ten projects with something to say and five more that
     /// moved. The page shows eight cards; the rest sit behind its foot line.
-    public static let crowdedWeek = week(
+    static let crowdedWeek = week(
         "2026-11-02", final: false,
         stories: thisWeek.stories + [
             TimelineStory(project: cropper, sentence: "Smart crop now handles rounded corners.",
@@ -83,23 +83,23 @@ public enum TimelineDemoData {
         also: thisWeek.also)
 
     /// A card with no picture or video that week.
-    public static let noMediaStory = TimelineStory(
+    static let noMediaStory = TimelineStory(
         project: audit, sentence: "The report was written and two fixes went in.",
         marks: TimelineMarks(done: 2, next: true))
 
     /// A card with every mark: items waiting, items done, a next step.
-    public static let allMarksStory = TimelineStory(
+    static let allMarksStory = TimelineStory(
         project: docs, sentence: "Search is live on staging, and pages now load in under a second.",
         media: image("docs", "docs-search.png"), marks: TimelineMarks(forYou: 2, done: 5, next: true))
 
     /// A card with nothing to mark: it ends at its sentence.
-    public static let noMarksStory = TimelineStory(
+    static let noMarksStory = TimelineStory(
         project: billing, sentence: "The CSV export works for one account type.",
         media: image("billing", "export.png"), marks: TimelineMarks())
 
     // MARK: Lists
 
-    public static let quiet = StalledList(total: 5, rows: [
+    static let quiet = StalledList(total: 5, rows: [
         StalledProject(project: billing, lastMovedAt: daysAgo(19), weekly: [0, 1, 2, 3, 2, 0, 0, 0],
                        note: "Was moving well three weeks ago: CSV export works for one account type. "
                            + "Nothing since, and no-one is asking anything."),
@@ -110,20 +110,20 @@ public enum TimelineDemoData {
         StalledProject(project: mobileSearch, lastMovedAt: daysAgo(31), weekly: [0, 2, 2, 1, 0, 0, 0, 0]),
     ])
 
-    public static let long = StalledList(total: 7, rows: [
+    static let long = StalledList(total: 7, rows: [
         StalledProject(project: offline, lastMovedAt: daysAgo(1), createdAt: daysAgo(64), weekly: [2, 3, 1, 4, 2, 3, 5, 4]),
         StalledProject(project: themes, lastMovedAt: daysAgo(2), createdAt: daysAgo(40), weekly: [0, 1, 3, 2, 4, 3, 2, 3]),
         StalledProject(project: billing, lastMovedAt: daysAgo(19), createdAt: daysAgo(35), weekly: [0, 1, 2, 3, 2, 0, 0, 0]),
     ])
 
     /// Every project, the most recently moved first: one page of many.
-    public static let allProjects = TimelineProjectList(total: 34, rows: [
+    static let allProjects = TimelineProjectList(total: 34, rows: [
         (docs, 0.1), (themes, 0.5), (offline, 1), (mobileSearch, 1), (cropper, 3), (project(20, "Release notes"), 4),
         (project(21, "Crash reporting"), 6), (onboarding, 15), (billing, 19), (audit, 24),
     ].map { TimelineProjectRow(project: $0.0, lastMovedAt: daysAgo($0.1), openMissions: 1) }
         + [TimelineProjectRow(project: project(26, "Printable invoices"))], nextBefore: "demo")
 
-    public static let finished: [FinishedProject] = [
+    static let finished: [FinishedProject] = [
         ("Push notifications pilot", 2), ("Sign in with a passkey", 4), ("Dark mode for the web app", 9),
         ("Faster app launch", 13), ("Export to PDF", 21), ("New onboarding screens", 30),
         ("Shared links", 44), ("Usage meter", 61),
@@ -135,7 +135,7 @@ public enum TimelineDemoData {
 
     /// "Docs site launch" as its page: a picture, where it stands, what is
     /// next, one question waiting, and something behind each of its rows.
-    public static let summaryPage = TimelineProjectPage(
+    static let summaryPage = TimelineProjectPage(
         project: docs, isLive: true,
         sentence: "Search is live on staging, pages load in under a second, and the getting-started guide is drafted.",
         next: "A rehearsal on Monday, then the switch-over and launch on Wednesday 11 November.",
@@ -144,12 +144,12 @@ public enum TimelineDemoData {
 
     /// A project with only its name to show: no picture, no sentence, no
     /// next step, nothing waiting, and no files.
-    public static let summaryPageBare = TimelineProjectPage(
+    static let summaryPageBare = TimelineProjectPage(
         project: audit, isLive: true, weeks: 2, missionsOpen: 1, missionsDone: 0, files: 0)
 
     /// Five items wait and the page lists three; its picture is a very
     /// wide strip.
-    public static let summaryPageManyWaiting = TimelineProjectPage(
+    static let summaryPageManyWaiting = TimelineProjectPage(
         project: themes, isLive: true,
         sentence: "All fifteen themes now come in sepia and high contrast.",
         next: "Once you pick the default, the themes go out in the next build.",
@@ -160,14 +160,14 @@ public enum TimelineDemoData {
 
     /// Every item waiting on `summaryPageManyWaiting`: the three it lists
     /// and the two it only counts.
-    public static let summaryAllWaiting: [TimelineItemRef] = summaryPageManyWaiting.needsYou + [
+    static let summaryAllWaiting: [TimelineItemRef] = summaryPageManyWaiting.needsYou + [
         TimelineItemRef(id: "it_demo_54", num: 54, title: "Name the high-contrast theme"),
         TimelineItemRef(id: "it_demo_55", num: 55, title: "Which three themes go in the screenshots?")]
 
     /// Three weeks of "Docs site launch": this week with its card and more
     /// milestones than it lists, last week with a sentence and no picture,
     /// and an older week the project moved in without a card.
-    public static let history: [TimelineHistoryWeek] = [
+    static let history: [TimelineHistoryWeek] = [
         historyWeek("2026-11-02", sentence: "Search is live on staging, and pages now load in under a second.",
                     media: image("docs", "docs-search.png"),
                     milestones: [(61, "Search page live on staging", day(11, 4, 11)),
@@ -207,7 +207,7 @@ public enum TimelineDemoData {
     /// "Docs site launch" in full: a status, open tasks, one question
     /// waiting, open and finished missions, and pictures, a video and a
     /// document over three weeks.
-    public static let docsProjectPage: ProjectPageModel = {
+    static let docsProjectPage: ProjectPageModel = {
         let tasks = [task(31, "A rehearsal on Monday at 07:00"), task(32, "The CDN switch-over"), task(33, "Launch"),
                      task(34, "Write the launch post")]
         let palette = task(35, "Pick the docs colour palette", kind: .decision)
@@ -262,7 +262,7 @@ public enum TimelineDemoData {
 
     /// The pictures the stories name, by blob id, drawn in code; with
     /// them a very wide strip and a tall phone shot.
-    public static var images: [String: Image] {
+    static var images: [String: Image] {
         var images: [String: Image] = [:]
         for (id, size, draw) in pictures {
             if let cgImage = picture(size, draw) { images[id] = Image(decorative: cgImage, scale: 2) }
@@ -271,7 +271,7 @@ public enum TimelineDemoData {
     }
 
     /// Each picture's size in pixels, by blob id.
-    public static var sizes: [String: CGSize] {
+    static var sizes: [String: CGSize] {
         Dictionary(uniqueKeysWithValues: pictures.map { ($0.id, $0.size) })
     }
 
@@ -437,4 +437,3 @@ public enum TimelineDemoData {
         now.addingTimeInterval(-days * 86_400 - 3_600)
     }
 }
-#endif
