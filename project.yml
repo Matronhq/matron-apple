@@ -83,6 +83,9 @@ targets:
       - path: Shared/ChatTimeline
       # The native item thread's row model, shared by both apps.
       - path: Shared/ItemThread
+      # App code that is the same on iOS and Mac but needs each app's own
+      # types (`AppDependencies`), so it can't live in MatronShared.
+      - path: Shared/Chat
     info:
       path: Matron/App/Info.plist
       properties:
@@ -269,6 +272,9 @@ targets:
       - path: Shared/ChatTimeline
       # The native item thread's row model, shared by both apps.
       - path: Shared/ItemThread
+      # App code that is the same on iOS and Mac but needs each app's own
+      # types (`AppDependencies`), so it can't live in MatronShared.
+      - path: Shared/Chat
     info:
       path: MatronMac/App/Info.plist
       properties:
