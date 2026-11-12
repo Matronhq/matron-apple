@@ -1022,14 +1022,15 @@ public actor JournalSyncEngine {
         // `forYou`: a chat still on screen but no longer carried misses
         // what comes next, so it must not be marked complete when it
         // closes; one carried again is fetched again once the op is out.
-        for convoID in previous.subtracting(carried) where viewers.contains(where: { $0.convoID == convoID }) {
-            caughtUpViewed.remove(convoID)
+        for convoID in previous.subtracting(carried) {
             // A fetch already running cannot start again (one per
             // conversation and socket): it must not mark this one complete,
-            // and fetches again when it ends if it is carried by then.
+            // and fetches again when it ends if it is carried by then. This
+            // holds for a chat closed and reopened while it runs, too.
             if let running = catchUpsInFlight[convoID], running == liveConnection?.id {
                 catchUpsGapped[convoID] = running
             }
+            if viewers.contains(where: { $0.convoID == convoID }) { caughtUpViewed.remove(convoID) }
         }
         try? await liveConnection?.send(op)
         for convoID in carried.subtracting(previous) { startConversationCatchUp(convoID) }

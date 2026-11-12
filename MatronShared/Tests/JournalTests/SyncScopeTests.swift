@@ -550,6 +550,37 @@ final class SyncScopeEngineTests: XCTestCase {
         await engine.endSync()
     }
 
+    func testAChatClosedAndReopenedWhileItsFetchRunsIsFetchedAgain() async throws {
+        let socket = FakeWebSocketConnection()
+        let store = try seededStore(cursor: 10)
+        try store.markForYouStart()
+        MessagesStubURLProtocol.events = [frame(30, "c1"), frame(31, "c1")]
+        MessagesStubURLProtocol.holdNextFor = "c1"
+        let engine = JournalSyncEngine(api: stubbedAPI(), store: store, connector: FakeConnector([socket]), token: "t",
+                                       ownSender: "user:alice", search: nil, backoffBaseSeconds: 0.01,
+                                       syncScope: .forYou)
+        socket.serve(#"{"kind":"control","op":"hello_ok","seq":40,"sync":"for_you"}"#)
+        socket.serve(#"{"kind":"control","op":"cursor","seq":40}"#)
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        let first = UUID()
+        await engine.registerViewer(first, convoID: "c1")
+        try await until("c1's first fetch") { MessagesStubURLProtocol.isHolding }
+        // Closed and opened again while that fetch is out: in between the
+        // socket did not carry c1.
+        await engine.unregisterViewer(first)
+        MessagesStubURLProtocol.events.append(frame(35, "c1"))
+        let reopened = UUID()
+        await engine.registerViewer(reopened, convoID: "c1")
+        MessagesStubURLProtocol.releaseHeld()
+        try await until("c1 fetched again") { MessagesStubURLProtocol.messageRequests.count == 2 }
+        try await until("the gap's event") { try store.events(convoID: "c1").map(\.seq) == [30, 31, 35] }
+        try store.advanceCursor(to: 60)
+        await engine.unregisterViewer(reopened)
+        XCTAssertEqual(try store.syncedSeq(convoID: "c1"), 60, "the second fetch made c1 complete")
+        await engine.endSync()
+    }
+
     func testAJournalWithoutScopesNeverTriggersAFetch() async throws {
         let socket = FakeWebSocketConnection()
         let store = try seededStore(cursor: 10)
