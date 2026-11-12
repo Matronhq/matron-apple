@@ -1,3 +1,4 @@
+import MatronPushContent
 import SwiftUI
 import UIKit
 import MatronAuth
@@ -313,6 +314,10 @@ struct MatronApp: App {
         // callback survives sign-out"). The next session's push .task
         // installs a fresh one.
         appDelegate.registerDeviceToken = nil
+        // The key for sealed notification content belongs to the session
+        // that registered it: the next sign-in makes and registers a new
+        // one, and nothing sealed for this account opens after it.
+        PushKeyStore.live().delete()
         // Drop any buffered cold-start tap so the next sign-in's task
         // doesn't drain a stale room ID from the prior account.
         NotificationDelegate.shared.clearPendingRoomID()

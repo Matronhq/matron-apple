@@ -16,6 +16,7 @@ let package = Package(
         .library(name: "MatronViewModels", targets: ["MatronViewModels"]),
         .library(name: "MatronDesignSystem", targets: ["MatronDesignSystem"]),
         .library(name: "MatronPush", targets: ["MatronPush"]),
+        .library(name: "MatronPushContent", targets: ["MatronPushContent"]),
         .library(name: "MatronEvents", targets: ["MatronEvents"]),
         .library(name: "MatronSearch", targets: ["MatronSearch"]),
         .library(name: "MatronJournal", targets: ["MatronJournal"]),
@@ -140,8 +141,20 @@ let package = Package(
             name: "MatronPush",
             dependencies: [
                 "MatronJournal",
+                "MatronPushContent",
             ],
             path: "Sources/Push"
+        ),
+        // Sealed notification content: this device's key, opening a push's
+        // box, and the buttons on an item's notification. Kept small and
+        // free of the journal client, because the iOS notification
+        // extension links it and runs under a tight memory limit.
+        .target(
+            name: "MatronPushContent",
+            dependencies: [
+                "MatronStorage",
+            ],
+            path: "Sources/PushContent"
         ),
         // Phase 5 Task 1: parsers + DTOs for the three Matron-specific
         // event types (`chat.matron.tool_call`, `.ask_user`,
@@ -235,6 +248,11 @@ let package = Package(
             name: "PushTests",
             dependencies: ["MatronPush", "MatronJournal"],
             path: "Tests/PushTests"
+        ),
+        .testTarget(
+            name: "PushContentTests",
+            dependencies: ["MatronPushContent", "MatronStorage"],
+            path: "Tests/PushContentTests"
         ),
         .testTarget(
             name: "EventsTests",

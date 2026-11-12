@@ -1,5 +1,6 @@
 import BackgroundTasks
 import MatronJournal
+import MatronPushContent
 import os
 import UIKit
 import UserNotifications
@@ -48,6 +49,16 @@ final class MatronAppDelegate: NSObject, UIApplicationDelegate {
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         UNUserNotificationCenter.current().delegate = NotificationDelegate.shared
+        // A button on an item's notification answers the item. Wired here,
+        // not in a view: iOS may launch the app in the background just to
+        // deliver the tap, with no scene on screen.
+        NotificationDelegate.shared.answerItem = { answer in
+            await AppRoot.dependencies.answerItem(fromNotification: answer)
+        }
+        // Every notice offers the same one button; have its category ready
+        // before the first one arrives. Other buttons are registered by the
+        // notification extension as they come.
+        PushNotificationCategoryRegistrar.ensure(labels: PushNotificationActions.noticeLabels)
         #if DEBUG || MATRON_PERF_PROBE
         ScrollFramesProbe.startIfRequested()
         #endif

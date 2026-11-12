@@ -2,6 +2,7 @@ import Foundation
 import Combine
 import UserNotifications
 import MatronPush
+import MatronPushContent
 
 /// Routes APNs notification taps to the SwiftUI host so the user lands
 /// on the correct chat after tapping a notification banner. Singleton
@@ -44,6 +45,16 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     /// for).
     private var pendingRoomID: String?
 
+    /// The tracker item a tapped notification was about, when it was about
+    /// one: the tap opens the item rather than its conversation. Same
+    /// live/cold-start pair as the room above.
+    let tappedItemID = PassthroughSubject<String, Never>()
+    private var pendingItemID: String?
+
+    /// Sends a notification button's answer to the journal. Installed by
+    /// the app once at launch; returns whether the answer went through.
+    var answerItem: (@Sendable (PushNotificationActions.Answer) async -> Bool)?
+
     private override init() { super.init() }
 
     nonisolated func userNotificationCenter(
@@ -51,23 +62,64 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        defer { completionHandler() }
         // The relay carries the convo id as `aps.thread-id`, not a
         // top-level `room_id` — PushDeepLink resolves both shapes.
         let userInfo = response.notification.request.content.userInfo
-        guard let roomID = PushDeepLink.roomID(fromUserInfo: userInfo) else {
+
+        // A button on an item's notification: answer the item without
+        // opening the app. iOS keeps the app running in the background
+        // until the completion handler is called, so that waits for the
+        // send. If it fails, the notification comes back saying so, and a
+        // tap on it opens the item.
+        if let answer = PushNotificationActions.answer(
+            actionIdentifier: response.actionIdentifier, userInfo: userInfo) {
+            let original = response.notification.request.content
+            Task { @MainActor in
+                let sent = await self.answerItem?(answer) ?? false
+                if !sent { Self.reportUnsent(answer, original: original) }
+                completionHandler()
+            }
+            return
+        }
+
+        defer { completionHandler() }
+        guard response.actionIdentifier == UNNotificationDefaultActionIdentifier,
+              let roomID = PushDeepLink.roomID(fromUserInfo: userInfo) else {
             return
         }
         let seq = PushDeepLink.seq(fromUserInfo: userInfo)
+        let itemID = userInfo[PushNotificationActions.Key.itemID] as? String
         // UN guarantees this delegate method runs on the main thread,
         // but the protocol declaration is nonisolated. Hop explicitly
         // so the @MainActor isolation contract on `pendingRoomID` /
         // `tappedRoomID` holds.
         Task { @MainActor in
             if let seq { NotificationSeenInbox.shared.record(convoID: roomID, seq: seq) }
-            self.pendingRoomID = roomID
-            self.tappedRoomID.send(roomID)
+            if let itemID, !itemID.isEmpty {
+                self.pendingItemID = itemID
+                self.tappedItemID.send(itemID)
+            } else {
+                self.pendingRoomID = roomID
+                self.tappedRoomID.send(roomID)
+            }
         }
+    }
+
+    /// An answer that did not reach the journal must not vanish with the
+    /// notification the user tapped it on. The replacement carries no
+    /// buttons: opening the item shows where it stands.
+    private static func reportUnsent(_ answer: PushNotificationActions.Answer, original: UNNotificationContent) {
+        let content = UNMutableNotificationContent()
+        content.title = original.title
+        content.subtitle = "Not sent: \(answer.label)"
+        content.body = "Your answer did not reach the journal. Tap to open the item."
+        content.threadIdentifier = original.threadIdentifier
+        content.sound = .default
+        var userInfo = original.userInfo
+        userInfo[PushNotificationActions.Key.itemActions] = nil
+        content.userInfo = userInfo
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: "unsent-\(answer.itemID)", content: content, trigger: nil))
     }
 
     nonisolated func userNotificationCenter(
@@ -88,6 +140,13 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         return pending
     }
 
+    /// The same, for a cold-start tap on an item's notification.
+    func consumePendingItemID() -> String? {
+        let pending = pendingItemID
+        pendingItemID = nil
+        return pending
+    }
+
     /// Drops any buffered tap without consuming it. Called from
     /// `MatronApp.signOut()` so a tap that arrived during the prior
     /// session and was never drained doesn't surface to the next
@@ -98,6 +157,7 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     /// #5 second-pass finding "live taps leave stale pending rooms".
     func clearPendingRoomID() {
         pendingRoomID = nil
+        pendingItemID = nil
         NotificationSeenInbox.shared.clear()
     }
 }

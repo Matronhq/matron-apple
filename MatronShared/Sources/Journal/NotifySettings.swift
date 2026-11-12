@@ -77,7 +77,7 @@ public struct NotifySettings: Equatable, Sendable {
     public static func preset(_ mode: Mode) -> [Event: Bool]? {
         switch mode {
         case .coordinator:
-            return [.prompts: true, .questions: true, .notices: true, .coordinatorDone: true, .otherDone: false,
+            return [.prompts: true, .questions: true, .notices: true, .coordinatorDone: false, .otherDone: false,
                     .stopped: false, .rooms: false, .activity: false]
         case .all:
             return [.prompts: true, .questions: true, .notices: true, .coordinatorDone: true, .otherDone: true,

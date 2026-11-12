@@ -598,3 +598,18 @@ Needs a real device with a microphone; the simulator's synthetic mic is live at 
 - [ ] The recording bar names the microphone under the timer. iPhone with AirPods connected: it still says the iPhone's microphone; pick AirPods from the menu mid-note and the rest of the note comes from AirPods (play it back). The pick is remembered for the next note; pick the iPhone microphone to go back.
 - [ ] Mac with AirPods as the system input: the bar says AirPods while starting; pick the built-in microphone and the note starts over on it, nothing lost. The next note starts on the built-in microphone straight away. Pick another mic once the timer runs (AirPods to the built-in microphone, say): the bar names it at once, and the note switches to it without stopping. Keep talking through the switch, then play the sent note back: every word is there, the first part from the old mic and the rest from the new one. The next note starts on the new mic. "System default" goes back to following macOS.
 - [ ] Mac: unplug a picked USB microphone, then start a note: it records from the system default instead.
+
+## Notifications that say what they are about
+
+Needs a real iPhone and a journal that seals notification content. The simulator does not run the notification extension for a simulated push, so the opening step cannot be checked there.
+
+- [ ] Sign in, allow notifications, leave the app. Have an agent file a question for you: the notification shows the question's title, "Question" and the conversation's name under it, and the start of its text. Not "Your agent needs you".
+- [ ] With Settings ▸ Notifications ▸ Show Previews set to "When Unlocked", lock the iPhone and have another item filed: the lock screen shows a notification from Matron with no text until the iPhone is unlocked.
+- [ ] A question with buttons: hold the notification, the item's buttons are there with its labels. Tap one: the item shows that answer in the app and on another device, and the app did not open.
+- [ ] A first question with a set of buttons never seen before on this iPhone shows them too (the extension registers them as it arrives).
+- [ ] A notice: hold the notification, tap Seen: the notice closes.
+- [ ] Tap an item's notification: the app opens on that item, not on its conversation.
+- [ ] Two questions from one conversation: both notifications stay. A follow-up comment on one of them replaces that one's notification.
+- [ ] Turn on airplane mode, tap a button on a notification: a notification comes back saying the answer was not sent; tapping it opens the item.
+- [ ] Sign out and in again, then have an item filed: its notification still shows its text (the new session registered a new key).
+- [ ] Settings ▸ Notifications in the app, Coordinator mode: "Coordinator finished a turn" is off; the Coordinator finishing a turn sends nothing, an item for you still does.

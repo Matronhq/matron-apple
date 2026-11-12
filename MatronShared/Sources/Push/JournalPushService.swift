@@ -15,13 +15,21 @@ import MatronJournal
 public final class JournalPushService: PushService, @unchecked Sendable {
     private let api: JournalAPI
     private let environment: JournalAPI.PushEnvironment
+    private let pushKey: @Sendable () -> String?
 
     /// The app decides sandbox vs. prod (`#if DEBUG` → `.sandbox`, else
     /// `.prod`) at the call site in a later task; this service just
     /// forwards whichever environment it's constructed with.
-    public init(api: JournalAPI, environment: JournalAPI.PushEnvironment) {
+    ///
+    /// `pushKey` gives this device's public key for sealed notification
+    /// content, asked for at each registration. The iPhone app passes its
+    /// `PushKeyStore`; a platform with no notification extension to open
+    /// the content leaves it out and registers without one.
+    public init(api: JournalAPI, environment: JournalAPI.PushEnvironment,
+                pushKey: @escaping @Sendable () -> String? = { nil }) {
         self.api = api
         self.environment = environment
+        self.pushKey = pushKey
     }
 
     public func requestPermission() async -> Bool {
@@ -38,7 +46,8 @@ public final class JournalPushService: PushService, @unchecked Sendable {
     /// it — registration is keyed on the authenticated device alone — so
     /// its value is ignored here.
     public func registerToken(_ deviceToken: Data, pusherBaseURL: URL) async throws {
-        try await api.registerPush(tokenHex: Self.hexString(from: deviceToken), environment: environment)
+        try await api.registerPush(tokenHex: Self.hexString(from: deviceToken), environment: environment,
+                                   pushKey: pushKey())
     }
 
     public func unregister(deviceToken: Data, pusherBaseURL: URL) async throws {
