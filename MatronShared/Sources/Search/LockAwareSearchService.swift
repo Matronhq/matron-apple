@@ -368,34 +368,8 @@ public actor LockAwareSearchService: SearchService {
         try await base.wipe()
     }
 
-    public func recordBackfillProgress(roomID: String, indexedCount: Int, oldestEventID: String?, complete: Bool) async throws {
-        try requireAvailable()
-        try await base.recordBackfillProgress(roomID: roomID, indexedCount: indexedCount,
-                                              oldestEventID: oldestEventID, complete: complete)
-    }
-
-    public func backfillComplete(roomID: String) async throws -> Bool {
-        try requireAvailable()
-        return try await base.backfillComplete(roomID: roomID)
-    }
-
-    public func backfillOldestEventID(roomID: String) async throws -> String? {
-        try requireAvailable()
-        return try await base.backfillOldestEventID(roomID: roomID)
-    }
-
     public func resetBackfill() async throws {
         try requireAvailable()
         try await base.resetBackfill()
-    }
-
-    public func eventCount(roomID: String) async throws -> Int {
-        try requireAvailable()
-        return try await base.eventCount(roomID: roomID)
-    }
-
-    public func contains(eventID: String) async throws -> Bool {
-        try requireAvailable()
-        return try await base.contains(eventID: eventID)
     }
 }

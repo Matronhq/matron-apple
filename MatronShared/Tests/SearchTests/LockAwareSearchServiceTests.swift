@@ -39,12 +39,7 @@ final class LockAwareSearchServiceTests: XCTestCase {
         func removeAll(eventIDs: [String]) async throws { removed.append(eventIDs) }
         func query(_ text: String, limit: Int) async throws -> [SearchHit] { [] }
         func wipe() async throws { wipes += 1 }
-        func recordBackfillProgress(roomID: String, indexedCount: Int, oldestEventID: String?, complete: Bool) async throws {}
-        func backfillComplete(roomID: String) async throws -> Bool { false }
-        func backfillOldestEventID(roomID: String) async throws -> String? { nil }
         func resetBackfill() async throws {}
-        func eventCount(roomID: String) async throws -> Int { 0 }
-        func contains(eventID: String) async throws -> Bool { false }
     }
 
     private final class Counter: @unchecked Sendable {
@@ -203,12 +198,7 @@ final class LockAwareSearchServiceTests: XCTestCase {
         func remove(eventID: String) async throws {}
         func query(_ text: String, limit: Int) async throws -> [SearchHit] { [] }
         func wipe() async throws { log.append("wipe") }
-        func recordBackfillProgress(roomID: String, indexedCount: Int, oldestEventID: String?, complete: Bool) async throws {}
-        func backfillComplete(roomID: String) async throws -> Bool { false }
-        func backfillOldestEventID(roomID: String) async throws -> String? { nil }
         func resetBackfill() async throws {}
-        func eventCount(roomID: String) async throws -> Int { 0 }
-        func contains(eventID: String) async throws -> Bool { false }
     }
 
     func testBufferEditedDuringAFlushWriteIsNotMisTrimmed() async throws {
@@ -299,14 +289,7 @@ final class LockAwareSearchServiceTests: XCTestCase {
             ("remove", { try await gate.remove(eventID: "1") }),
             ("removeAll", { try await gate.removeAll(eventIDs: ["1"]) }),
             ("wipe", { try await gate.wipe() }),
-            ("recordBackfillProgress", {
-                try await gate.recordBackfillProgress(roomID: "c1", indexedCount: 1, oldestEventID: nil, complete: true)
-            }),
-            ("backfillComplete", { _ = try await gate.backfillComplete(roomID: "c1") }),
-            ("backfillOldestEventID", { _ = try await gate.backfillOldestEventID(roomID: "c1") }),
             ("resetBackfill", { try await gate.resetBackfill() }),
-            ("eventCount", { _ = try await gate.eventCount(roomID: "c1") }),
-            ("contains", { _ = try await gate.contains(eventID: "1") }),
         ]
         for (name, call) in calls {
             do {

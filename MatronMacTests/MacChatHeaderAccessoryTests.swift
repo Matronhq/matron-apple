@@ -14,10 +14,7 @@ private final class FakeChatForHeader: ChatService, @unchecked Sendable {
     func chatSummaries() -> AsyncThrowingStream<[ChatSummary], Error> {
         AsyncThrowingStream { $0.finish() }
     }
-    func createChat(with botID: String) async throws -> String { "!x:s" }
-    func refresh() async throws {}
     func forceSnapshot() async throws {}
-    func mute(roomID: String) async throws {}
 }
 
 private final class HarnessModel: ObservableObject {

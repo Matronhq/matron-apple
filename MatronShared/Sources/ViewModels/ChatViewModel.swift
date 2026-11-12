@@ -2435,20 +2435,6 @@ public final class ChatViewModel {
     /// Passive, like `imagePixelSize(for:)`.
     public func imageAnimation(for url: URL) -> AnimatedImageSource? { resolvedImages[url]?.animation }
 
-    /// Strip path-traversal and directory-separator components from a
-    /// Matrix-event-attached filename. Inputs that reduce to an empty
-    /// string (all-`/`, `..`, hidden-only) fall back to a UUID so we
-    /// never pass `/` to `appendingPathComponent` or write a hidden
-    /// file by accident. Test seam: `internal` so
-    /// `ChatViewModelTests` can assert the contract directly without
-    /// rendering or hitting disk.
-    /// Delegates to `AttachmentTempFiles.sanitisedFilename` (fix wave, item
-    /// H) — kept as a thin wrapper, not removed, so `ChatViewModelTests`'s
-    /// existing internal-access test seam keeps working unchanged.
-    static func sanitisedAttachmentFilename(_ raw: String) -> String {
-        AttachmentTempFiles.sanitisedFilename(raw)
-    }
-
     // MARK: - Ask-user prompts (Phase 5 Task 11)
 
     /// The bridge's durable resolution for a busy-queue card (keyed by the

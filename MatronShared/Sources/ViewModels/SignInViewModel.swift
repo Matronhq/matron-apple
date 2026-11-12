@@ -370,7 +370,6 @@ public final class SignInViewModel {
         switch error {
         case .invalidServerURL: return "That doesn't look like a valid server URL."
         case .serverUnreachable: return "Couldn't reach that server."
-        case .ssoNotSupported: return "SSO is not supported by this server."
         case .invalidCredentials: return "Invalid credentials."
         case .twoFactorRequired, .twoFactorEnrolmentRequired: return "Two-factor sign-in is needed."
         case .wrongTwoFactorCode: return "Wrong code. Try again."

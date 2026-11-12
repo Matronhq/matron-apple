@@ -7,11 +7,8 @@ import MatronSearch
 /// 10 s / 60 min timers in `start()` are a thin wrapper around it, so no
 /// test has to sleep.
 final class JournalMaintenanceTests: XCTestCase {
-    /// Conforms to the WHOLE protocol: `eventCount(roomID:)` and
-    /// `contains(eventID:)` are requirements with no extension default
-    /// (`MatronShared/Sources/Search/SearchService.swift:62,65`), so omitting
-    /// them would not compile — compare `InMemorySearchService` in
-    /// `SearchBackfillCoordinatorTests`, which implements both.
+    /// Tracks what is indexed, so `contains`/`eventCount` (helpers of this
+    /// fake, not part of `SearchService`) can prove a removal happened.
     private final class RecordingSearch: SearchService, @unchecked Sendable {
         private let lock = NSLock()
         private var _removed: [[String]] = []
@@ -60,9 +57,6 @@ final class JournalMaintenanceTests: XCTestCase {
             lock.lock(); defer { lock.unlock() }; return _indexed.contains(eventID)
         }
         func wipe() async throws {}
-        func recordBackfillProgress(roomID: String, indexedCount: Int, oldestEventID: String?, complete: Bool) async throws {}
-        func backfillComplete(roomID: String) async throws -> Bool { true }
-        func backfillOldestEventID(roomID: String) async throws -> String? { nil }
         func resetBackfill() async throws {}
     }
 

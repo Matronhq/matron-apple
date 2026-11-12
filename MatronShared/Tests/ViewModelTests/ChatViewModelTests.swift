@@ -3253,10 +3253,5 @@ private actor RecordingSearchService: SearchService {
     func remove(eventID: String) async throws {}
     func query(_ text: String, limit: Int) async throws -> [SearchHit] { [] }
     func wipe() async throws {}
-    func recordBackfillProgress(roomID: String, indexedCount: Int, oldestEventID: String?, complete: Bool) async throws {}
-    func backfillComplete(roomID: String) async throws -> Bool { true }
-    func backfillOldestEventID(roomID: String) async throws -> String? { nil }
     func resetBackfill() async throws {}
-    func eventCount(roomID: String) async throws -> Int { 0 }
-    func contains(eventID: String) async throws -> Bool { false }
 }

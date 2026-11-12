@@ -5,7 +5,6 @@ import MatronModels
 public enum AuthError: Error, Equatable {
     case invalidServerURL(ServerURLValidator.ValidationError)
     case serverUnreachable
-    case ssoNotSupported
     case invalidCredentials
     /// The password was right; the user must now enter an authenticator or
     /// recovery code (`verifyTwoFactor`).

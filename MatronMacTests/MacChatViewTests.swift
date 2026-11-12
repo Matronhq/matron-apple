@@ -46,10 +46,7 @@ private final class FakeChatForSubStrip: ChatService, @unchecked Sendable {
     func children(of parentConvoID: String) -> AsyncStream<[SubChatSummary]> {
         AsyncStream { $0.finish() }
     }
-    func createChat(with botID: String) async throws -> String { "!x:s" }
-    func refresh() async throws {}
     func forceSnapshot() async throws {}
-    func mute(roomID: String) async throws {}
 }
 
 @MainActor

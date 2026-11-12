@@ -5,13 +5,12 @@ import MatronModels
 import CoreServices
 #endif
 
-/// Shared attachment temp-file writer (fix wave, item H). Extracted from
-/// `ChatViewModel.writeTempFile`/`sanitisedAttachmentFilename` so the
-/// items-tracker hosts (attach-a-file/photo on a comment) can reuse the
-/// same two hazard mitigations instead of duplicating them:
+/// Shared attachment temp-file writer, used by the chat and by the
+/// items-tracker hosts (attach-a-file/photo on a comment), so both get the
+/// same two hazard mitigations:
 ///
 /// - a path-traversal filename from an attacker-controllable sender
-///   (Matrix event metadata, a tracker attachment name) must never reach
+///   (a journal attachment name, a tracker attachment name) must never reach
 ///   `appendingPathComponent` raw;
 /// - two different attachments that happen to share a display filename
 ///   (routine — "report.pdf" from two different rooms/items) must not

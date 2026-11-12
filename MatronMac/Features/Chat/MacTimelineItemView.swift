@@ -501,22 +501,13 @@ struct MacTimelineItemView: View {
             ActivityIndicatorRow(label: label)
 
         case .unknown(let eventType):
-            // `m.room.encrypted` is the SDK's `unableToDecrypt` mapped
-            // through; the SDK retries decryption as keys arrive and
-            // replaces the row via a `.set` diff. Friendlier than the
-            // raw "[unsupported event]" generic fallback.
+            // A journal row type this build doesn't know (or a known one
+            // whose payload didn't parse).
             HStack {
                 Spacer()
-                if eventType == "m.room.encrypted" {
-                    Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.secondary)
-                    Text("Encrypted message — waiting for key")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("[unsupported event: \(eventType)]")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
+                Text("[unsupported event: \(eventType)]")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                 Spacer()
             }
             .padding(.vertical, 4)

@@ -331,11 +331,6 @@ final class AppDependencies {
         try? core(for: session).store.parentConvoID(of: convoID)
     }
 
-    /// Whether `convoID` is a subagent child (has a parent).
-    func isSubChat(_ convoID: String, for session: UserSession) -> Bool {
-        parentConvoID(of: convoID, for: session) != nil
-    }
-
     func mediaService(for session: UserSession) -> any MediaService {
         if let existing = mediaServices[session.userID] { return existing }
         let service = JournalMediaService(api: core(for: session).api)
@@ -353,13 +348,6 @@ final class AppDependencies {
     /// `runIfDue()` on it.
     func journalMaintenance(for session: UserSession) -> JournalMaintenance {
         core(for: session).maintenance
-    }
-
-    /// Task 9 (items tracker): the session's `ItemsSync` actor — outbox
-    /// drain, marker refetches, reconnect refresh. One per session, same
-    /// instance the view-model factories below hand out.
-    func itemsSync(for session: UserSession) -> ItemsSync {
-        core(for: session).items
     }
 
     /// The session's `MissionsSync` actor — marker refetches and the
@@ -500,13 +488,6 @@ final class AppDependencies {
 
     /// The Search page's query over everything (`GET /search/all`).
     func globalSearcher(for session: UserSession) -> any GlobalSearching {
-        core(for: session).api
-    }
-
-    /// Read surface for tracker create/comment/close flows that don't need
-    /// the full `ItemsPanelViewModel`/`ItemDetailViewModel` (e.g. a
-    /// standalone create sheet). Same session-scoped `JournalAPI`.
-    func itemsProvider(for session: UserSession) -> any ItemsProviding {
         core(for: session).api
     }
 
