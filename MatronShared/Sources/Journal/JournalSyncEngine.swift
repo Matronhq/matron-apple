@@ -123,6 +123,11 @@ public actor JournalSyncEngine {
     /// Conversation → the socket its running fetch belongs to. A fetch from
     /// a socket since replaced must not hold back the new socket's.
     private var catchUpsInFlight: [String: UUID] = [:]
+    /// Conversation → the socket whose running fetch it fell out of the
+    /// `viewing` set during. That fetch may predate events the socket never
+    /// carried, so it must not mark the conversation complete; if it is
+    /// carried again by the time the fetch ends, a fresh fetch follows.
+    private var catchUpsGapped: [String: UUID] = [:]
     /// Whether the current `forYou` socket's replay is over (its `cursor`
     /// frame arrived). Until then the journal holds back the socket's live
     /// frames, so a conversation fetched then could miss what lands between
@@ -883,7 +888,14 @@ public actor JournalSyncEngine {
     /// then on the socket carries this conversation's new events, so the
     /// fetch only has to cover what came before.
     private func catchUpConversation(_ convoID: String, on connection: JournalConnection, attempt: Int) async {
-        defer { if catchUpsInFlight[convoID] == connection.id { catchUpsInFlight[convoID] = nil } }
+        // Set when the socket stopped carrying this conversation while the
+        // fetch ran and carries it again now: fetch it once more.
+        var refetch = false
+        defer {
+            if catchUpsGapped[convoID] == connection.id { catchUpsGapped[convoID] = nil }
+            if catchUpsInFlight[convoID] == connection.id { catchUpsInFlight[convoID] = nil }
+            if refetch { startConversationCatchUp(convoID) }
+        }
         do {
             try await connection.ping(timeout: Self.watchdogPingTimeout)
             let floor = try store.syncedSeq(convoID: convoID)
@@ -922,8 +934,13 @@ public actor JournalSyncEngine {
                 }
             }
             stats?.noteConversationFetch()
-            // Kept current from here only while the socket carries it.
-            if viewers.contains(where: { $0.convoID == convoID }), carriedConvoIDs.contains(convoID) {
+            // Kept current from here only while the socket carries it, and
+            // only if it carried it throughout: a gap during the fetch may
+            // hold events the fetch was too early to see.
+            let carried = viewers.contains(where: { $0.convoID == convoID }) && carriedConvoIDs.contains(convoID)
+            if catchUpsGapped[convoID] == connection.id {
+                refetch = carried
+            } else if carried {
                 caughtUpViewed.insert(convoID)
             }
         } catch {
@@ -1007,6 +1024,12 @@ public actor JournalSyncEngine {
         // closes; one carried again is fetched again once the op is out.
         for convoID in previous.subtracting(carried) where viewers.contains(where: { $0.convoID == convoID }) {
             caughtUpViewed.remove(convoID)
+            // A fetch already running cannot start again (one per
+            // conversation and socket): it must not mark this one complete,
+            // and fetches again when it ends if it is carried by then.
+            if let running = catchUpsInFlight[convoID], running == liveConnection?.id {
+                catchUpsGapped[convoID] = running
+            }
         }
         try? await liveConnection?.send(op)
         for convoID in carried.subtracting(previous) { startConversationCatchUp(convoID) }
