@@ -18,9 +18,8 @@ Matron.xcodeproj/
 # Swift Package Manager
 .build/
 .swiftpm/
-# NOTE: Package.resolved is NOT gitignored — it pins SDK versions for reproducible
-# CI builds. If matrix-rust-components-swift ships a breaking change, an unpinned
-# resolution would break CI on machines that haven't cached the previous version.
+# NOTE: Package.resolved is NOT gitignored — it pins dependency versions for
+# reproducible CI builds.
 
 # CocoaPods (not used, but defensive)
 Pods/
