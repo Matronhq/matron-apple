@@ -5,7 +5,7 @@ import MatronModels
 import MatronJournal
 
 /// Drives the unified search UI on both iOS and Mac. Owns the query string, the
-/// FTS message hits, and the chat (title/bot) hits derived from a chat-list
+/// FTS message hits, and the chat (title) hits derived from a chat-list
 /// snapshot.
 @Observable
 @MainActor
@@ -114,10 +114,14 @@ public final class SearchViewModel {
         guard !query.isEmpty else { return [] }
         let lower = query.lowercased()
         return allChats.filter {
-            $0.title.lowercased().contains(lower)
-                || $0.bot.displayName.lowercased().contains(lower)
-                || tagMatches($0, query: lower)
+            $0.title.lowercased().contains(lower) || tagMatches($0, query: lower)
         }
+    }
+
+    /// The line under a chat hit's title: the chat's latest message, as the
+    /// chat list shows it, or none when the chat has no snippet yet.
+    public static func chatHitCaption(for chat: ChatSummary) -> String? {
+        chat.snippet.isEmpty ? nil : chat.snippet
     }
 
     /// Whether `lower` (the already-lowercased query) matches the chat's

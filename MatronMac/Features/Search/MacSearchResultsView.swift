@@ -46,7 +46,9 @@ struct MacSearchResultsView: View {
                                     roomBoxNames: line.roomBoxNames,
                                     roomBoxShorts: line.roomBoxShorts,
                                     colorScheme: colorScheme)
-                                Text(chat.bot.displayName).font(.caption).foregroundStyle(.secondary)
+                                if let caption = SearchViewModel.chatHitCaption(for: chat) {
+                                    Text(caption).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                }
                             }
                         }
                         .buttonStyle(.plain)

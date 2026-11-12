@@ -30,7 +30,8 @@ final class MacSearchViewSnapshotTests: XCTestCase {
     @MainActor
     func test_macSearchResultsView_populated() async {
         let claude = BotIdentity(matrixID: "@claude:s", displayName: "Claude", avatarURL: nil)
-        let chats = [ChatSummary(id: "!1:s", title: "Auth bug", bot: claude, lastActivity: nil, unreadCount: 0)]
+        let chats = [ChatSummary(id: "!1:s", title: "Auth bug", bot: claude, lastActivity: nil, unreadCount: 0,
+                                 snippet: "Pushed the fix for the token refresh")]
         let hit = SearchHit(
             id: "$1", roomID: "!1:s", sender: "@claude:s",
             timestamp: Date(timeIntervalSince1970: 1_745_000_000),
