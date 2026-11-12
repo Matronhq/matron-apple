@@ -964,8 +964,8 @@ struct ChatView: View {
             // landing after it would collapse the window under a reader
             // who is up in history.
             viewModel.resetHistoryWindow(ifGeneration: startedGeneration)
-            // Generation-guarded: the VM is cached per room (ChatVMCache in
-            // ChatListView), and on a same-room remount SwiftUI can run the
+            // Generation-guarded: the VM is cached per room (ChatVMCache,
+            // owned by ChatListView), and on a same-room remount SwiftUI can run the
             // NEW view's `.task`/start() before the OLD view's onDisappear —
             // an unconditional stop() would kill the successor's stream.
             viewModel.stop(ifGeneration: startedGeneration)
