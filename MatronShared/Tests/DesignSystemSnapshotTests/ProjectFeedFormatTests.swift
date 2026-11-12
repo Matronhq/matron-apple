@@ -82,19 +82,6 @@ final class ProjectFeedFormatTests: XCTestCase {
         XCTAssertEqual(ProjectFeedFormat.timeOfDay(F.ago(3_600 + 6 * 60), timeZone: F.utc), "06:54")
     }
 
-    func testMilestoneDaysGroupRunsOfOneDayInOrder() {
-        func row(_ id: String, _ age: TimeInterval) -> ProjectMilestone {
-            ProjectMilestone(milestone: Milestone(id: id, missionID: "ms_1", num: 1, kind: .progress, title: id,
-                                                  convoID: "c", seq: 1, createdAt: F.ago(age)), missionNum: 1)
-        }
-        let days = ProjectFeedFormat.milestoneDays(
-            [row("a", 600), row("b", 7_200), row("c", 9 * 3_600), row("d", 10 * 3_600), row("e", 4 * 86_400)],
-            now: F.now, calendar: Self.utc)
-        XCTAssertEqual(days.map(\.label), ["Today", "Yesterday", "11 Jan"])
-        XCTAssertEqual(days.map { $0.rows.map(\.id) }, [["a", "b"], ["c", "d"], ["e"]])
-        XCTAssertTrue(ProjectFeedFormat.milestoneDays([], now: F.now).isEmpty)
-    }
-
     // MARK: Decisions
 
     func testDecisionMark() {

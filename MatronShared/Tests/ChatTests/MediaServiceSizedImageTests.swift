@@ -8,7 +8,7 @@ import CoreGraphics
 /// point size `NSImage.size` reports) so the Mac fullscreen viewer can
 /// size its sheet without upscaling past 1:1.
 final class MediaServiceSizedImageTests: XCTestCase {
-    /// Reuses the fake from `MediaServiceFakeTests` (same module).
+    /// Reuses `FakeMediaService` (same module).
     private func service(stub: [URL: Data]) -> FakeMediaService {
         let svc = FakeMediaService()
         svc.stubData = stub

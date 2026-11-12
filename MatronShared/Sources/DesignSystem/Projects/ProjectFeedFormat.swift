@@ -106,23 +106,6 @@ public enum ProjectFeedFormat {
         return f.string(from: date)
     }
 
-    /// The milestones grouped by calendar day in their own (newest-first)
-    /// order: one group per run of rows on the same day.
-    public static func milestoneDays(_ rows: [ProjectMilestone], now: Date,
-                                     calendar: Calendar = .current) -> [ProjectMilestoneDay] {
-        var days: [ProjectMilestoneDay] = []
-        for row in rows {
-            let start = calendar.startOfDay(for: row.milestone.createdAt)
-            if let last = days.last, last.start == start {
-                days[days.count - 1].rows.append(row)
-            } else {
-                days.append(ProjectMilestoneDay(start: start, label: dayLabel(row.milestone.createdAt, now: now,
-                                                                              calendar: calendar), rows: [row]))
-            }
-        }
-        return days
-    }
-
     // MARK: Files
 
     /// A file tile's caption under its name: "#5008 · 1d", "chat · 5d";
@@ -157,16 +140,6 @@ public enum ProjectFeedFormat {
     static func plural(_ n: Int, _ one: String, _ many: String? = nil) -> String {
         "\(n) \(n == 1 ? one : many ?? one + "s")"
     }
-}
-
-/// One day of the page's milestones.
-public struct ProjectMilestoneDay: Identifiable, Equatable, Sendable {
-    /// The day's first instant, in the grouping calendar.
-    public let start: Date
-    /// "Today", "Yesterday", "26 Sep".
-    public let label: String
-    public var rows: [ProjectMilestone]
-    public var id: Date { start }
 }
 
 /// A decision row's glyph: a green check for a decision in force or

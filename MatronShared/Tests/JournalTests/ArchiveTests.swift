@@ -193,8 +193,8 @@ final class JournalStoreArchiveTests: XCTestCase {
 
         XCTAssertEqual(try store.archivedHistoryPurgeCandidates(now: now), ["old"])
 
-        XCTAssertEqual(try store.conversationIDsIncludingSubChats(["old"]), ["old", "old:sub:x"])
         XCTAssertEqual(try store.purgeArchivedHistory(["old"], now: now), ["old", "old:sub:x"])
+        XCTAssertEqual(try store.pendingSearchRoomPurges(), ["old", "old:sub:x"], "the sub-chat's search rows go too")
 
         XCTAssertEqual(try store.events(convoID: "old"), [])
         XCTAssertEqual(try store.events(convoID: "old:sub:x"), [])

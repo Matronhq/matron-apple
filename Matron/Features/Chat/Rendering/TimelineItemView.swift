@@ -520,7 +520,7 @@ struct TimelineItemView: View {
 
         case .askUserAnswer:
             // `chat.matron.button_response` answers are bookkeeping for
-            // `ChatViewModel.pendingAsk()`, never rendered — Matron X
+            // `ChatViewModel.isPromptAnswered(_:)`, never rendered — Matron X
             // hides them too (own and others'). The user's choice is
             // visible through the answered prompt UI instead.
             EmptyView()
@@ -611,7 +611,7 @@ struct TimelineItemView: View {
             return false
         }
         // Button-response answers (`chat.matron.button_response`) are
-        // pendingAsk bookkeeping, never visible — Matron X hides them
+        // answered-prompt bookkeeping, never visible — Matron X hides them
         // too. See the `.askUserAnswer` case doc in TimelineItem.swift.
         if case .askUserAnswer = item.kind {
             return false

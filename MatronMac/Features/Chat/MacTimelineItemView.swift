@@ -492,7 +492,7 @@ struct MacTimelineItemView: View {
 
         case .askUserAnswer:
             // `chat.matron.button_response` answers are bookkeeping for
-            // `ChatViewModel.pendingAsk()`, never rendered — Matron X
+            // `ChatViewModel.isPromptAnswered(_:)`, never rendered — Matron X
             // hides them too (own and others'). The user's choice is
             // visible through the answered prompt UI instead.
             EmptyView()
@@ -531,7 +531,7 @@ struct MacTimelineItemView: View {
         if case .stateChange = item.kind {
             return false
         }
-        // Button-response answers are pendingAsk bookkeeping, never
+        // Button-response answers are answered-prompt bookkeeping, never
         // visible — same as iOS `TimelineItemView.shouldRender`.
         if case .askUserAnswer = item.kind {
             return false

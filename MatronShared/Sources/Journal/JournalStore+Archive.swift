@@ -164,10 +164,6 @@ extension JournalStore {
 
     /// `convoIDs` and every sub-chat below them, at any depth: the rooms a
     /// purge of `convoIDs` drops, for the search index.
-    public func conversationIDsIncludingSubChats(_ convoIDs: [String]) throws -> [String] {
-        try db.read { db in try Self.withSubChats(db, convoIDs) }
-    }
-
     private static func withSubChats(_ db: Database, _ convoIDs: [String]) throws -> [String] {
         var all = convoIDs
         var seen = Set(convoIDs)

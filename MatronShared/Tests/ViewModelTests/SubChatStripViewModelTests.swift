@@ -203,7 +203,7 @@ final class SubChatStripViewModelTests: XCTestCase {
 
         fake.continuation?.yield([SubChatSummary(id: "p1:sub:a", title: "explore", isRunning: true)])
         await waitUntil { vm.runningChildren.count == 1 }
-        XCTAssertEqual(vm.soleRunningChild?.id, "p1:sub:a")
+        XCTAssertEqual(vm.runningChildren.map(\.id), ["p1:sub:a"])
 
         // The subagent finishes: the strip empties, but the switcher still
         // lists it (finished children remain reachable).
@@ -211,6 +211,5 @@ final class SubChatStripViewModelTests: XCTestCase {
         await waitUntil { vm.runningChildren.isEmpty }
         XCTAssertTrue(vm.runningChildren.isEmpty, "no running children ⇒ strip hides")
         XCTAssertEqual(vm.children.count, 1, "finished child stays in the switcher")
-        XCTAssertNil(vm.soleRunningChild)
     }
 }

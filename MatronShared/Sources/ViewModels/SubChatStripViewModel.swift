@@ -81,13 +81,6 @@ public final class SubChatStripViewModel {
         observationTask = nil
     }
 
-    /// The running child to preselect when the strip has exactly one — a
-    /// convenience for the common single-subagent case. `nil` when there
-    /// are none or several (the caller shows the full strip instead).
-    public var soleRunningChild: SubChatSummary? {
-        runningChildren.count == 1 ? runningChildren.first : nil
-    }
-
     // MARK: - Subtask-message linking
 
     /// The bridge announces every Task/Agent tool call in the parent
