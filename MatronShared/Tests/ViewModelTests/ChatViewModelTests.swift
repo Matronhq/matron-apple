@@ -97,8 +97,8 @@ final class PagingFakeTimelineService: TimelineService, @unchecked Sendable {
 
     /// Pops the next queued older page (if any) and prepends it to the
     /// currently-loaded items, re-yielding the grown snapshot. Returns
-    /// `true` once no pages remain — mirroring the SDK's "reached start"
-    /// signal, though (like the live impl) `ChatViewModel` doesn't trust
+    /// `true` once no pages remain — mirroring the live timeline's
+    /// "reached start" signal, though (like the live impl) `ChatViewModel` doesn't trust
     /// that return value alone; it derives `reachedHistoryStart` from
     /// consecutive no-growth calls, which this fake's empty-queue
     /// no-op naturally produces.
@@ -358,7 +358,7 @@ final class ChatViewModelTests: XCTestCase {
         vm.stop()
     }
 
-    /// No mirror answer (SDK timelines, or a store that hasn't synced the
+    /// No mirror answer (a timeline without one, or a store that hasn't synced the
     /// row yet): the newest own row already loaded is the target. A local
     /// echo (non-numeric id) is not a landable row and is skipped.
     @MainActor
@@ -1663,8 +1663,8 @@ final class ChatViewModelTests: XCTestCase {
         // Round 3 bugbot finding #3: the View's `.task { viewModel.start();
         // await viewModel.markAsRead() }` previously raced — `start()`
         // returned the observation Task synchronously and `markAsRead()`
-        // fired before any snapshot had been applied, so the SDK marked
-        // an empty room as read on first open. `start()` is now `async`
+        // fired before any snapshot had been applied, so an empty room
+        // was marked read on first open. `start()` is now `async`
         // and returns once the first snapshot has landed; this test
         // pins that ordering by asserting `items` is populated *before*
         // `markAsRead()` runs.
@@ -1956,7 +1956,7 @@ final class ChatViewModelTests: XCTestCase {
     @MainActor
     func test_hasReceivedFirstSnapshot_initiallyFalse() async {
         // Before `start()` runs the flag is false so the empty-state
-        // placeholder stays hidden during sliding-sync warm-up.
+        // placeholder stays hidden while the first snapshot loads.
         let timeline = FakeTimelineService()
         let vm = ChatViewModel(roomID: "!r:s", timeline: timeline, media: FakeMediaService())
         XCTAssertFalse(vm.hasReceivedFirstSnapshot)
@@ -2208,7 +2208,7 @@ final class ChatViewModelTests: XCTestCase {
     @MainActor
     func test_settledEmpty_falseAfterTransientClear() async {
         // populated → empty → populated within the grace: the empty is a
-        // transient sliding-sync reset, so the "no messages yet"
+        // transient timeline reset, so the "no messages yet"
         // placeholder must never surface — the repopulation cancels the
         // pending flip, and settledEmpty stays false even past the grace.
         let populated = [TimelineItem(
@@ -3253,10 +3253,5 @@ private actor RecordingSearchService: SearchService {
     func remove(eventID: String) async throws {}
     func query(_ text: String, limit: Int) async throws -> [SearchHit] { [] }
     func wipe() async throws {}
-    func recordBackfillProgress(roomID: String, indexedCount: Int, oldestEventID: String?, complete: Bool) async throws {}
-    func backfillComplete(roomID: String) async throws -> Bool { true }
-    func backfillOldestEventID(roomID: String) async throws -> String? { nil }
     func resetBackfill() async throws {}
-    func eventCount(roomID: String) async throws -> Int { 0 }
-    func contains(eventID: String) async throws -> Bool { false }
 }

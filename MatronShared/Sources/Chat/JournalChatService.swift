@@ -3,14 +3,11 @@ import MatronJournal
 import MatronModels
 
 public enum JournalChatError: Error, LocalizedError, Equatable {
-    case creationNotSupported
     case mediaNotSupported
     case invalidPromptReference(String)
 
     public var errorDescription: String? {
         switch self {
-        case .creationNotSupported:
-            return "Creating conversations from the app needs server support (convo_create) — coming soon."
         case .mediaNotSupported:
             return "Attachments need the server's /media endpoint — coming soon."
         case .invalidPromptReference(let id):
@@ -248,14 +245,6 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
         }
     }
 
-    public func createChat(with botID: String) async throws -> String {
-        throw JournalChatError.creationNotSupported
-    }
-
-    public func refresh() async throws {
-        try await engine.waitUntilReady()
-    }
-
     public func forceSnapshot() async throws {
         await engine.refreshSummaries()
     }
@@ -263,11 +252,6 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
     public func listDidAppear() async {
         await engine.refreshSummariesForList()
     }
-
-    public func mute(roomID: String) async throws {
-        try store.setMuted(true, convoID: roomID)
-    }
-
 
 }
 

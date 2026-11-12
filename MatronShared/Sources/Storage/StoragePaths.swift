@@ -14,13 +14,9 @@ public enum StoragePaths {
         FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier)
     }
 
-    public static var cryptoStorePath: URL? { groupContainer?.appendingPathComponent("crypto-store") }
     public static var searchDBPath: URL?   { groupContainer?.appendingPathComponent("matron-search.sqlite") }
 
     /// Pure helper for tests / fallback paths.
-    public static func cryptoStore(in container: URL) -> URL {
-        container.appendingPathComponent("crypto-store")
-    }
     public static func searchDB(in container: URL) -> URL {
         container.appendingPathComponent("matron-search.sqlite")
     }
@@ -71,7 +67,6 @@ public enum StoragePaths {
         return userApplicationSupport.appendingPathComponent("chat.matron.app")
     }
 
-    public static let cryptoStorePath = appSupport.appendingPathComponent("crypto-store")
     public static let searchDBPath   = appSupport.appendingPathComponent("matron-search.sqlite")
     #endif
 }

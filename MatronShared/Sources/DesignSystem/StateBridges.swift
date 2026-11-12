@@ -13,8 +13,8 @@ import MatronModels
 /// - `SendStateGlyph.from(_:)` — `TimelineSendState` (MatronModels) →
 ///   `SendStateGlyph`. Was duplicated as `sendStateGlyph(for:)` on iOS
 ///   `TimelineItemView` and Mac `MacTimelineItemView`. The source enum
-///   is `MatronModels`-resident specifically to keep the design-system
-///   target free of any `MatrixRustSDK` transitive dep.
+///   is `MatronModels`-resident so the design-system target needn't
+///   depend on `MatronChat`.
 
 public extension SyncBannerState {
     /// Translate from the service-layer connection state to the

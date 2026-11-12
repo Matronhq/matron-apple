@@ -16,19 +16,10 @@ import MatronPush
 ///   event carrying the `room_id`. `MacChatListView` observes that
 ///   event and selects the matching `ChatSummary` in the sidebar.
 ///
-/// **Note on silent-payload body construction**: this handler does
-/// NOT rewrite the displayed body in `willPresent` — Apple's
-/// completion-handler signature only takes presentation options, not
-/// modified content, so any mutation made there is dropped on the
-/// floor. Mac's equivalent of iOS's NSE rewrite is to handle the
-/// silent payload in `NSApplicationDelegate.application(_:didReceiveRemoteNotification:)`,
-/// decode the event, and schedule a fresh local notification with
-/// the cleartext body. That pipeline is **deferred** for a future
-/// commit — the structurally-sound bits (token capture, tap-to-open
-/// routing, foreground presentation options) ship now; cleartext
-/// silent-push handling needs Sygnal up before it can be validated
-/// end-to-end anyway, and the design has wrinkles around session
-/// injection that warrant their own design pass.
+/// This handler does NOT rewrite the displayed content in `willPresent` —
+/// Apple's completion-handler signature only takes presentation options,
+/// not modified content. Nothing needs rewriting: the journal server's
+/// alerts arrive with their title and body already in plaintext.
 @MainActor
 public final class MacNotificationHandler: NSObject, UNUserNotificationCenterDelegate {
 

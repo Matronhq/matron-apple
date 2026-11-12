@@ -1,8 +1,7 @@
 import Foundation
 
-/// Local full-text search index over decrypted message bodies. Backed by
-/// SQLite/FTS5 in production (`SearchServiceLive`); fakeable for view-model and
-/// backfill tests.
+/// Local full-text search index over message bodies. Backed by SQLite/FTS5
+/// in production (`SearchServiceLive`); fakeable for view-model tests.
 public protocol SearchService: Sendable {
     /// Inserts a single message into the index. Idempotent on (roomID, eventID).
     func index(roomID: String, eventID: String, sender: String, timestamp: Date, body: String) async throws
@@ -44,17 +43,6 @@ public protocol SearchService: Sendable {
     /// Wipes all data (used on sign-out).
     func wipe() async throws
 
-    /// Records progress for a room's backfill.
-    func recordBackfillProgress(roomID: String, indexedCount: Int, oldestEventID: String?, complete: Bool) async throws
-
-    /// True if backfill has previously completed for `roomID`.
-    func backfillComplete(roomID: String) async throws -> Bool
-
-    /// The oldest event id a previous backfill walk reached for `roomID`
-    /// (recorded via `recordBackfillProgress`), or `nil` if backfill has
-    /// never run there. The walk's resume point.
-    func backfillOldestEventID(roomID: String) async throws -> String?
-
     /// Clears all backfill bookkeeping while keeping the indexed messages.
     /// Called when the local journal mirror re-bootstraps from a snapshot.
     /// Nothing walks history into the index any more; the bookkeeping is
@@ -71,12 +59,6 @@ public protocol SearchService: Sendable {
     /// of long-archived conversations' local history. Chunked like
     /// `removeAll`. Default: nothing to delete.
     func removeRooms(_ roomIDs: [String]) async throws
-
-    /// Number of indexed events for `roomID` (used by BackfillRunner to resume).
-    func eventCount(roomID: String) async throws -> Int
-
-    /// True if an event with `eventID` is already indexed (used by BackfillRunner to skip duplicates).
-    func contains(eventID: String) async throws -> Bool
 }
 
 /// One message's index-ready fields — the unit of `indexBatch`.

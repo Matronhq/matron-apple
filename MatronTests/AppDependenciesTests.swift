@@ -58,8 +58,8 @@ final class AppDependenciesTests: XCTestCase {
     }
 
     /// Bugbot finding: `timelineCache` was a plain `Dictionary` so every
-    /// distinct room visited grew the cache forever. Each entry holds an
-    /// SDK timeline handle + an in-memory snapshot, so a long session
+    /// distinct room visited grew the cache forever. Each entry holds a
+    /// timeline service + an in-memory snapshot, so a long session
     /// that hops through many rooms would accumulate them indefinitely.
     /// The fix bounds the cache with an LRU cap of `timelineCacheLimit`
     /// (16). Visiting `limit + 1` distinct rooms must evict the oldest;

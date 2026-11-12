@@ -19,9 +19,9 @@ public struct ChatSummary: Equatable, Hashable, Identifiable, Sendable {
         let id: String
         let title: String
         let bot: BotIdentity
-        /// `nil` when the room's timeline hasn't been hydrated yet — e.g. a Phase
-        /// 1 sliding-sync snapshot before any timeline events have been pulled.
-        /// UI should hide the relative-time label and grouping when nil.
+        /// `nil` when the conversation has no activity time yet (no events
+        /// mirrored). UI should hide the relative-time label and grouping
+        /// when nil.
         let lastActivity: Date?
         let unreadCount: Int
         /// One-line preview of the newest message (the server/store `snippet`).

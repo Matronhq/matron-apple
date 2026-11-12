@@ -272,10 +272,7 @@ final class SidebarFakeChatService: ChatService, @unchecked Sendable {
 
     func chatSummaries() -> AsyncThrowingStream<[ChatSummary], Error> { AsyncThrowingStream { _ in } }
     func children(of parentConvoID: String) -> AsyncStream<[SubChatSummary]> { AsyncStream { $0.finish() } }
-    func createChat(with botID: String) async throws -> String { "c-new" }
-    func refresh() async throws {}
     func forceSnapshot() async throws {}
-    func mute(roomID: String) async throws {}
     func setArchived(_ roomIDs: [String], archived: Bool) async { lock.withLock { _archived.append(roomIDs) } }
 }
 #endif

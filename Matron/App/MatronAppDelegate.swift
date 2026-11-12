@@ -13,9 +13,7 @@ import UserNotifications
 /// SwiftUI hands the system the same instance APNs invokes when the
 /// device token arrives or fails.
 ///
-/// Task 11: the token flow is now direct rather than routed through
-/// `PushTokenStore`/`PushBootstrap` (Matrix-SDK-only machinery this task
-/// drops). `MatronApp`'s push `.task` sets `registerDeviceToken` to a
+/// `MatronApp`'s push `.task` sets `registerDeviceToken` to a
 /// closure that calls `JournalPushService.registerToken(...)` for the
 /// active session; this delegate just forwards whatever token APNs hands
 /// it. `registerDeviceToken` is `nil` until a session is signed in (or

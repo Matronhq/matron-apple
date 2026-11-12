@@ -21,21 +21,13 @@ settings:
     # Sticky signing config so `xcodegen generate` doesn't wipe the
     # team selection that Xcode's Signing & Capabilities UI writes
     # into Matron.xcodeproj (which is gitignored). Team-signed dev
-    # builds let `keychain-access-groups` validate at runtime so the
-    # recovery-key flow can persist to Keychain without surfacing
-    # "Couldn't auto-save your recovery key".
+    # builds let `keychain-access-groups` validate at runtime, so the
+    # app and its extensions share the signed-in session in Keychain.
     #
     # `4LJ7WRRRFD` is the org team that ships Matron to the App
     # Store. Individual developer certs registered on this team let
     # dev-machine signing resolve to a local "Apple Development"
     # cert under the same team.
-    #
-    # The integration harness scripts override these on the
-    # `xcodebuild` command line with `CODE_SIGN_STYLE=Manual
-    # CODE_SIGN_IDENTITY=- AD_HOC_CODE_SIGNING_ALLOWED=YES
-    # CODE_SIGNING_REQUIRED=NO`, so harness builds bypass the team
-    # entirely (ad-hoc) — these settings only kick in for Xcode-Run
-    # dev builds and signed archive builds.
     #
     # CLI-side `xcodebuild` invocations against this team need
     # `-allowProvisioningUpdates` so Xcode can fetch / generate a
@@ -72,8 +64,7 @@ settings:
 packages:
   MatronShared:
     path: MatronShared
-  # Phase 3 Task 12: snapshot tests for Mac chrome. SPM-side snapshot suites
-  # already use this via MatronShared/Package.swift; declaring here so the
+  # Snapshot tests for Mac chrome. SPM-side snapshot suites already use this via MatronShared/Package.swift; declaring here so the
   # Xcode `MatronMacTests` target can import `SnapshotTesting` too. Same
   # pinned major as MatronShared (1.x). Resolved transitively at 1.19.2 today
   # via xcodebuild's package graph.
@@ -246,19 +237,18 @@ targets:
       # on an item's notification. Shared with the notification extension.
       - package: MatronShared
         product: MatronPushContent
-      # Phase 6 (Search): local FTS5 index + search UI. Platform-agnostic
-      # library; both apps link it directly.
+      # Local FTS5 search index + search UI. Platform-agnostic library;
+      # both apps link it directly.
       - package: MatronShared
         product: MatronSearch
       # Voice mode (spec 2026-10-03): the engine, player and capture.
       - package: MatronShared
         product: MatronVoice
-      # Phase 4 Task 1: embed the NSE app-extension target inside the
-      # iOS host bundle so APNs can invoke it on incoming silent push.
-      # Without `embed: true`, the .appex builds standalone but is
-      # never copied into Matron.app/PlugIns/, so iOS has no extension
-      # to wake on push delivery and the encrypted notif decryption
-      # path (Tasks 2-8) is unreachable end-to-end.
+      # Embed the notification service extension inside the iOS host
+      # bundle so iOS runs it on each incoming alert push (the journal
+      # sends them with `mutable-content`). Without `embed: true`, the
+      # .appex builds standalone but is never copied into
+      # Matron.app/PlugIns/, so iOS has no extension to run.
       - target: MatronNSE
         embed: true
         codeSign: true
@@ -352,8 +342,8 @@ targets:
           # OUTSIDE the store), but it's the default for new macOS targets
           # and a prerequisite if Matron ever ships direct. Debug must stay
           # off: XCUITest's runner injects into the host app, which the
-          # hardened runtime blocks — and the Debug/Debug.AdHoc configs are
-          # what the integration harness builds. Verified on an ad-hoc
+          # hardened runtime blocks — and Debug is what the UI and
+          # integration tests build. Verified on an ad-hoc
           # signed Release build: `codesign -d --verbose` reports
           # `flags=0x10002(adhoc,runtime)`.
           ENABLE_HARDENED_RUNTIME: YES
@@ -385,7 +375,7 @@ targets:
         product: MatronDesignSystem
       - package: MatronShared
         product: MatronPush
-      # Phase 6 (Search): same platform-agnostic library as iOS.
+      # Search: same platform-agnostic library as iOS.
       - package: MatronShared
         product: MatronSearch
 
@@ -452,7 +442,7 @@ targets:
         product: MatronModels
       - package: MatronShared
         product: MatronViewModels
-      # Phase 6 (Search): MacSearchViewSnapshotTests renders MacSearchResultsView
+      # MacSearchViewSnapshotTests renders MacSearchResultsView
       # and imports MatronSearch (SearchHit) + the shared SearchViewModel.
       - package: MatronShared
         product: MatronSearch
@@ -465,10 +455,8 @@ targets:
       - package: swift-snapshot-testing
         product: SnapshotTesting
 
-  # Phase 3.5 — XCUITest target for driving the Mac app through real UI
-  # flows without a human in the loop. Task 14 purged the Matrix-era
-  # verification/recovery scenarios; currently empty pending Task 15's
-  # journal-protocol scenario.
+  # XCUITest target for driving the Mac app through real UI flows
+  # without a human in the loop (the marketing-screenshot run lives here).
   MatronMacUITests:
     type: bundle.ui-testing
     platform: macOS
@@ -481,9 +469,8 @@ targets:
     dependencies:
       - target: MatronMac
 
-  # Phase 3.5+ — iOS XCUITest target, mirrors MatronMacUITests. iOS sim
-  # doesn't have App Sandbox so no entitlement carve-outs needed. Task 14
-  # purged the Matrix-era scenarios; currently empty pending Task 15.
+  # iOS XCUITest target, mirrors MatronMacUITests. iOS sim doesn't have
+  # App Sandbox so no entitlement carve-outs needed.
   MatronUITests:
     type: bundle.ui-testing
     platform: iOS
@@ -497,11 +484,9 @@ targets:
     dependencies:
       - target: Matron
 
-  # Phase 3.5 — integration tests driving `MatronShared`'s public surface
-  # directly against a live server, bypassing the UI + XCUITest complexity.
-  # Task 14 purged the Matrix-era verification/chat-list scenarios; Task 15
-  # replaced them with journal-protocol coverage against a real
-  # matron-journal server subprocess (see JournalServerHarness.swift).
+  # Integration tests driving `MatronShared`'s public surface directly
+  # against a real matron-journal server subprocess (see
+  # JournalServerHarness.swift), bypassing the UI + XCUITest complexity.
   MatronIntegrationTests:
     type: bundle.unit-test
     platform: macOS
@@ -519,12 +504,6 @@ targets:
         product: MatronModels
       - package: MatronShared
         product: MatronStorage
-      - package: MatronShared
-        product: MatronSync
-      - package: MatronShared
-        product: MatronChat
-      - package: MatronShared
-        product: MatronViewModels
       - package: MatronShared
         product: MatronJournal
 

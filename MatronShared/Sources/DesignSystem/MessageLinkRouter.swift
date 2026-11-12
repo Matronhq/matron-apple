@@ -10,7 +10,7 @@ import MatronModels
 /// itself comes from `MatronItemLink.action(for:)`, which both renderers
 /// share, because `MarkdownText.handle`'s `OpenURLAction.Result` return type
 /// is only meaningful inside SwiftUI's `openURL` environment. Note that
-/// matrix/mxc URLs never carry a `.link` attribute (see `MarkdownAttributed`),
+/// legacy matrix/mxc URLs never carry a `.link` attribute (see `MarkdownAttributed`),
 /// so in practice only item links, http(s) and unknown schemes ever reach
 /// this delegate. Only http(s) and mailto go on to `NSWorkspace`; any other
 /// scheme gets `BlockedLinkPrompt` instead.
@@ -71,8 +71,8 @@ public class MessageLinkRouter: NSObject, NSTextViewDelegate {
             // `matron://mission/<n>` / `matron://project/<n>` — same.
             openPageLink?(page)
         case .swallow, .openConsent:
-            // matrix/mxc — swallowed until permalink / content-URI
-            // handling lands; mirrors `MarkdownText.handle(url:)`. A
+            // Legacy matrix/mxc links, which nothing can open; mirrors
+            // `MarkdownText.handle(url:)`. A
             // consent link belongs on an item, not in prose.
             break
         case .system(let url):

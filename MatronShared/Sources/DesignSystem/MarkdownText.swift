@@ -17,10 +17,10 @@ import MatronModels
 ///     `\.openConversation` environment action — same rule.
 ///   - `matron://mission/<n>` and `matron://project/<n>` open that page
 ///     through the `\.openPageLink` environment action — same rule.
-///   - Matrix-internal schemes (`matrix:` permalinks, `mxc:` content URIs)
-///     are swallowed for now and logged at `.debug`. Phase 3 wires
-///     permalink resolution; until then we'd rather no-op than have the OS
-///     surface a "no app to handle this URL" error sheet to the user.
+///   - Legacy `matrix:` permalinks and `mxc:` content URIs (old message
+///     text can still carry them) are swallowed and logged at `.debug`:
+///     nothing can open them, and a no-op beats the OS surfacing a "no
+///     app to handle this URL" error sheet to the user.
 ///
 /// Image policy: an image in the text (`![alt](url)`) is never loaded; a
 /// placeholder stands in for it (`MarkdownImagePolicy`).
@@ -127,8 +127,8 @@ public struct MarkdownText: View {
             }
             return .handled
         case .swallow, .openConsent:
-            // Matrix-internal (`matrix:` / `mxc:`) — swallowed until
-            // permalink + content-URI handling lands — and any `matron://`
+            // Legacy `matrix:` / `mxc:` links, which nothing can open, and
+            // any `matron://`
             // we don't understand. `.handled` keeps the OS from surfacing a
             // "no handler" error. Logged REDACTED: a linkified
             // `matron://rlink` / `matron://link` carries its pairing secret

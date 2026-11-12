@@ -10,10 +10,7 @@ import MatronViewModels
 private final class FakeChatForRooms: ChatService, @unchecked Sendable {
     func children(of parentConvoID: String) -> AsyncStream<[SubChatSummary]> { AsyncStream { $0.finish() } }
     func chatSummaries() -> AsyncThrowingStream<[ChatSummary], Error> { AsyncThrowingStream { $0.finish() } }
-    func createChat(with botID: String) async throws -> String { "!x:s" }
-    func refresh() async throws {}
     func forceSnapshot() async throws {}
-    func mute(roomID: String) async throws {}
 }
 
 /// The chat header's "Rooms · n" and the side pane's header on a room.

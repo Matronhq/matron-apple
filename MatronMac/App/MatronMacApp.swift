@@ -1,6 +1,7 @@
 import SwiftUI
 import MatronJournal
 import MatronModels
+import MatronStorage
 import MatronViewModels
 import MatronDesignSystem
 
@@ -77,6 +78,8 @@ struct MatronMacApp: App {
         // observes the domain: drop window frames saved under per-build
         // SwiftUI type names (see `StaleAutosaveKeys`).
         StaleAutosaveKeys.pruneAtLaunch()
+        // Once per install: drop what the Matrix-based builds left behind.
+        LegacyMatrixDataCleanup.runOnceAtLaunch()
         // Live updates to the window's lists wait while anything scrolls.
         MacLiveScrollHold.shared.install(gate: .shared)
         #if DEBUG
@@ -119,10 +122,8 @@ struct MatronMacApp: App {
                     // Push pipeline: request permission, register for
                     // remote notifications, and wire the delegate's
                     // device-token callback straight to the journal
-                    // server's `/push/register` endpoint (no client-
-                    // provider / pusher-base dance needed — that was
-                    // Matrix-SDK-only machinery Task 12 drops). Mirrors
-                    // iOS `MatronApp`'s push `.task`.
+                    // server's `/push/register` endpoint. Mirrors iOS
+                    // `MatronApp`'s push `.task`.
                     .task(id: session.userID) {
                         let pushService = dependencies.pushService(for: session)
                         appDelegate.registerDeviceToken = { token in
@@ -390,9 +391,8 @@ struct MatronMacApp: App {
     }
 
     /// Restores any persisted journal session (Keychain-backed, keyed
-    /// `"matron.journal.session"`); a first launch after this task simply
-    /// finds no session and falls through to the sign-in view. No
-    /// migration from the old Matrix-SDK session store.
+    /// `"matron.journal.session"`); a first launch finds no session and
+    /// falls through to the sign-in view.
     private func bootstrap() async {
         // Before any session is published: a restored session whose device
         // was signed out elsewhere is refused on its first connect.

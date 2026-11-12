@@ -24,12 +24,6 @@ public enum SessionTag {
     /// rewritten on rename, so both must parse indefinitely.
     static let roomMarkers = JournalEventType.agentRoomTitleMarkers
 
-    /// The bridge's markers that may lead a title ahead of the short:
-    /// ↔️/🔗 = multi-agent room, 🐣 = session another agent spawned
-    /// (matron-bridge#227). All stay with the visible title; only a room
-    /// marker is ever dropped, and only beside a rendered room tag.
-    static let titleMarkers = SessionTitle.markers
-
     /// Peels the bridge's `[bc] ` session-short prefix off a published
     /// title. Returns the short (without brackets) and the remaining title.
     /// Titles without the prefix come back unchanged with a nil short —

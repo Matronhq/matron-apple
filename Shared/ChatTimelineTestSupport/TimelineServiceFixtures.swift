@@ -32,10 +32,7 @@ final class NoMediaFixture: MediaService, @unchecked Sendable {
 final class NoChildrenChatFixture: ChatService, @unchecked Sendable {
     func chatSummaries() -> AsyncThrowingStream<[ChatSummary], Error> { AsyncThrowingStream { $0.finish() } }
     func children(of parentConvoID: String) -> AsyncStream<[SubChatSummary]> { AsyncStream { $0.finish() } }
-    func createChat(with botID: String) async throws -> String { "!stub:server" }
-    func refresh() async throws {}
     func forceSnapshot() async throws {}
-    func mute(roomID: String) async throws {}
 }
 
 enum TimelineFixtures {

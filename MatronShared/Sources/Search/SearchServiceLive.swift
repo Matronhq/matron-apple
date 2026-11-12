@@ -440,59 +440,12 @@ public final class SearchServiceLive: SearchService, @unchecked Sendable {
         }
     }
 
-    public func recordBackfillProgress(roomID: String, indexedCount: Int, oldestEventID: String?, complete: Bool) async throws {
-        try await queue.write { db in
-            try self.admit(db)
-            try db.execute(sql: """
-                INSERT INTO indexed_rooms(room_id, backfill_complete, backfill_oldest_event_id, backfill_event_count)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(room_id) DO UPDATE SET
-                    backfill_complete = excluded.backfill_complete,
-                    backfill_oldest_event_id = excluded.backfill_oldest_event_id,
-                    backfill_event_count = excluded.backfill_event_count
-            """, arguments: [roomID, complete ? 1 : 0, oldestEventID, indexedCount])
-        }
-    }
-
-    public func backfillOldestEventID(roomID: String) async throws -> String? {
-        try await queue.read { db in
-            try self.admit(db)
-            return try String.fetchOne(
-                db,
-                sql: "SELECT backfill_oldest_event_id FROM indexed_rooms WHERE room_id = ?",
-                arguments: [roomID]
-            )
-        }
-    }
-
     public func resetBackfill() async throws {
         try await queue.write { db in
             try self.admit(db)
             // Bookkeeping only — `messages`/`messages_fts` stay intact, so
             // existing hits keep working while rooms re-walk.
             try db.execute(sql: "DELETE FROM indexed_rooms")
-        }
-    }
-
-    public func backfillComplete(roomID: String) async throws -> Bool {
-        try await queue.read { db in
-            try self.admit(db)
-            let value = try Int.fetchOne(db, sql: "SELECT backfill_complete FROM indexed_rooms WHERE room_id = ?", arguments: [roomID]) ?? 0
-            return value == 1
-        }
-    }
-
-    public func eventCount(roomID: String) async throws -> Int {
-        try await queue.read { db in
-            try self.admit(db)
-            return try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM messages WHERE room_id = ?", arguments: [roomID]) ?? 0
-        }
-    }
-
-    public func contains(eventID: String) async throws -> Bool {
-        try await queue.read { db in
-            try self.admit(db)
-            return (try Int.fetchOne(db, sql: "SELECT 1 FROM messages WHERE event_id = ?", arguments: [eventID])) != nil
         }
     }
 }

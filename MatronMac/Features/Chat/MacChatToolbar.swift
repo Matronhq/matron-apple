@@ -32,8 +32,8 @@ import MatronDesignSystem
 ///
 /// The refresh button was dropped after the journal rewire: it only ran
 /// `ChatViewModel.refresh()` (= `paginateBackward`, an OLDER-history
-/// fetch) while new messages ride the live socket — a Matrix-era leftover
-/// with no user-visible effect. The menu bar's ⌘R still posts
+/// fetch) while new messages ride the live socket, so it had no
+/// user-visible effect. The menu bar's ⌘R still posts
 /// `.matronCommand(.refresh)` for the listener in `MacChatView`. The
 /// decorative "Search chat…" placeholder field went with it — real search
 /// lives at the top of the sidebar, and a second dead field in the header

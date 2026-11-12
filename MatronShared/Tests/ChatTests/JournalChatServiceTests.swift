@@ -98,16 +98,6 @@ final class JournalChatServiceTests: XCTestCase {
         XCTAssertLessThan(emissions, 5)
     }
 
-    func testCreateChatThrowsGracefully() async throws {
-        let service = makeService(try makeStore())
-        do {
-            _ = try await service.createChat(with: "claude")
-            XCTFail("expected throw")
-        } catch {
-            XCTAssertTrue(error is JournalChatError)
-        }
-    }
-
     func testArchiveMovesTheConversationToArchivedAndUnarchiveBringsItBack() async throws {
         let store = try makeStore()
         try store.applyJournal(JournalEvent(
@@ -136,22 +126,6 @@ final class JournalChatServiceTests: XCTestCase {
         let store = try makeStore()
         let service = makeService(store)
         try await service.forceSnapshot() // must not throw or hang
-    }
-
-    func testRefreshThrowsWhenEngineStopped() async throws {
-        let store = try makeStore()
-        let api = JournalAPI(serverURL: URL(string: "https://x")!)
-        let engine = JournalSyncEngine(api: api, store: store, connector: FakeChatConnector(),
-                                       token: "t", ownSender: "user:alice", search: nil,
-                                       backoffBaseSeconds: 0.01)
-        let service = JournalChatService(store: store, engine: engine)
-        await engine.beginSync()
-        try await Task.sleep(for: .milliseconds(30))
-        await engine.endSync()
-        do {
-            try await service.refresh()
-            XCTFail("expected refresh to throw once the engine is stopped")
-        } catch { }
     }
 
     func testBoxNameOnlyResolvesWhenTheUserHasTwoOrMoreBoxes() throws {

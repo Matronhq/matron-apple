@@ -11,8 +11,6 @@ import UserNotifications
 /// so notification taps surface from launch (not lazily on first
 /// sign-in).
 ///
-/// Task 12: the token flow is now direct rather than routed through
-/// `PushTokenStore` (Matrix-SDK-only machinery this task drops).
 /// `MatronMacApp`'s push `.task` sets `registerDeviceToken` to a
 /// closure that calls `JournalPushService.registerToken(...)` for the
 /// active session; this delegate just forwards whatever token APNs

@@ -46,10 +46,7 @@ private final class NoMedia: MediaService, @unchecked Sendable {
 private final class NoChat: ChatService, @unchecked Sendable {
     func chatSummaries() -> AsyncThrowingStream<[ChatSummary], Error> { AsyncThrowingStream { $0.finish() } }
     func children(of parentConvoID: String) -> AsyncStream<[SubChatSummary]> { AsyncStream { $0.finish() } }
-    func createChat(with botID: String) async throws -> String { "!x:s" }
-    func refresh() async throws {}
     func forceSnapshot() async throws {}
-    func mute(roomID: String) async throws {}
 }
 
 /// With the tasks pane open the chat column sits in an

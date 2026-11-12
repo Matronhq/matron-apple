@@ -14,16 +14,15 @@
 		<string>group.chat.matron</string>
 	</array>
 	<!--
-		Phase 3 / Wave 3 / M1: explicit keychain-access-group for the
-		recovery-key store. Mirrors the Mac entitlement's group entry.
-		`chat.matron` (NOT `chat.matron.app`) so the NSE + any future
-		MatronShared extension can be granted the same group without
-		invalidating recovery keys written today (B3 rationale).
+		Keychain access group for the signed-in session
+		(`KeychainStore.sessionStore()`). Mirrors the Mac entitlement's
+		group entry. `chat.matron` (NOT `chat.matron.app`) so the app's
+		extensions can be granted the same group: the share extension
+		declares this same single entry and reads the same item.
 		iOS Simulator without a signing team cannot resolve
-		`$(AppIdentifierPrefix)` and surfaces `errSecMissingEntitlement
-		(-34018)` on every keychain op — `MatronApp.bootstrap()`'s probe
-		is gated `#if !targetEnvironment(simulator)` so dev runs stay
-		green. Real-device + signed-CI builds get the probe.
+		`$(AppIdentifierPrefix)` and gets `errSecMissingEntitlement
+		(-34018)` on every keychain op; the session then falls back to a
+		file (`SessionStores.live`).
 	-->
 	<key>keychain-access-groups</key>
 	<array>
@@ -31,8 +30,8 @@
 	</array>
 	<!--
 		APNs entitlement. Without this,
-		`UIApplication.registerForRemoteNotifications()` fails before
-		`PushTokenStore` ever sees a token, so the journal server never
+		`UIApplication.registerForRemoteNotifications()` never yields a
+		token, so the journal server never
 		learns the token and APNs delivery never starts. iOS uses the
 		bare `aps-environment` key (NOT the macOS
 		`com.apple.developer.aps-environment` variant). `production`

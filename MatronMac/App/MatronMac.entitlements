@@ -6,8 +6,8 @@
 	<true/>
 	<!--
 		Microphone access for voice-note recording. Required only by the
-		sandboxed Release build; the Debug / Debug.AdHoc variants run with
-		the sandbox OFF (see the header of those files), so they don't need
+		sandboxed Release build; the Debug variant runs with the sandbox
+		OFF (see the header of that file), so they don't need
 		it. Pairs with NSMicrophoneUsageDescription (set via project.yml).
 	-->
 	<key>com.apple.security.device.audio-input</key>
@@ -26,15 +26,14 @@
 	<!--
 		Same access-group suffix as iOS (`chat.matron`, not the bundle
 		ID) since the bundle-ID unification to `chat.matron.app` — one
-		shared group string across both platforms, mirrored in
-		`KeychainAccessGroups.recoverySuffix`.
+		shared group string across both platforms.
 	-->
 	<key>keychain-access-groups</key>
 	<array>
 		<string>$(AppIdentifierPrefix)chat.matron</string>
 	</array>
 	<!--
-		Phase 4 Task 12: APNs environment for Release / App Store
+		APNs environment for Release / App Store
 		builds. Pairs with the journal server sending through production
 		APNs for tokens registered with `environment: prod` (Release
 		builds send `.prod` — see AppDependencies.pushEnvironment).

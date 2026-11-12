@@ -67,9 +67,9 @@ public enum TimelineRow: Identifiable, Equatable, Sendable {
 /// after yielding all queued snapshots, which makes tests deterministic
 /// without sleeps.
 ///
-/// Task 12b added a `MediaService` dependency and a `resolvedImages` cache so
-/// `TimelineItemView` can hand a real `Image?` to `AttachmentImage` for
-/// `mxc://` image attachments. The cache is populated lazily on first
+/// A `MediaService` dependency and a `resolvedImages` cache let
+/// `TimelineItemView` hand a real `Image?` to `AttachmentImage` for image
+/// attachments. The cache is populated lazily on first
 /// `image(for:)` call; subsequent calls hit the in-memory dictionary.
 ///
 /// Note: there is no `deinit { observationTask?.cancel() }`. Swift 6 / Xcode 26
@@ -81,10 +81,8 @@ public enum TimelineRow: Identifiable, Equatable, Sendable {
 public final class ChatViewModel {
     /// Cap for both `resolvedImages` and `failedRequests`. A long session
     /// in a media-heavy room previously held a SwiftUI `Image` reference
-    /// per `mxc://` URL it had ever rendered — separate from
-    /// `MediaServiceLive`'s NSCache (which evicts opaquely on memory
-    /// pressure) — so the in-process retain set grew unbounded for the
-    /// lifetime of the room push (QA finding #4). 100 entries is enough
+    /// per attachment URL it had ever rendered, so the in-process retain
+    /// set grew unbounded for the lifetime of the room push. 100 entries is enough
     /// to cover the visible window plus a generous lookahead while
     /// keeping the upper bound predictable. Static so tests can pin the
     /// exact eviction boundary.
@@ -97,7 +95,7 @@ public final class ChatViewModel {
 
 
     public let roomID: String
-    /// The raw timeline snapshot from the SDK. Setter is private so
+    /// The raw timeline snapshot from `TimelineService`. Setter is private so
     /// every mutation flows through `applySnapshot(_:)` which keeps
     /// the memoised derived state (`rows`, `firstRenderableItemID`,
     /// `lastRenderableItemID`) in sync. Reading `items` directly is
@@ -392,7 +390,7 @@ public final class ChatViewModel {
         // not here — this path is also reached by `stop()`'s flush.)
         self.hasReceivedFirstSnapshot = true
         // Debounce the empty-state so a transient timeline clear
-        // (sliding-sync reset) doesn't flash the "no messages yet"
+        // doesn't flash the "no messages yet"
         // placeholder.
         self.updateSettledEmpty(isEmpty: snapshot.isEmpty)
         // Content → empty is the signature of the local mirror being
@@ -1002,7 +1000,7 @@ public final class ChatViewModel {
     /// history backward until the target region is loaded locally,
     /// giving up when `reachedHistoryStart` latches (see
     /// `paginateBackward()`'s doc comment for why that latch, not the
-    /// SDK's own return value, is the source of truth); at that point it
+    /// timeline's own return value, is the source of truth); at that point it
     /// lands on the oldest row actually available rather than doing
     /// nothing.
     ///
@@ -1353,15 +1351,13 @@ public final class ChatViewModel {
     /// guards re-entry and drives the "loading earlier…" pill.
     public private(set) var isPaginatingBackward: Bool = false
     /// Flips to `true` once we've observed enough consecutive
-    /// zero-growth paginate calls to be confident the SDK genuinely has
-    /// no more history to surface. Setting this stops further paginate
+    /// zero-growth paginate calls to be confident there is genuinely no
+    /// more history to surface. Setting this stops further paginate
     /// triggers from the views' near-top scroll listener — without it,
     /// hovering near the head fires paginate on every geometry change,
-    /// hammering the SDK for no result.
-    /// Empirical: matrix-rust-sdk's `paginateBackwards` returns `false`
-    /// (more events might exist) even when /messages has no more events
-    /// for this user, so we can't trust the SDK signal alone — needed
-    /// the consecutive-zero-growth heuristic. See the threshold const.
+    /// hammering the timeline for no result. Driven by growth of `items`
+    /// rather than `TimelineService.paginateBackward`'s return value
+    /// alone. See the threshold const.
     public private(set) var reachedHistoryStart: Bool = false
     /// Counts consecutive paginate calls that produced zero new items.
     /// When this hits `noGrowthLimitForReachedStart`, we flip
@@ -1370,14 +1366,14 @@ public final class ChatViewModel {
     /// How many zero-growth paginates before we declare history-start.
     /// 2 is enough to filter the one-shot spurious result on a freshly-
     /// opened timeline (see `paginateBackward` doc-comment) without
-    /// requiring a long stall before we stop hammering the SDK.
+    /// requiring a long stall before we stop hammering the timeline.
     private static let noGrowthLimitForReachedStart = 2
     /// Maximum time to wait after `timeline.paginateBackward` returns
     /// for `timeline.items()` to deliver a snapshot containing the new
-    /// events. The SDK runs the actual /messages fetch + decrypt +
-    /// dedup pipeline asynchronously and yields the new snapshot when
-    /// it's ready — typically 100-500ms on a warm cache, longer if a
-    /// network round-trip is involved. 2.5s gives realistic networks
+    /// events. The timeline loads the page (from the local mirror, or
+    /// over the network) asynchronously and yields the new snapshot when
+    /// it's ready — typically 100-500ms, longer if a network round-trip
+    /// is involved. 2.5s gives realistic networks
     /// headroom while keeping the no-growth verdict timely enough that
     /// a genuine end-of-history doesn't spin the user.
     private static let snapshotWaitTimeout: TimeInterval = 2.5
@@ -1387,32 +1383,30 @@ public final class ChatViewModel {
     /// Flips to `true` after `start()` processes its first snapshot
     /// (even if that snapshot is empty) or the upstream stream finishes
     /// without yielding. The empty-state placeholder gates on this so
-    /// it doesn't flash during the initial sliding-sync warm-up:
+    /// it doesn't flash while the first snapshot is loading:
     /// `items.isEmpty` ambiguously means both "still loading" and
     /// "settled empty room" until we've definitively seen one snapshot.
     public private(set) var hasReceivedFirstSnapshot: Bool = false
     /// True only once the timeline has been CONTINUOUSLY empty for
     /// `emptyPlaceholderGraceMs`. The empty-state placeholder gates on
-    /// this rather than raw `items.isEmpty`, because the matrix-rust-sdk
-    /// timeline can transiently clear and repopulate within a sync tick
-    /// (a sliding-sync reset against a live homeserver delivers a bare
-    /// `Clear` then re-`Append`s) — applying that empty snapshot directly
-    /// flashed "no messages yet" until the events came back. Debouncing
+    /// this rather than raw `items.isEmpty`, because the timeline can
+    /// transiently clear and repopulate (e.g. while the local mirror is
+    /// rebuilt) — applying that empty snapshot directly flashed "no
+    /// messages yet" until the events came back. Debouncing
     /// the empty→settled transition rides those resets; a genuinely empty
     /// room stays empty past the grace and still surfaces the placeholder.
     public private(set) var settledEmpty: Bool = false
     /// Grace window before an empty timeline counts as settled-empty.
     /// `var` so tests can shorten it; ~400ms comfortably covers a
-    /// sliding-sync clear+repopulate without a perceptible delay before a
+    /// transient clear+repopulate without a perceptible delay before a
     /// genuinely empty room shows its placeholder.
     var emptyPlaceholderGraceMs: Int = 400
     private var emptyDebounceTask: Task<Void, Never>?
     /// True from app-foreground (`handleForeground`) until the timeline
     /// re-populates or the re-sync ceiling elapses. While set, the empty
     /// placeholder is suppressed: returning from background tears the
-    /// timeline down to empty and rebuilds it over SECONDS (the encrypted
-    /// SDK store is sealed under file protection while locked, sync pauses,
-    /// then a full re-sync clears+re-appends) — far longer than
+    /// timeline down to empty and rebuilds it over SECONDS (sync pauses
+    /// in the background, then reconnects and catches up) — far longer than
     /// `emptyPlaceholderGraceMs`, so the debounce alone would flash
     /// "no messages yet" mid-resync.
     private var isResuming = false
@@ -1423,11 +1417,11 @@ public final class ChatViewModel {
     /// link can take several seconds). `var` for tests.
     var resumeGraceMs: Int = 10_000
     private var resumeTask: Task<Void, Never>?
-    /// Cache of `mxc://` URL → resolved SwiftUI `Image`. Populated lazily by
+    /// Cache of attachment URL → resolved SwiftUI `Image`. Populated lazily by
     /// `image(for:)` so SwiftUI can re-render the row once the bytes arrive.
     /// Backed by an `LRUCache` (capped at `mediaCacheLimit`) so a long
     /// session in a media-heavy room can't grow this set without bound
-    /// (QA finding #4). The value-type `LRUCache` lives directly on the
+    /// The value-type `LRUCache` lives directly on the
     /// view-model — `@MainActor` isolation gives us the required
     /// single-threaded mutating-get access without extra synchronisation.
     /// Values are `SizedImage` (image + native pixel size) rather than a
@@ -1453,7 +1447,7 @@ public final class ChatViewModel {
     private var observationTask: Task<Void, Never>?
     private var statusTask: Task<Void, Never>?
     private var sessionStateTask: Task<Void, Never>?
-    /// Tracks `mxc://` URLs with a request already in flight so we don't
+    /// Tracks attachment URLs with a request already in flight so we don't
     /// fire duplicate fetches on every SwiftUI re-render.
     private var inFlightRequests: Set<URL> = []
 
@@ -1475,8 +1469,8 @@ public final class ChatViewModel {
 
     /// Event IDs of ask-user prompts the user has answered (or
     /// dismissed) on THIS device, persisted across launches under
-    /// `matron.answeredPrompts.<roomID>` so push re-decryption /
-    /// re-opening the room can't re-pop an already-answered sheet.
+    /// `matron.answeredPrompts.<roomID>` so re-opening the room can't
+    /// re-pop an already-answered sheet.
     /// Cross-DEVICE answers are detected from the timeline instead —
     /// see `isPromptAnswered(_:)` and `persistVisibleAnswers()`.
     private var answeredPromptIDs: Set<String>
@@ -1914,8 +1908,8 @@ public final class ChatViewModel {
     /// synchronously and the View's `.task { viewModel.start(); await
     /// viewModel.markAsRead() }` raced — `markAsRead()` fired before the
     /// observation Task had a chance to apply the first snapshot, so on
-    /// first open the SDK marked "no events" as read and unread counts
-    /// were never cleared.
+    /// first open nothing was marked read and unread counts were never
+    /// cleared.
     @discardableResult
     public func start() async -> Task<Void, Never> {
         observationGeneration += 1
@@ -2111,12 +2105,9 @@ public final class ChatViewModel {
 
     public func paginateBackward() async {
         // Re-entrancy guard + reached-history-start short-circuit. The
-        // `reachedHistoryStart` flag isn't driven by the SDK's `Bool`
-        // return — that signal is unreliable in matrix-rust-sdk 26.4.1
-        // (returns `false` even when `/messages` is genuinely
-        // returning duplicates / nothing the Timeline can surface).
-        // Instead we count consecutive zero-growth paginate calls and
-        // flip the flag after `noGrowthLimitForReachedStart`.
+        // `reachedHistoryStart` flag isn't driven by the timeline's `Bool`
+        // return alone: we count consecutive zero-growth paginate calls
+        // and flip the flag after `noGrowthLimitForReachedStart`.
         if isPaginatingBackward {
             Self.logger.diag("paginateBackward: skip — already in flight")
             return
@@ -2131,11 +2122,10 @@ public final class ChatViewModel {
         Self.logger.diag("paginateBackward: enter (items=\(beforeCount))")
         do {
             let sdkReachedStart = try await timeline.paginateBackward(requestSize: 30)
-            Self.logger.diag("paginateBackward: SDK returned reachedStart=\(sdkReachedStart)")
+            Self.logger.diag("paginateBackward: timeline returned reachedStart=\(sdkReachedStart)")
             // Wait for the timeline.items() AsyncStream to deliver the
-            // new snapshot. The SDK fetches /messages over the network,
-            // decrypts, dedups, then yields — easily 200-1000ms of
-            // pipeline before the new items show up in `self.items`.
+            // new snapshot. A page fetched over the network can take
+            // 200-1000ms before the new items show up in `self.items`.
             // The previous fixed 50ms wait was a guess and lost on
             // every realistic round-trip; a few back-to-back lost
             // checks tipped `consecutiveNoGrowthPaginates` over the
@@ -2284,7 +2274,7 @@ public final class ChatViewModel {
         await paginateBackward()
     }
 
-    /// Returns the cached SwiftUI `Image` for an `mxc://` URL, or `nil` and
+    /// Returns the cached SwiftUI `Image` for an attachment URL, or `nil` and
     /// kicks off a background fetch. The fetch updates `resolvedImages` on
     /// completion, which triggers `@Observable` re-evaluation so the row
     /// can render the resolved image. Idempotent: repeat calls for the
@@ -2326,7 +2316,7 @@ public final class ChatViewModel {
         return nil
     }
 
-    /// Fetches bytes for an `mxc://` attachment URL and writes them to
+    /// Fetches bytes for an attachment URL and writes them to
     /// a temporary file under `FileManager.default.temporaryDirectory`,
     /// returning the URL. Used by the fullscreen-preview path on file
     /// attachments — iOS hands the temp URL to `ShareLink`, Mac hands
@@ -2399,8 +2389,7 @@ public final class ChatViewModel {
         // PR #138). The human-friendly basename is preserved for the
         // share/preview label; uniqueness lives in the parent directory.
         // Sanitisation (path-traversal, directory separators — the
-        // filename arrives from attacker-controllable Matrix event
-        // metadata) and the digest-namespaced write both live in
+        // filename arrives from attacker-controllable event metadata) and the digest-namespaced write both live in
         // `AttachmentTempFiles` (fix wave, item H) so the items-tracker
         // hosts can reuse the exact same two mitigations for comment/
         // create file attachments instead of re-deriving them.
@@ -2434,20 +2423,6 @@ public final class ChatViewModel {
     /// (GIF, APNG, WebP); `nil` for a still or one not fetched yet.
     /// Passive, like `imagePixelSize(for:)`.
     public func imageAnimation(for url: URL) -> AnimatedImageSource? { resolvedImages[url]?.animation }
-
-    /// Strip path-traversal and directory-separator components from a
-    /// Matrix-event-attached filename. Inputs that reduce to an empty
-    /// string (all-`/`, `..`, hidden-only) fall back to a UUID so we
-    /// never pass `/` to `appendingPathComponent` or write a hidden
-    /// file by accident. Test seam: `internal` so
-    /// `ChatViewModelTests` can assert the contract directly without
-    /// rendering or hitting disk.
-    /// Delegates to `AttachmentTempFiles.sanitisedFilename` (fix wave, item
-    /// H) — kept as a thin wrapper, not removed, so `ChatViewModelTests`'s
-    /// existing internal-access test seam keeps working unchanged.
-    static func sanitisedAttachmentFilename(_ raw: String) -> String {
-        AttachmentTempFiles.sanitisedFilename(raw)
-    }
 
     // MARK: - Ask-user prompts (Phase 5 Task 11)
 
@@ -2490,9 +2465,9 @@ public final class ChatViewModel {
     /// another device (or here) stays resolved across later snapshots.
     ///
     /// The inline `AskUserCard` reads answered-state from the live
-    /// timeline via `isPromptAnswered`. On a fresh timeline the
-    /// encrypted answer event can lag decryption behind the prompt, and
-    /// a transient sliding-sync snapshot can momentarily drop it; in
+    /// timeline via `isPromptAnswered`. On a fresh timeline the answer
+    /// can arrive after the prompt, or a transient snapshot can
+    /// momentarily drop it; in
     /// that window `isPromptAnswered` flips back to `false`, so a
     /// resolved prompt looks unanswered again and accepts a duplicate
     /// reply (bugbot "Cross-device answers not persisted"). Folding the
@@ -2532,7 +2507,7 @@ public final class ChatViewModel {
     /// answers dismiss sheet"). It answers "is THIS prompt resolved",
     /// which the views use to decide whether an already-open sheet should
     /// close. An empty `items` reads as NOT answered —
-    /// a transient sliding-sync clear empties `items` momentarily, and an
+    /// a transient timeline clear empties `items` momentarily, and an
     /// open sheet must not drop on that (bugbot "Ask sheet drops on
     /// clear") nor be yanked to a newer prompt (bugbot "New prompt
     /// replaces open sheet").
@@ -2553,8 +2528,8 @@ public final class ChatViewModel {
     }
 
     /// Called after a successful send (or explicit dismissal) so the
-    /// prompt can't re-pop — push re-decryption can re-deliver the
-    /// same event after the user already answered. Persisted per room.
+    /// prompt can't re-pop — the same event can be delivered again
+    /// after the user already answered. Persisted per room.
     public func markPromptAnswered(_ eventID: String) {
         answeredPromptIDs.insert(eventID)
         MatronDefaults.memory.set(Array(answeredPromptIDs), forKey: answeredPromptsDefaultsKey)
@@ -2594,7 +2569,7 @@ public final class ChatViewModel {
     /// Drops the cached ask view models that can hold nothing the user
     /// still needs: an answered or expired prompt that is no longer in the
     /// timeline. An open prompt keeps its view model wherever it is, so a
-    /// card that comes back (after scrolling, or a sliding-sync clear that
+    /// card that comes back (after scrolling, or a timeline clear that
     /// leaves only placeholder rows) still has what the user had typed.
     private func pruneAskViewModels() {
         guard !askViewModels.isEmpty else { return }

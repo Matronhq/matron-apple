@@ -1262,7 +1262,7 @@ public enum MarkdownAttributed {
         if let link {
             // Mirror `MarkdownText.handle(url:)`'s policy, via the same
             // `MatronItemLink.action(for:)` both renderers share: a URL that
-            // gets swallowed (matrix-internal, and any `matron://` the
+            // gets swallowed (legacy matrix/mxc, and any `matron://` the
             // app has no opener for) never becomes a clickable link — it would
             // do nothing under the cursor — so it renders as plain accent
             // text with no `.link` attribute. Everything the app CAN act on

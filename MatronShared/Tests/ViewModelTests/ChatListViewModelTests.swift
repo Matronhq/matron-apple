@@ -66,9 +66,6 @@ final class FakeStreamingChatService: ChatService, @unchecked Sendable {
         activeContinuation = nil
     }
 
-    func createChat(with botID: String) async throws -> String { "!stub:server" }
-    func refresh() async throws {}
-    func mute(roomID: String) async throws {}
     func children(of parentConvoID: String) -> AsyncStream<[SubChatSummary]> {
         AsyncStream { $0.finish() }
     }
@@ -102,8 +99,7 @@ final class ChatListViewModelTests: XCTestCase {
 
     @MainActor
     func test_upstreamStreamError_populates_errorField() async throws {
-        // QA finding #10: when sliding-sync readiness fails (timeout /
-        // errored / terminated), `chatSummaries()` previously
+        // When the summaries stream fails, `chatSummaries()` previously
         // `continuation.finish()`'d silently → "infinite spinner then
         // empty list." The View needs a meaningful error to surface.
         // Now the live stream rethrows, the VM catches, and `error` is
@@ -125,16 +121,14 @@ final class ChatListViewModelTests: XCTestCase {
 
     /// Phase 2.5 multi-yield contract: the long-lived broadcaster yields
     /// every snapshot through ONE stream, so the VM iterates the stream
-    /// without re-subscribing. Pre-Phase-2.5 the VM masked an empty
-    /// first yield with a 30×1s retry loop that re-called
-    /// `chatSummaries()`; that's now dead code — an empty first yield
-    /// just means the next yield will arrive when sliding sync warms up.
+    /// without re-subscribing — an empty first yield just means the next
+    /// yield will arrive when the first sync lands.
     @MainActor
     func test_consumesMultipleYieldsThroughSingleStream() async throws {
         let bot = BotIdentity(matrixID: "@b:s", displayName: "Bot", avatarURL: nil)
         let fake = FakeStreamingChatService()
         fake.snapshotsToEmit = [
-            [],  // 1st yield: empty (sliding sync still warming up)
+            [],  // 1st yield: empty (first sync still running)
             [ChatSummary(id: "!1:s", title: "ok", bot: bot, lastActivity: .now, unreadCount: 0)],
         ]
         let vm = ChatListViewModel(chat: fake)

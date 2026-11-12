@@ -18,12 +18,7 @@ actor FakeSearchService: SearchService {
     func remove(eventID: String) async throws {}
     func query(_ text: String, limit: Int) async throws -> [SearchHit] { hits }
     func wipe() async throws {}
-    func recordBackfillProgress(roomID: String, indexedCount: Int, oldestEventID: String?, complete: Bool) async throws {}
-    func backfillComplete(roomID: String) async throws -> Bool { true }
-    func backfillOldestEventID(roomID: String) async throws -> String? { nil }
     func resetBackfill() async throws {}
-    func eventCount(roomID: String) async throws -> Int { 0 }
-    func contains(eventID: String) async throws -> Bool { false }
 }
 
 final class SearchViewModelTests: XCTestCase {
@@ -247,9 +242,7 @@ final class SearchViewModelTests: XCTestCase {
         XCTAssertNil(unknown.boxLetter)
     }
 
-    /// Task 11 (journal rewire): `SearchViewModel` no longer tracks backfill
-    /// progress (`applyBackfillProgress`/`observeBackfill` were dropped
-    /// along with the Matrix-SDK-only backfill machinery), so the empty
+    /// `SearchViewModel` doesn't track backfill progress, so the empty
     /// state is always the plain "No results." message.
     @MainActor
     func test_emptyState_showsNoResults() async {
