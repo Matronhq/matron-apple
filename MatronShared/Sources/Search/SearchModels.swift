@@ -39,16 +39,3 @@ public struct SearchChatHit: Equatable, Identifiable, Sendable {
         self.roomID = roomID; self.count = count; self.topHit = topHit; self.isExact = isExact
     }
 }
-
-/// Per-room backfill progress, recorded into / read from `indexed_rooms`.
-/// (Distinct from the UI-facing aggregate progress across all rooms, which the
-/// view model models separately.)
-public struct BackfillProgress: Equatable, Sendable {
-    public let roomID: String
-    public let eventsIndexed: Int
-    public let isComplete: Bool
-
-    public init(roomID: String, eventsIndexed: Int, isComplete: Bool) {
-        self.roomID = roomID; self.eventsIndexed = eventsIndexed; self.isComplete = isComplete
-    }
-}
