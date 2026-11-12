@@ -796,7 +796,7 @@ final class AppDependencies {
         return JournalVoiceSender(api: c.api, engine: c.engine, items: c.items)
     }
 
-    func pushService(for session: UserSession) -> any PushService {
+    func pushService(for session: UserSession) -> JournalPushService {
         // With this device's key, so the journal can seal what each
         // notification says for the notification extension to open.
         JournalPushService(api: core(for: session).api, environment: pushEnvironment,

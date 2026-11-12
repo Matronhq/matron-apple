@@ -29,7 +29,7 @@ struct MatronApp: App {
     /// `didRegisterForRemoteNotificationsWithDeviceToken` back to the same
     /// object every push registration cycle. Task 11 wires the delegate's
     /// `registerDeviceToken` callback directly to the journal
-    /// `PushService` — see the push `.task` below.
+    /// `JournalPushService` — see the push `.task` below.
     @UIApplicationDelegateAdaptor(MatronAppDelegate.self) private var appDelegate
 
     @State private var dependencies = AppRoot.dependencies

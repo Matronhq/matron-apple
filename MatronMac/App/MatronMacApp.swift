@@ -13,7 +13,7 @@ struct MatronMacApp: App {
     /// installs the shared `MacNotificationHandler` as the
     /// `UNUserNotificationCenter` delegate so taps surface from launch.
     /// Task 12 wires the delegate's `registerDeviceToken` callback
-    /// directly to the journal `PushService` — see the push `.task`
+    /// directly to `JournalPushService` — see the push `.task`
     /// below and iOS `MatronApp` for the parallel wiring.
     @NSApplicationDelegateAdaptor(MatronMacAppDelegate.self) private var appDelegate
     /// Global voice-note hotkey (Settings → Device → Voice note key): the

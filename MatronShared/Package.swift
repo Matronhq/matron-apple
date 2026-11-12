@@ -117,9 +117,8 @@ let package = Package(
             ],
             path: "Sources/DesignSystem"
         ),
-        // Phase 4 Task 1: Push protocol surface. Journal Task 10 replaced
-        // the SDK-bridging live impl with `JournalPushService`, which
-        // registers device tokens via JournalAPI.registerPush/unregisterPush.
+        // Push: `JournalPushService` registers device tokens via
+        // JournalAPI.registerPush/unregisterPush.
         // Mac and iOS NSE both link this.
         .target(
             name: "MatronPush",

@@ -621,7 +621,7 @@ final class AppDependencies {
                                    refreshMission: { [missions = c.missions] id in await missions.refreshMission(id: id) })
     }
 
-    func pushService(for session: UserSession) -> any PushService {
+    func pushService(for session: UserSession) -> JournalPushService {
         JournalPushService(api: core(for: session).api, environment: pushEnvironment)
     }
 
