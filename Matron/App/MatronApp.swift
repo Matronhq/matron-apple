@@ -100,6 +100,12 @@ struct MatronApp: App {
                                 await engine?.nudge()
                                 await engine?.verifyConnection()
                             }
+                            // For you first: one request for what changed in
+                            // the tracker, sent now rather than once the
+                            // socket has been checked, replaced and caught
+                            // up. It needs the network, not the socket.
+                            MatronFileLog.append("foreground")
+                            Task { await dependencies.itemsSync(for: session).refresh(scope: .all) }
                             // Foreground sweep (spec §3.4): a process that
                             // has been backgrounded past the hour sweeps now
                             // rather than waiting out the in-process timer,

@@ -408,6 +408,16 @@ final class AppDependencies {
                                 maintenance: maintenance, revocation: revocation)
         core.deviceID = Int64(session.deviceID)
         core.itemsStartTask = Task {
+            // Launch timings: when For you first matched the journal, and
+            // how long each list refresh took (the diagnostic file keeps
+            // the lines, so a slow one on a phone can be read afterwards).
+            await items.setRefreshObserver { scope, outcome, took in
+                guard scope == .all else { return }
+                if outcome == .succeeded { LaunchTimeline.shared.mark(.forYouFresh) }
+                let seconds = Double(took.components.seconds) + Double(took.components.attoseconds) * 1e-18
+                MatronFileLog.append(String(format: "For you refresh %@ in %.3f s",
+                                            outcome == .succeeded ? "ok" : "not ok", seconds))
+            }
             // Spec 2026-09-28 dashboard §3.7: an item change on a mission
             // refetches that mission, so its needs-you count stays current.
             await items.setMissionRefetcher { missionID in await missions.refreshMission(id: missionID) }
@@ -416,6 +426,18 @@ final class AppDependencies {
         core.missionsStartTask = Task { await missions.start() }
         core.projectsStartTask = Task { await projects.start() }
         core.coordinatorStartTask = Task { await coordinator.start() }
+        // Launch timing: the socket answering its hello.
+        Task {
+            for await state in engine.stateStream() {
+                switch state {
+                case .catchingUp, .running:
+                    LaunchTimeline.shared.mark(.connected)
+                    return
+                case .connecting, .offline:
+                    continue
+                }
+            }
+        }
         notify.start()
         defaults.start()
         userSettings.start()
@@ -667,7 +689,9 @@ final class AppDependencies {
     /// list and the badge. Created and started by the shell, stopped when
     /// the shell leaves the hierarchy on sign-out.
     @MainActor func makeDecisionsViewModel(for session: UserSession) -> ItemsPanelViewModel {
-        makeItemsPanelViewModel(for: session, convoID: nil)
+        let viewModel = makeItemsPanelViewModel(for: session, convoID: nil)
+        viewModel.onFirstPublish = { LaunchTimeline.shared.mark(.forYouCached) }
+        return viewModel
     }
 
     /// The Missions dashboard's view model — one per signed-in session,

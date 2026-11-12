@@ -166,6 +166,22 @@ public actor ItemsSync {
     /// waits for the next pass.
     static let maxReconcileChecks = 100
 
+    /// Items whose markers are waiting for their refetch, oldest first,
+    /// each id once. A reconnect replays every marker the device missed,
+    /// often several for one item; fetched one marker at a time, a new
+    /// item's refetch waited behind all of them.
+    private var pendingMarkerIDs: [String] = []
+    private var markerDrain: Task<Void, Never>?
+    /// How many items' refetches run at once while markers are waiting.
+    static let markerFetchWidth = 4
+    /// Told how each list refresh went and how long it took. The app's
+    /// launch timings read it; nothing in this actor depends on it.
+    private var refreshObserver: (@Sendable (ItemsScope, ItemsRefreshOutcome, Duration) -> Void)?
+
+    public func setRefreshObserver(_ observer: (@Sendable (ItemsScope, ItemsRefreshOutcome, Duration) -> Void)?) {
+        refreshObserver = observer
+    }
+
     public func setMissionRefetcher(_ refetcher: @escaping @Sendable (String) async -> Void) {
         missionRefetcher = refetcher
     }
@@ -211,15 +227,22 @@ public actor ItemsSync {
         markerTask = Task { [weak self] in
             for await (_, marker) in markers {
                 guard let self else { return }
-                await self.applyCommentTap(marker)
-                await self.refreshItem(id: marker.itemID)
+                await self.noteMarker(marker)
             }
         }
         let states = connectionStates()
         stateTask = Task { [weak self] in
             for await state in states {
                 guard let self else { return }
-                if case .running = state {
+                switch state {
+                case .catchingUp:
+                    // The socket is up, so the journal is reachable: fetch
+                    // the list now, in one request, rather than once the
+                    // replay of everything this device missed has ended.
+                    // The For you list is then current while the rest of
+                    // the catch-up is still arriving.
+                    await self.refresh(scope: .all)
+                case .running:
                     // No `setSupported(true)` here: publishing "supported"
                     // before the probe would flash true→false for an old
                     // journal that 404s on GET /items. `refresh` publishes
@@ -227,6 +250,8 @@ public actor ItemsSync {
                     await self.refresh(scope: .all)
                     await self.drainOutbox()
                     if await self.reconcileDue() { await self.reconcile() }
+                case .connecting, .offline:
+                    break
                 }
             }
         }
@@ -281,8 +306,10 @@ public actor ItemsSync {
     public func stop() async {
         stopped = true
         let mt = markerTask; let st = stateTask; let rt = retryTask; let sh = sharedTask
+        let md = markerDrain
         markerTask = nil; stateTask = nil; retryTask = nil; sharedTask = nil
-        mt?.cancel(); st?.cancel(); rt?.cancel(); sh?.cancel()
+        pendingMarkerIDs.removeAll()
+        mt?.cancel(); st?.cancel(); rt?.cancel(); sh?.cancel(); md?.cancel()
         let refreshes = Array(inFlightRefreshes.values)
         for task in refreshes { task.cancel() }
         let reconciling = inFlightReconcile
@@ -290,7 +317,7 @@ public actor ItemsSync {
         // The next session (a sign-in after this sign-out) reconciles on
         // its first connect.
         lastReconcileAt = nil
-        await mt?.value; await st?.value; await rt?.value; await sh?.value
+        await mt?.value; await st?.value; await rt?.value; await sh?.value; await md?.value
         for task in refreshes { _ = await task.value }
         _ = await reconciling?.value
         // No blanket `inFlightRefreshes = [:]` here: every refresh task deregisters ITSELF (see `refresh(scope:)`)
@@ -332,7 +359,9 @@ public actor ItemsSync {
         // not delete that newer registration on its way out.
         var run: Task<ItemsRefreshOutcome, Never>!
         run = Task { [self] in
+            let started = ContinuousClock.now
             let outcome = await refreshOnce(scope: scope)
+            refreshObserver?(scope, outcome, ContinuousClock.now - started)
             // Deregistered here, with no suspension between the last line
             // of the run and the removal — same discipline as
             // `refreshItem`, so a joiner can never await a task that has
@@ -607,6 +636,30 @@ public actor ItemsSync {
             Self.logger.warning("reconcile failed: \(error.localizedDescription, privacy: .public)")
             return .failed(ItemsRefreshFailure(error))
         }
+    }
+
+    /// One marker off the socket: its tap is applied at once, and its item
+    /// joins the refetch queue unless it is already waiting there.
+    private func noteMarker(_ marker: ItemMarkerEvent) {
+        guard !stopped else { return }
+        applyCommentTap(marker)
+        if !pendingMarkerIDs.contains(marker.itemID) { pendingMarkerIDs.append(marker.itemID) }
+        guard markerDrain == nil else { return }
+        markerDrain = Task { [weak self] in await self?.drainMarkers() }
+    }
+
+    /// Refetches the items whose markers are waiting, a few at a time. An
+    /// item marked again while its refetch runs is queued again, so the
+    /// last fetch of an item always starts after its last marker.
+    private func drainMarkers() async {
+        while !pendingMarkerIDs.isEmpty, !stopped, !Task.isCancelled {
+            let batch = Array(pendingMarkerIDs.prefix(Self.markerFetchWidth))
+            pendingMarkerIDs.removeFirst(batch.count)
+            await withTaskGroup(of: Void.self) { group in
+                for id in batch { group.addTask { await self.refreshItem(id: id) } }
+            }
+        }
+        markerDrain = nil
     }
 
     public func refreshItem(id: String) async {
