@@ -5,46 +5,59 @@ import MatronModels
 import MatronDesignSystem
 import MatronViewModels
 
-/// Mac-side mirror of `Matron/Features/Chat/Rendering/TimelineItemView`.
-/// Body is byte-identical bar the missing `displayName` static helper
-/// (iOS tests pin the iOS surface; Mac re-uses the same logic via a free
-/// function inside this file). The send-state → glyph mapping is shared
-/// across platforms via `SendStateGlyph.from(_:)` in
-/// `MatronDesignSystem/StateBridges.swift`.
-struct MacTimelineItemView: View {
+/// Renders a single `TimelineItem` row. Text/image/file kinds are wrapped in
+/// a `MessageBubble`; state changes and unknown events render as small
+/// horizontal notices instead of full bubbles so they read as ambient
+/// context (member joins, profile updates, unsupported event types).
+///
+/// Image attachments are resolved through the parent's `resolveImage`
+/// closure (typically `ChatViewModel.image(for:)`). The closure returns
+/// `nil` on first call (cache miss) and kicks off a background fetch;
+/// once `ChatViewModel.resolvedImages` updates, SwiftUI re-evaluates the
+/// row and the resolved `Image` is handed to `AttachmentImage`.
+///
+/// One view for both apps. What differs by platform — how message text is
+/// drawn and how wide a tool card may grow — comes from each app's
+/// `TimelineItemPlatform`; the Mac-only file-chip extras (video poster,
+/// Download, drag out) are closures the iOS host leaves `nil`.
+struct TimelineItemView: View {
     let item: TimelineItem
     /// Optional resolver for image attachment URLs. `nil` keeps the
     /// placeholder rendering for previews and tests that don't wire up a
-    /// `ChatViewModel`.
+    /// `ChatViewModel`. Production hosts always pass
+    /// `viewModel.image(for:)`.
     var resolveImage: ((URL) -> Image?)? = nil
     /// The frames for an image whose file is animated (GIF, APNG, WebP),
     /// read alongside `resolveImage` — `nil` plays nothing.
     var resolveAnimation: ((URL) -> AnimatedImageSource?)? = nil
     /// Optional retry handler for own-messages whose send state is
-    /// `.failed(reason:)`. Mirrors the iOS surface — wired by
-    /// `MacChatView` to `viewModel.retrySend(itemID:)`.
+    /// `.failed(reason:)`. Wired by the chat screen to
+    /// `viewModel.retrySend(itemID:)`. `nil` for previews / tests.
     var onRetry: ((String) -> Void)? = nil
     /// Delete handler for the same rows, wired to `viewModel.discardSend(itemID:)`.
     var onDiscard: ((String) -> Void)? = nil
-    /// Image-attachment tap handler — mirrors the iOS surface, plus the
-    /// attachment URL so the presenter can look up the bitmap's native
-    /// pixel size for the fullscreen sheet.
+    /// Image-attachment tap handler — receives the row's resolved
+    /// `Image` (already in memory via `resolveImage`) so the parent
+    /// can present the fullscreen viewer without a second fetch.
+    /// `nil` keeps existing test sites compiling unchanged.
     var onTapImage: ((URL, Image) -> Void)? = nil
-    /// File-attachment tap handler — mirrors the iOS surface.
-    /// `MacChatView` wires this through to a temp-file write +
-    /// `NSWorkspace.shared.open(_:)`.
+    /// File-attachment tap handler — receives the attachment URL, the
+    /// original filename and the MIME type, so the parent can stage the
+    /// bytes to a temp file and present QuickLook (iOS) / open or play it
+    /// (Mac).
     var onTapFile: ((URL, String, String?) -> Void)? = nil
     /// A video file's poster frame (`MacVideoThumbnails`): attachment URL,
-    /// filename, content type, size.
+    /// filename, content type, size. Mac only; `nil` draws no poster.
     var videoPoster: ((URL, String, String?, Int64?) -> Image?)? = nil
     /// A file the markdown preview can show (`MarkdownPreview.isPreviewable`)
     /// — URL, name and declared size. When set, a tap on such a file opens
-    /// the side panel instead of `onTapFile`.
+    /// the preview (iOS) / side panel (Mac) instead of `onTapFile`.
     var onTapMarkdown: ((URL, String, Int64?) -> Void)? = nil
     /// A file chip's Download (button and context menu) — URL, name and
-    /// MIME type. `nil` draws the chip as tap-to-open only.
+    /// MIME type. `nil` draws the chip as tap-to-open only (iOS).
     var onSaveFile: ((URL, String, String?) -> Void)? = nil
     /// A file chip's drag item, out to Finder — URL, name and MIME type.
+    /// Mac only.
     var dragFile: ((URL, String, String?) -> NSItemProvider)? = nil
     /// Whether a file attachment's blob download is in flight — drives
     /// the chip's spinner (`ChatViewModel.isDownloadingFile(_:)`).
@@ -55,27 +68,37 @@ struct MacTimelineItemView: View {
     /// — same closure pattern as `isDownloadingFile`, same Observation
     /// invalidation channel.
     var isMediaUnavailable: ((URL) -> Bool)? = nil
-    /// Inline ask-user — mirrors the iOS surface.
+    /// Inline ask-user: resolves the stable per-prompt `AskUserSheetViewModel`
+    /// (nil for previews/tests without a `ChatViewModel`).
     var askViewModel: ((String) -> AskUserSheetViewModel?)? = nil
+    /// Whether the prompt with this event ID has been answered.
     var isPromptAnswered: ((String) -> Bool)? = nil
+    /// The chosen-answer summary for an answered prompt (nil = not answered).
     var answerSummary: ((String) -> String?)? = nil
-    /// Agent-chat consent card — mirrors the iOS surface. `nil` renders the
-    /// card read-only rather than offering buttons with nothing behind them.
+    /// Render state for an agent-chat consent card. `nil` (previews, tests)
+    /// renders the card read-only rather than offering buttons with nothing
+    /// behind them.
     var agentChatState: ((String) -> AgentChatCardState)? = nil
+    /// Answers a consent card: approve or decline, for this request only.
+    /// Goes to `POST /agent-chat/answer`, not into the timeline.
     var onAnswerAgentChat: ((_ eventID: String, _ request: AgentChatRequest,
                              _ approve: Bool) -> Void)? = nil
-    /// Agent-spawn consent card — mirrors the iOS surface. `nil` renders the
-    /// card read-only; the request rides along because the card's resolved
-    /// state is keyed on the journal's `request_id`, not the row's seq.
+    /// Render state for an agent-spawn consent card. `nil` (previews, tests)
+    /// renders the card read-only, exactly as `agentChatState` does. Takes
+    /// the request too: the card's resolved state is keyed on the journal's
+    /// `request_id`, not on the row's seq.
     var agentSpawnState: ((_ eventID: String, _ request: AgentSpawnRequest)
                           -> AgentSpawnCardState)? = nil
+    /// Answers a spawn consent card: approve or decline, for this request
+    /// only. Goes to `POST /agent-spawn/answer`, not into the timeline.
     var onAnswerAgentSpawn: ((_ eventID: String, _ request: AgentSpawnRequest,
                               _ approve: Bool) -> Void)? = nil
-    /// Hand-over card (`mission_handover`) — mirrors the iOS surface. `nil`
-    /// draws it settled.
+    /// Render state for a hand-over card (`PersonConsentCard` of kind
+    /// `mission_handover`). `nil` (previews, tests) draws it settled.
     var personHandoverState: ((_ eventID: String, _ card: PersonConsentCard)
                               -> PersonHandoverCardState)? = nil
-    /// Answers a hand-over card on `POST /grants/:id/answer`.
+    /// Answers a hand-over card on `POST /grants/:id/answer`: approve or
+    /// decline, with the media ids the owner unticked.
     var onAnswerHandover: ((_ eventID: String, _ card: PersonConsentCard,
                             _ approve: Bool, _ excludeMedia: [String], _ keepContributing: Bool?) -> Void)? = nil
     /// The files the owner has unticked on a hand-over card, and where a
@@ -94,33 +117,46 @@ struct MacTimelineItemView: View {
                            -> CoordinatorConsentBadge?)? = nil
     /// The badge's Stop session: stops the named spawned conversation.
     var onStopSession: ((String) -> Void)? = nil
-    /// Opens the room a started spawn talks in — mirrors the iOS surface.
+    /// Opens the room a started spawn talks in. `nil` where there is nowhere
+    /// to navigate — the Open affordance is then omitted rather than drawn
+    /// dead.
     var onOpenSpawnRoom: ((String) -> Void)? = nil
-    /// Opens the tracker item pane to the tapped `.itemMarker`'s item —
-    /// mirrors the iOS surface's `onOpenItem`.
+    /// Opens the tracker item pane/drawer to the tapped `.itemMarker`'s
+    /// item — same "fixed per screen, `nil` where there's nowhere to
+    /// navigate" convention as `onOpenSpawnRoom`. `nil` in previews/tests
+    /// leaves the card tappable but inert rather than crashing.
     var onOpenItem: ((String) -> Void)? = nil
-    /// Opens the mission page to the tapped `.milestoneMarker` /
-    /// `.missionMarker` — mirrors the iOS surface's `onOpenMission`.
+    /// Opens the mission page for a tapped `.milestoneMarker` /
+    /// `.missionMarker` — same "fixed per screen, `nil` where there is
+    /// nowhere to navigate" convention as `onOpenItem`.
     var onOpenMission: ((String) -> Void)? = nil
     /// The conversation this row belongs to — tags live-output sessions in
     /// the shared store so chat teardown can suspend only its own sockets
     /// (`suspendSessions(in:)`). `nil` keeps previews/tests compiling.
     var convoID: String? = nil
-    /// `ChatViewModel.hasMultipleSenders` — mirrors the iOS surface.
-    /// Default `false` keeps every existing preview/test/1:1-chat call
-    /// site rendering exactly as before (no avatar).
+    /// `ChatViewModel.hasMultipleSenders` — whether this room has ≥2
+    /// distinct non-own senders. Gates `avatarSender(for:)`: default
+    /// `false` keeps every existing preview/test/1:1-chat call site
+    /// rendering exactly as before (no avatar).
     var hasMultipleSenders: Bool = false
 
     var body: some View {
-        // See iOS `TimelineItemView.body` — `shouldRender` is dead
-        // code in the body because `ChatViewModel.rows` filters
-        // hidden items BEFORE the ForEach. Kept as a static helper
-        // for `MacTimelineItemViewTests` to exercise the contract.
+        // Note: `shouldRender(_:)` is the contract for "is this Kind
+        // visible?" but the actual filtering happens in
+        // `ChatViewModel.rows` BEFORE the ForEach builds the view
+        // tree, so the dead branch that returned `EmptyView()` for
+        // `!shouldRender(item)` was unreachable in practice — every
+        // item that reaches `body` has already been filtered.
+        // `shouldRender` stays as a public static helper because
+        // `TimelineItemViewTests` exercises the contract; the views
+        // themselves don't need to re-check.
         if item.isOwn && item.sendState != .sent {
-            // Own-message with non-default send state — see iOS
-            // `TimelineItemView` for the full rationale. `.sent`
-            // bypasses the wrapping VStack so the common case keeps
-            // the existing layout untouched.
+            // Own-message with non-default send state: render the body
+            // at reduced opacity (so the timeline visually distinguishes
+            // pending / failed sends) plus a footer indicator carrying
+            // the retry affordance. `.sent` is excluded explicitly so
+            // the common case continues to bypass the wrapping VStack
+            // (preserves the iOS snapshot test baselines).
             VStack(alignment: .trailing, spacing: 2) {
                 renderedBody
                     .opacity(item.sendState == .sending ? 0.7 : 1.0)
@@ -136,23 +172,17 @@ struct MacTimelineItemView: View {
         }
     }
 
-    /// A text message's bubble, with the Mac VoiceOver mirror of the iOS
-    /// accessibility wiring — see `TimelineItemView.accessibilityLabel(for:body:)`
-    /// (QA finding #13).
+    /// A text message's bubble. VoiceOver previously announced the body
+    /// text without sender context — `.combine` collapses the bubble +
+    /// label into a single element with an explicit `"<sender>: <body>"`
+    /// label so the listener knows who said it (QA finding #13).
     private func textBubble(_ body: String) -> some View {
         MessageBubble(
             style: item.isOwn ? .me : .bot,
             timestamp: item.timestamp,
             sender: Self.avatarSender(for: item, hasMultipleSenders: hasMultipleSenders)
         ) {
-            // Mac renders message bodies through a single selectable
-            // NSTextView so a mouse drag can select across the whole
-            // message — MarkdownUI's per-block Texts can't span a drag.
-            // No streaming flag reaches this call site (a growing message
-            // re-emits `.text` with a longer body), so we rely on
-            // `MarkdownAttributed`'s source-keyed cache for cheap
-            // re-conversion during streaming.
-            SelectableMessageText(body, itemID: item.id)
+            TimelineItemPlatform.messageBody(body, itemID: item.id)
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(Self.accessibilityLabel(for: item, body: body))
@@ -162,7 +192,9 @@ struct MacTimelineItemView: View {
     private var renderedBody: some View {
         switch item.kind {
         case .text(let body, _):
-            // Conversation-link pills under the bubble — see the iOS twin.
+            // Conversation links in the body get a pill row under the
+            // bubble. A body without one — nearly every
+            // row — keeps exactly the bubble, no wrapper.
             // Streaming overlay rows ("eph:") skip the memo, as MarkdownText does.
             let links = ConversationLinkRefs.extract(from: body, cache: !item.id.hasPrefix("eph:"))
             if links.isEmpty {
@@ -170,6 +202,8 @@ struct MacTimelineItemView: View {
             } else {
                 VStack(spacing: 4) {
                     textBubble(body)
+                    // Outside the bubble's combined accessibility element,
+                    // so each pill stays its own button for VoiceOver.
                     ConversationLinkPillRow(
                         refs: links, style: item.isOwn ? .me : .bot,
                         hasAvatar: Self.avatarSender(for: item, hasMultipleSenders: hasMultipleSenders) != nil)
@@ -188,9 +222,8 @@ struct MacTimelineItemView: View {
                 // The caption renders OUTSIDE AttachmentImage as a normal
                 // message body — it's the message, and the small gray
                 // `.caption2` slot it used to squeeze through made it read
-                // like metadata. The byte size only
-                // shows when there's no caption, matching the old
-                // caption-wins fallback.
+                // like metadata. The byte size only shows
+                // when there's no caption, matching the old fallback.
                 VStack(alignment: .leading, spacing: 6) {
                     AttachmentImage(
                         image: resolvedImage(for: url),
@@ -201,11 +234,11 @@ struct MacTimelineItemView: View {
                         meta: caption == nil
                             ? sizeBytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
                             : nil,
-                        // Tap forwards to the parent only when the bytes
-                        // have already resolved AND a handler is wired.
-                        // Tapping a still-loading placeholder is a no-op
-                        // so the fullscreen viewer doesn't open with an
-                        // empty `Image`.
+                        // Forward tap to the parent only when we've got a
+                        // resolved Image AND a registered handler. Tapping
+                        // a still-loading placeholder is a no-op — opening
+                        // the fullscreen viewer with no bytes would just
+                        // show an empty black sheet.
                         onTap: {
                             if let url,
                                let img = resolvedImage(for: url),
@@ -215,13 +248,14 @@ struct MacTimelineItemView: View {
                         }
                     )
                     if let caption, !caption.isEmpty {
-                        SelectableMessageText(caption, itemID: item.id)
+                        TimelineItemPlatform.caption(caption, itemID: item.id)
                     }
                 }
             }
             .accessibilityElement(children: .combine)
-            // Empty-string captions are hidden visually, so they must not
-            // become a blank VoiceOver body either (bugbot, PR #88).
+            // Empty-string captions are hidden visually (see the `!caption.isEmpty`
+            // gate above), so they must not become a blank VoiceOver body either
+            // (bugbot, PR #88).
             .accessibilityLabel(Self.accessibilityLabel(
                 for: item,
                 body: {
@@ -251,6 +285,10 @@ struct MacTimelineItemView: View {
                         poster: isExpired ? nil : url.flatMap { videoPoster?($0, filename, contentType, sizeBytes) },
                         isLoading: isLoading,
                         isExpired: isExpired,
+                        // Tap handler — only fires if we have both a URL
+                        // and a registered handler. Without the URL there's
+                        // nothing to fetch (`.file(url: nil, …)` is a
+                        // theoretical state but possible per the model).
                         onTap: {
                             guard let url else { return }
                             if let onTapMarkdown,
@@ -264,16 +302,16 @@ struct MacTimelineItemView: View {
                         dragItem: url.flatMap { url in dragFile.map { drag in { drag(url, filename, contentType) } } }
                     )
                     if let caption, !caption.isEmpty {
-                        SelectableMessageText(caption, itemID: item.id)
+                        TimelineItemPlatform.caption(caption, itemID: item.id)
                     }
                 }
             }
             .accessibilityElement(children: .combine)
-            // The caption is visible message text now — VoiceOver must
-            // speak it too, not just the filename (bugbot, PR #88). The
-            // combined element replaces the chip's own children, so the
-            // downloading state must be restated here or VoiceOver never
-            // hears it (CodeRabbit, PR #138).
+            // The caption is visible message text now — VoiceOver must speak
+            // it too, not just the filename (bugbot, PR #88). The combined
+            // element replaces the chip's own children, so the downloading
+            // state must be restated here or VoiceOver never hears it
+            // (CodeRabbit, PR #138).
             .accessibilityLabel(Self.accessibilityLabel(
                 for: item,
                 body: {
@@ -297,53 +335,45 @@ struct MacTimelineItemView: View {
             .padding(.vertical, 4)
 
         case .toolCall(_, let evt):
-            // Fills the width like a normal message bubble
-            // — the terminal-style result block wants the room. No wrapping
-            // HStack + Spacer: a Spacer beside a maxWidth-.infinity frame
-            // makes SwiftUI split the row 50/50 between the two flexible
-            // children, which is exactly the "card stops at half the pane"
-            // bug — the frame alone fills the row. The inner frame caps the
-            // card at the same readable width as message bubbles; the outer
-            // one anchors it to the left edge (bot side).
-            ToolCallCard(event: evt)
-                .frame(maxWidth: MessageBubbleMetrics.maxWidth, alignment: .leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal)
+            // Bot-aligned, at the platform's tool-card width
+            // (`TimelineItemPlatform.toolCard`). The card hugs its content,
+            // so small tool calls stay small.
+            TimelineItemPlatform.toolCard {
+                ToolCallCard(event: evt)
+            }
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: "Tool call: \(evt.tool)"))
 
         case .diff(_, let evt):
-            // File-edit diff snippet — bot-aligned, fills the width like a
-            // normal message bubble. No HStack + Spacer —
-            // see the .toolCall comment (50/50 split bug).
-            DiffCard(event: evt)
-                .frame(maxWidth: MessageBubbleMetrics.maxWidth, alignment: .leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal)
+            // File-edit diff snippet — bot-aligned, same width as the
+            // tool cards. DiffCard hugs its content, so
+            // a three-line fix stays small.
+            TimelineItemPlatform.toolCard {
+                DiffCard(event: evt)
+            }
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(
                 for: item, body: DiffCard.accessibilitySummary(for: evt)))
 
         case .liveOutput(_, let evt):
-            // Fills the width like a normal message bubble — terminal output
-            // wants columns. Session from the shared store so LazyVStack row
-            // recycling reattaches to accumulated output instead of replaying.
-            LiveOutputCard(session: LiveOutputSessionStore.shared.session(for: evt, convoID: convoID),
-                           eventTimestamp: item.timestamp)
-                .frame(maxWidth: MessageBubbleMetrics.maxWidth, alignment: .leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal)
+            // Terminal output wants columns. The session comes from the
+            // shared store so a row recycled by LazyVStack reattaches to its
+            // accumulated output.
+            TimelineItemPlatform.toolCard {
+                LiveOutputCard(session: LiveOutputSessionStore.shared.session(for: evt, convoID: convoID),
+                               eventTimestamp: item.timestamp)
+            }
 
         case .toolStreamLive(_, let command, let text, let headTruncated):
-            // Ephemeral live tile (journal tool_stream) — fills the width
-            // like the liveOutput tile.
-            ToolStreamCard(command: command, text: text, headTruncated: headTruncated)
-                .frame(maxWidth: MessageBubbleMetrics.maxWidth, alignment: .leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal)
+            // Ephemeral live tile (journal tool_stream) — same width as the
+            // legacy liveOutput tile; terminal output wants columns.
+            TimelineItemPlatform.toolCard {
+                ToolStreamCard(command: command, text: text, headTruncated: headTruncated)
+            }
 
         case .askUser(let eventID, let evt):
-            // Inline, non-blocking card (bot-aligned like .toolCall) — same as iOS.
+            // Inline, non-blocking card (bot-aligned like .toolCall) — the
+            // interactive surface lives in the timeline, not a sheet.
             HStack {
                 // A reminder folds to one line as wide as the timeline's
                 // notices; any other ask keeps the card width.
@@ -356,8 +386,6 @@ struct MacTimelineItemView: View {
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: "Question: \(evt.prompt)"))
 
         case .agentChatRequest(let eventID, let request):
-            // Same inline treatment as iOS: the decision belongs beside the
-            // ask, and its answer leaves over HTTP, not into the timeline.
             HStack {
                 AgentChatRequestCard(
                     request: request,
@@ -377,11 +405,11 @@ struct MacTimelineItemView: View {
                 for: item, body: "Agent chat request. \(request.headline)"))
 
         case .agentSpawnRequest(let eventID, let request):
-            // Same inline treatment as iOS: the decision belongs beside the
-            // ask, and its answer leaves over HTTP, not into the timeline.
             HStack {
                 AgentSpawnRequestCard(
                     request: request,
+                    // No state resolver (previews, tests) → read-only, the
+                    // same convention the agent-chat card uses.
                     state: agentSpawnState?(eventID, request)
                         ?? .resolved(.expired(requestID: request.requestID)),
                     onApprove: { onAnswerAgentSpawn?(eventID, request, true) },
@@ -424,8 +452,9 @@ struct MacTimelineItemView: View {
                 for: item, body: PersonConsentRequestCard.accessibilitySummary(for: card)))
 
         case .spawnOutcomeRow(_, let outcome):
-            // How a spawn ended — a modest status line, not a card (see the
-            // iOS twin). On `started` the only thing left to do is go there.
+            // How a spawn ended — a modest status line, not a card: the
+            // decision it reports was already made, and on `started` the
+            // only thing left to do is go there.
             HStack(spacing: 8) {
                 Text(outcome.displayLine)
                     .font(.caption)
@@ -514,46 +543,14 @@ struct MacTimelineItemView: View {
         }
     }
 
-    /// Mac mirror of `TimelineItemView.shouldRender(_:)`. Hides ALL
-    /// stateChange rows — see iOS for the full rationale (bot-first
-    /// chats don't want "Room state changed" / membership / profile
-    /// noise; Phase 7 polish can bring back a metadata-events toggle).
-    static func shouldRender(_ item: TimelineItem) -> Bool {
-        if case .stateChange = item.kind {
-            return false
-        }
-        // Button-response answers are answered-prompt bookkeeping, never
-        // visible — same as iOS `TimelineItemView.shouldRender`.
-        if case .askUserAnswer = item.kind {
-            return false
-        }
-        return true
-    }
-
-    /// Sender name for `MessageBubble`'s `sender:` param, or `nil` for no
-    /// avatar. Mirrors the iOS surface (`TimelineItemView.avatarSender(for:hasMultipleSenders:)`),
-    /// including the `isEphemeralStreamingPlaceholder` exclusion — see
-    /// that property's doc on `TimelineItem` for why a raw `hasMultipleSenders`
-    /// check alone would draw a wrong-coloured avatar on the mid-turn
-    /// streaming echo row (Cursor Bugbot on PR #141).
-    static func avatarSender(for item: TimelineItem, hasMultipleSenders: Bool) -> String? {
-        TimelineSenderLabels.avatarSender(for: item, hasMultipleSenders: hasMultipleSenders)
-    }
-
-    /// Phase 2 placeholder for member display names — strips the leading
-    /// `@` sigil and returns the local part. Mirrors the iOS surface
-    /// (`TimelineItemView.displayName(for:)`).
-    static func displayName(for senderID: String) -> String {
-        TimelineSenderLabels.displayName(for: senderID)
-    }
-
-    /// Builds the inline ask-user card — Mac mirror of
-    /// `TimelineItemView.askCard(eventID:event:)`.
+    /// Builds the inline ask-user card. Uses the cached per-prompt VM when the
+    /// ask closures are wired (production); falls back to a static, non-
+    /// interactive card for previews / tests without a `ChatViewModel`.
     @ViewBuilder
     private func askCard(eventID: String, event: AskUserEvent) -> some View {
         if let askViewModel, let isPromptAnswered, let answerSummary,
            let vm = askViewModel(eventID) {
-            MacAskUserCardHost(
+            AskUserCardHost(
                 viewModel: vm,
                 isAnswered: isPromptAnswered(eventID),
                 answerSummary: answerSummary(eventID),
@@ -570,32 +567,104 @@ struct MacTimelineItemView: View {
         }
     }
 
-    /// Mac mirror of `TimelineItemView.accessibilityLabel(for:body:)` —
-    /// see iOS for the rationale (QA finding #13).
+    /// Composes the accessibility label for a row. "Me" rather than the
+    /// raw sender id so VoiceOver doesn't leak the user's full handle on
+    /// every own-message read-out (QA finding #13).
     static func accessibilityLabel(for item: TimelineItem, body: String) -> String {
         let senderName = item.isOwn ? "Me" : displayName(for: item.sender)
         return "\(senderName): \(body)"
     }
 
+    /// Whether a `TimelineItem` should render at all. Returns `false` for
+    /// `.stateChange(text: "")`, which `TimelineServiceLive.mapVirtual`
+    /// emits for `dateDivider`, `readMarker`, and `timelineStart` virtual
+    /// items — these have no Phase-2 visual treatment, and rendering an
+    /// empty `.stateChange` produces a visible 8pt padded blank row. Phase
+    /// 3+ can replace this with a `Kind`-level enum case + dedicated
+    /// renderer; for now skipping them keeps the timeline tight without
+    /// disturbing the existing snapshot baselines. `static internal` so
+    /// `TimelineItemViewTests` can exercise the contract without rendering.
+    static func shouldRender(_ item: TimelineItem) -> Bool {
+        // Empty stateChange covers the virtual items
+        // (`dateDivider` / `readMarker` / `timelineStart`) — see
+        // `TimelineServiceLive.mapVirtual` — and falls under "no Phase-2
+        // visual treatment, skip rather than render an 8pt blank row".
+        //
+        // Non-empty stateChange ("X joined", "Room state changed", profile
+        // updates) is meta-noise for the bot-first chats Matron targets.
+        // Hidden by default so the user sees the conversation tail
+        // instead of a wall of "Room state changed" rows from joins,
+        // power-level setup, encryption-on, etc. Phase 7 polish can
+        // bring back a "show metadata events" toggle if anyone asks.
+        if case .stateChange = item.kind {
+            return false
+        }
+        // Button-response answers (`chat.matron.button_response`) are
+        // answered-prompt bookkeeping, never visible — Matron X hides them
+        // too. See the `.askUserAnswer` case doc in TimelineItem.swift.
+        if case .askUserAnswer = item.kind {
+            return false
+        }
+        return true
+    }
+
+    /// Sender name to pass into `MessageBubble`'s `sender:` param for this
+    /// row, or `nil` for no avatar. Own messages never get one; non-own
+    /// messages only get one in a multi-sender room
+    /// (`ChatViewModel.hasMultipleSenders`) — 1:1 chats render unchanged.
+    /// `item.sender` is already the clean display name by this point
+    /// (`JournalTimelineMapper.displayName(fromSender:)` stripped the
+    /// `agent:`/`user:` prefix), so no further processing is needed here.
+    ///
+    /// Also excludes the mid-turn streaming placeholder row
+    /// (`TimelineItem.isEphemeralStreamingPlaceholder`) even when
+    /// `hasMultipleSenders` is true — it hardcodes `sender: "agent"`,
+    /// which is not a real sender identity, so drawing an avatar for it
+    /// would flash the wrong-coloured circle on the in-flight bubble
+    /// before the durable row lands and it jumps to the real one
+    /// (Cursor Bugbot on PR #141 — the render-side twin of the
+    /// `hasMultipleSenders` count fix; both read the same
+    /// `TimelineItem` property so they can't drift apart again).
+    static func avatarSender(for item: TimelineItem, hasMultipleSenders: Bool) -> String? {
+        TimelineSenderLabels.avatarSender(for: item, hasMultipleSenders: hasMultipleSenders)
+    }
+
+    /// Display name for a sender id (see
+    /// `TimelineSenderLabels.displayName(for:)`).
+    /// `internal static` so unit tests in `MatronTests` can pin the
+    /// formatting without instantiating the SwiftUI view.
+    static func displayName(for senderID: String) -> String {
+        TimelineSenderLabels.displayName(for: senderID)
+    }
+
+    private func displayName(for senderID: String) -> String {
+        Self.displayName(for: senderID)
+    }
+
+    /// Resolves an image URL via the injected `resolveImage` closure if
+    /// present. Returns `nil` for previews/tests, which falls through to
+    /// `AttachmentImage`'s placeholder rendering.
     private func resolvedImage(for url: URL?) -> Image? {
         guard let url, let resolveImage else { return nil }
         return resolveImage(url)
     }
 }
 
-/// Mac mirror of `AskUserCardHost`: binds a cached `AskUserSheetViewModel` to the
-/// shared `AskUserCard`. Separate `@Bindable` view because property wrappers
-/// can't be declared inline in a `@ViewBuilder` switch.
-private struct MacAskUserCardHost: View {
+/// Binds a cached `AskUserSheetViewModel` to the shared `AskUserCard`. Separate
+/// `@Bindable` view because property wrappers can't be declared inline in a
+/// `@ViewBuilder` switch.
+private struct AskUserCardHost: View {
     @Bindable var viewModel: AskUserSheetViewModel
     let isAnswered: Bool
     let answerSummary: String?
     let timestamp: Date?
-    /// Mac mirror of `AskUserCardHost.expiryTick`: toggled when
-    /// `expires_at` passes so the card re-renders into its expired
-    /// state. `isExpired` is `Date.now`-derived, so nothing wakes the
-    /// view at the deadline without this (bugbot "Expiry timer no longer
-    /// scheduled").
+    /// Toggled when the prompt's `expires_at` passes, forcing the card
+    /// to re-render into its expired state. `isExpired` is computed from
+    /// `Date.now`, so without a scheduled wake nothing re-evaluates it
+    /// at the deadline — the card keeps showing active controls until an
+    /// unrelated render, and only `send()` rejects (bugbot "Expiry timer
+    /// no longer scheduled"). The old half-sheet drove this via a
+    /// `.task(id:)` calling `awaitExpiry`; the inline card does the same.
     @State private var expiryTick = false
 
     /// Edit on a queued message, while the card offers it or its editor is
@@ -627,6 +696,8 @@ private struct MacAskUserCardHost: View {
             timestamp: timestamp,
             edit: editControls
         )
+        // Keyed on the prompt event ID so a recycled host (cells reuse)
+        // restarts the timer for the new prompt.
         .task(id: viewModel.promptEventID) {
             await viewModel.awaitExpiry { expiryTick.toggle() }
         }

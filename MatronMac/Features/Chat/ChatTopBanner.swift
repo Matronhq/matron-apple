@@ -17,7 +17,7 @@ import SwiftUI
 /// behind the sidebar / search bar").
 ///
 /// The horizontal inset is deliberately the same bare `.padding(.horizontal)`
-/// the timeline rows use (`MacTimelineItemView`), not a literal: the banner
+/// the timeline rows use (`TimelineItemView`), not a literal: the banner
 /// should stay aligned with the message content if that metric ever moves.
 ///
 /// Mac-only, and it stays at the call site rather than moving into

@@ -137,7 +137,7 @@ struct HostedTimelineRow: View {
                     onRetry: { id in viewModel.retrySend(itemID: id) },
                     onDiscard: { id in viewModel.discardSend(itemID: id) },
                     onTapImage: actions.tapImage,
-                    onTapFile: { mxc, filename in
+                    onTapFile: { mxc, filename, _ in
                         Task {
                             if let url = await viewModel.writeTempFile(mxcURL: mxc, filename: filename) {
                                 actions.previewFile(url, filename)

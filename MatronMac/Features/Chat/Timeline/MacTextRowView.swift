@@ -94,7 +94,7 @@ final class MacTextRowView: NSTableCellView {
         pillsHost = Self.install(layout.pillsFrame == nil ? nil : pills(), in: pillsHost, on: self)
         sendStateHost = Self.install(layout.sendStateFrame == nil ? nil : sendState(), in: sendStateHost, on: self)
 
-        // `MacTimelineItemView` dims the whole rendered body (avatar, bubble,
+        // `TimelineItemView` dims the whole rendered body (avatar, bubble,
         // pills) while an own message is sending; the footer stays opaque.
         let alpha: CGFloat = content.isOwn && content.sendState == .sending ? 0.7 : 1
         for view in [bubble, body, timeLabel, avatarHost, pillsHost] as [NSView?] { view?.alphaValue = alpha }
