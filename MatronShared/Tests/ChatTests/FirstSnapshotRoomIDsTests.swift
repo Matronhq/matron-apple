@@ -2,20 +2,11 @@ import XCTest
 @testable import MatronChat
 @testable import MatronModels
 
+/// Yields the queued snapshots, then finishes (throwing `streamError` if
+/// set). The other requirements are inert.
 final class FakeChatService: ChatService, @unchecked Sendable {
     var snapshotsToEmit: [[ChatSummary]] = []
-    /// When non-nil, `chatSummaries()` finishes by throwing this error
-    /// after yielding all queued snapshots. Lets tests pin the error-flow
-    /// added in QA finding #10.
     var streamError: Error?
-    var createCalls: [String] = []
-    var nextCreatedRoomID: String = "!fake:server"
-    var refreshCalls: Int = 0
-    var forceSnapshotCalls: Int = 0
-    var mutedRooms: [String] = []
-    /// Children snapshots keyed by parent id, emitted in order by
-    /// `children(of:)`. Absent parent → an empty stream.
-    var childrenByParent: [String: [[SubChatSummary]]] = [:]
 
     func chatSummaries() -> AsyncThrowingStream<[ChatSummary], Error> {
         AsyncThrowingStream { continuation in
@@ -30,43 +21,16 @@ final class FakeChatService: ChatService, @unchecked Sendable {
         }
     }
 
-    func createChat(with botID: String) async throws -> String {
-        createCalls.append(botID)
-        return nextCreatedRoomID
-    }
-
-    func refresh() async throws { refreshCalls += 1 }
-    func forceSnapshot() async throws { forceSnapshotCalls += 1 }
-    func mute(roomID: String) async throws { mutedRooms.append(roomID) }
-
+    func createChat(with botID: String) async throws -> String { "!x:s" }
+    func refresh() async throws {}
+    func forceSnapshot() async throws {}
+    func mute(roomID: String) async throws {}
     func children(of parentConvoID: String) -> AsyncStream<[SubChatSummary]> {
-        let snapshots = childrenByParent[parentConvoID] ?? []
-        return AsyncStream { continuation in
-            for snapshot in snapshots { continuation.yield(snapshot) }
-            continuation.finish()
-        }
+        AsyncStream { $0.finish() }
     }
 }
 
-final class ChatServiceFakeTests: XCTestCase {
-    func test_emitsSnapshotsInOrder() async throws {
-        let bot = BotIdentity(matrixID: "@bot:s", displayName: "Bot", avatarURL: nil)
-        let s1 = [ChatSummary(id: "!1:s", title: "A", bot: bot, lastActivity: .distantPast, unreadCount: 0)]
-        let s2 = [
-            ChatSummary(id: "!1:s", title: "A", bot: bot, lastActivity: .distantPast, unreadCount: 0),
-            ChatSummary(id: "!2:s", title: "B", bot: bot, lastActivity: .now, unreadCount: 1),
-        ]
-        let fake = FakeChatService()
-        fake.snapshotsToEmit = [s1, s2]
-        var received: [[ChatSummary]] = []
-        for try await snap in fake.chatSummaries() {
-            received.append(snap)
-        }
-        XCTAssertEqual(received.count, 2)
-        XCTAssertEqual(received[0].count, 1)
-        XCTAssertEqual(received[1].count, 2)
-    }
-
+final class FirstSnapshotRoomIDsTests: XCTestCase {
     // MARK: firstSnapshotRoomIDs (PushBootstrap.bootstrapHost's
     // joinedRoomIDs source — extracted in the PR #5 fourth-pass dedup)
 

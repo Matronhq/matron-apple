@@ -8,7 +8,7 @@ import MatronStorage
 @testable import MatronViewModels
 
 /// Test-only fake for `MediaService`. Mirrors the shape declared in
-/// `MatronShared/Tests/ChatTests/MediaServiceFakeTests.swift` but lives
+/// `MatronShared/Tests/ChatTests/FakeMediaService.swift` but lives
 /// inside the `ViewModelTests` SPM target so it's visible to the
 /// `ChatViewModel` tests below.
 final class FakeMediaService: MediaService, @unchecked Sendable {
