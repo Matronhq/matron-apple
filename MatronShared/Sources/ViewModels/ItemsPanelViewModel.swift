@@ -525,12 +525,6 @@ public final class ItemsPanelViewModel {
         }
     }
 
-    /// Open tasks labelled `spare-allowance`, by rank (then number), next
-    /// first.
-    public nonisolated static func spareAllowanceBacklog(_ items: [TrackerItem]) -> [TrackerItem] {
-        items.filter(\.isSpareAllowanceTask).sorted { ($0.rank, $0.num) < ($1.rank, $1.num) }
-    }
-
     private func updateAwaiting(_ awaiting: [TrackerItem]) {
         // Unchanged: nothing below would move. On the items index path an
         // untouched list is the very array delivered last time, so this

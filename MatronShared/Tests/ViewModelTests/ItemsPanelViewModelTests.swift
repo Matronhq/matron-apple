@@ -449,15 +449,20 @@ final class ItemsPanelViewModelTests: XCTestCase {
 
     /// Open tasks labelled spare-allowance, in task order; closed ones,
     /// other kinds and unlabelled tasks stay out.
-    func testSpareAllowanceBacklogIsOpenLabelledTasksInRankOrder() {
-        let items = [
+    func testSpareAllowanceBacklogIsOpenLabelledTasksInRankOrder() async throws {
+        let store = FakeItemsStore()
+        let vm = ItemsPanelViewModel(convoID: nil, store: store, api: FakeAPI(), sync: FakeSync())
+        vm.start()
+        try await waitUntil { store.cont != nil }
+        store.cont?.yield([
             labelled(t("later", num: 1, rank: 3), ["spare-allowance"]),
             labelled(t("next", num: 2, rank: 1), ["spare-allowance", "dispatched"]),
             t("plain", num: 3, rank: 2),
             labelled(t("done", num: 4, state: .closed, rank: 0, closed: 10), ["spare-allowance"]),
             labelled(t("question", num: 5, kind: .question, awaiting: .user, rank: 0), ["spare-allowance"]),
-        ]
-        XCTAssertEqual(ItemsPanelViewModel.spareAllowanceBacklog(items).map(\.id), ["next", "later"])
+        ])
+        try await waitUntil { vm.spareAllowance.count == 2 }
+        XCTAssertEqual(vm.spareAllowance.map(\.id), ["next", "later"])
     }
 
     func testTheAppWideInstanceFillsTheSpareAllowanceTab() async throws {
