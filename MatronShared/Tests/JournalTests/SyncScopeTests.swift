@@ -123,6 +123,8 @@ final class MessagesStubURLProtocol: URLProtocol {
         var events: [[String: Any]] = []
         var requests: [URLRequest] = []
         var failuresLeft = 0
+        var holdNextFor: String?
+        var held: (() -> Void)?
     }
     /// The engine's requests land on URLSession's queue while a test reads.
     private static let state = OSAllocatedUnfairLock(uncheckedState: State())
@@ -135,6 +137,20 @@ final class MessagesStubURLProtocol: URLProtocol {
     static var failuresLeft: Int {
         get { state.withLockUnchecked { $0.failuresLeft } }
         set { state.withLockUnchecked { $0.failuresLeft = newValue } }
+    }
+    /// The next `/messages` request for this conversation is answered with
+    /// the page as it stood when it arrived, but only on `releaseHeld()`.
+    static var holdNextFor: String? {
+        get { state.withLockUnchecked { $0.holdNextFor } }
+        set { state.withLockUnchecked { $0.holdNextFor = newValue } }
+    }
+    static var isHolding: Bool { state.withLockUnchecked { $0.held != nil } }
+    static func releaseHeld() {
+        let answer = state.withLockUnchecked { s -> (() -> Void)? in
+            defer { s.held = nil }
+            return s.held
+        }
+        answer?()
     }
     static func reset() { state.withLockUnchecked { $0 = State() } }
     /// The conversation fetches only; every connect also asks for `/snapshot`.
@@ -174,9 +190,18 @@ final class MessagesStubURLProtocol: URLProtocol {
         let body = try! JSONSerialization.data(withJSONObject: ["events": Array(page)])
         let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
                                        headerFields: ["Content-Type": "application/json"])!
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: body)
-        client?.urlProtocolDidFinishLoading(self)
+        let answer = { [client] in
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: body)
+            client?.urlProtocolDidFinishLoading(self)
+        }
+        let held = Self.state.withLockUnchecked { s -> Bool in
+            guard let convo = s.holdNextFor, request.url?.path.contains("/convo/\(convo)/") == true else { return false }
+            s.holdNextFor = nil
+            s.held = answer
+            return true
+        }
+        if !held { answer() }
     }
     override func stopLoading() {}
 }
@@ -485,6 +510,74 @@ final class SyncScopeEngineTests: XCTestCase {
         try store.advanceCursor(to: 60)
         await engine.unregisterViewer(c1)
         XCTAssertEqual(try store.syncedSeq(convoID: "c1"), 31, "the second socket never carried c1")
+        await engine.endSync()
+    }
+
+    func testAChatCarriedAgainWhileItsFetchRunsIsFetchedAgain() async throws {
+        let socket = FakeWebSocketConnection()
+        let store = try seededStore(cursor: 10)
+        try store.markForYouStart()
+        MessagesStubURLProtocol.events = [frame(30, "c1"), frame(31, "c1")]
+        MessagesStubURLProtocol.holdNextFor = "c1"
+        let engine = JournalSyncEngine(api: stubbedAPI(), store: store, connector: FakeConnector([socket]), token: "t",
+                                       ownSender: "user:alice", search: nil, backoffBaseSeconds: 0.01,
+                                       syncScope: .forYou)
+        socket.serve(#"{"kind":"control","op":"hello_ok","seq":40,"sync":"for_you"}"#)
+        socket.serve(#"{"kind":"control","op":"cursor","seq":40}"#)
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        let c1 = UUID()
+        await engine.registerViewer(c1, convoID: "c1")
+        try await until("c1's first fetch") { MessagesStubURLProtocol.isHolding }
+        // While that fetch is out, c5 pushes c1 out of the set and focusing
+        // brings it back. In between the socket did not carry c1, and the
+        // held page predates what landed then.
+        for convo in ["c2", "c3", "c4", "c5"] { await engine.registerViewer(UUID(), convoID: convo) }
+        MessagesStubURLProtocol.events.append(frame(35, "c1"))
+        await engine.resendViewing(for: "c1")
+        MessagesStubURLProtocol.releaseHeld()
+        try await until("c1 fetched again") {
+            MessagesStubURLProtocol.messageRequests.filter { $0.url?.path.contains("/convo/c1/") == true }.count == 2
+        }
+        try await until("the gap's event") { try store.events(convoID: "c1").map(\.seq) == [30, 31, 35] }
+        try store.advanceCursor(to: 60)
+        await engine.unregisterViewer(c1)
+        XCTAssertEqual(try store.syncedSeq(convoID: "c1"), 60, "the second fetch made c1 complete")
+        // Focusing c1 pushed c2 out and closing c1 brought it back: wait for
+        // that fetch too, so it does not land in the next test.
+        let fetched = { MessagesStubURLProtocol.messageRequests.compactMap { $0.url?.pathComponents.dropLast().last }.sorted() }
+        try await until("every fetch") { fetched() == ["c1", "c1", "c2", "c2", "c3", "c4", "c5"] }
+        await engine.endSync()
+    }
+
+    func testAChatClosedAndReopenedWhileItsFetchRunsIsFetchedAgain() async throws {
+        let socket = FakeWebSocketConnection()
+        let store = try seededStore(cursor: 10)
+        try store.markForYouStart()
+        MessagesStubURLProtocol.events = [frame(30, "c1"), frame(31, "c1")]
+        MessagesStubURLProtocol.holdNextFor = "c1"
+        let engine = JournalSyncEngine(api: stubbedAPI(), store: store, connector: FakeConnector([socket]), token: "t",
+                                       ownSender: "user:alice", search: nil, backoffBaseSeconds: 0.01,
+                                       syncScope: .forYou)
+        socket.serve(#"{"kind":"control","op":"hello_ok","seq":40,"sync":"for_you"}"#)
+        socket.serve(#"{"kind":"control","op":"cursor","seq":40}"#)
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        let first = UUID()
+        await engine.registerViewer(first, convoID: "c1")
+        try await until("c1's first fetch") { MessagesStubURLProtocol.isHolding }
+        // Closed and opened again while that fetch is out: in between the
+        // socket did not carry c1.
+        await engine.unregisterViewer(first)
+        MessagesStubURLProtocol.events.append(frame(35, "c1"))
+        let reopened = UUID()
+        await engine.registerViewer(reopened, convoID: "c1")
+        MessagesStubURLProtocol.releaseHeld()
+        try await until("c1 fetched again") { MessagesStubURLProtocol.messageRequests.count == 2 }
+        try await until("the gap's event") { try store.events(convoID: "c1").map(\.seq) == [30, 31, 35] }
+        try store.advanceCursor(to: 60)
+        await engine.unregisterViewer(reopened)
+        XCTAssertEqual(try store.syncedSeq(convoID: "c1"), 60, "the second fetch made c1 complete")
         await engine.endSync()
     }
 
