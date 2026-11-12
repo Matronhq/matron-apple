@@ -353,7 +353,7 @@ import MatronDesignSystem
         try await h.start(with: items)
         XCTAssertTrue(h.controller.session.contents.values.contains { if case .hosted = $0 { return true } else { return false } })
 
-        h.cache.removeAllForTesting()
+        h.cache.removeAll()
         h.controller.resetCountersForTesting()
         // The end-of-live-resize resync: a forced pass (never skipped) at
         // the same width over the same rows.
@@ -362,7 +362,7 @@ import MatronDesignSystem
         XCTAssertEqual(h.controller.syncMeasuredRowCountForTesting, 0)
         XCTAssertEqual(h.controller.hostedMeasuredRowCountForTesting, 0)
 
-        h.cache.removeAllForTesting()
+        h.cache.removeAll()
         h.controller.resetCountersForTesting()
         let added = TimelineItem(id: "51", sender: "@bot:s", timestamp: Date(timeIntervalSince1970: 1_700_000_051),
                                  kind: .text(body: "One more", formattedHTML: nil), isOwn: false, sendState: .sent)
