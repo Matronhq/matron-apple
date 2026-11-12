@@ -125,7 +125,7 @@ struct MacTimelineRowView: View, Equatable {
                 .buttonStyle(.plain)
                 .padding(.horizontal)
             } else {
-                MacTimelineItemView(
+                TimelineItemView(
                     item: item,
                     resolveImage: { viewModel.image(for: $0) },
                     resolveAnimation: { viewModel.imageAnimation(for: $0) },

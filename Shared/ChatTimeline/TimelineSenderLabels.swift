@@ -1,7 +1,7 @@
 import MatronChat
 
-/// Sender presentation shared by both timelines (iOS `TimelineItemView`, Mac
-/// `MacTimelineItemView` and both table/collection timelines).
+/// Sender presentation shared by both timelines (`TimelineItemView` and
+/// both table/collection timelines).
 enum TimelineSenderLabels {
     /// Non-nil only in multi-sender rooms, never for own rows or the
     /// streaming placeholder.

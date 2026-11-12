@@ -3,8 +3,8 @@ import SwiftUI
 /// A bot-aligned typing / tool-use indicator: three stepping dots followed
 /// by a label ("Thinking…", "Running <tool>"). Rendered as a trailing
 /// timeline row while the agent is working, then removed. Lives in
-/// `MatronDesignSystem` so iOS (`TimelineItemView`) and macOS
-/// (`MacTimelineItemView`) share one source of truth.
+/// `MatronDesignSystem` so iOS and macOS (`TimelineItemView`) share one
+/// source of truth.
 ///
 /// The dots STEP (one lit at a time, no tween) instead of running a
 /// `repeatForever` pulse. An in-flight SwiftUI animation makes the hosting

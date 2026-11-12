@@ -1425,7 +1425,7 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
             },
             sendState: {
                 // The footer carries its own retry, exactly as
-                // `MacTimelineItemView` builds it.
+                // `TimelineItemView` builds it.
                 AnyView(SendStateIndicator(state: SendStateGlyph.from(content.sendState),
                                            onRetry: { retry(content.itemID) },
                                            onDiscard: { discard(content.itemID) })
