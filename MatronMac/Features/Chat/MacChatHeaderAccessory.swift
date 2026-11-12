@@ -419,12 +419,19 @@ final class MacChatHeaderAccessory: NSTitlebarAccessoryViewController {
         let accessory = MacChatHeaderAccessory(width: width)
         accessory.ownerWindow = window
         window.addTitlebarAccessoryViewController(accessory)
-        // A clear title bar over every page, so an open Decisions item can
-        // run up to the top of the window instead of sitting under an empty
-        // band. Window-wide on purpose: macOS 26 does not redraw its light
-        // scroll-edge strip once a window's title bar has been transparent,
-        // so a Decisions-only switch left every later chat clear anyway.
-        window.titlebarAppearsTransparent = true
+        // The title bar is clear over every page, so an open Decisions item
+        // can run up to the top of the window: `MacClearTitleBar` on the
+        // split view hides the toolbar's background.
+        //
+        // NOT `window.titlebarAppearsTransparent`. With that set, AppKit
+        // works out where a click drags the window by asking every view
+        // under the title bar, hosting views included, on each display
+        // pass that follows a title-bar change. A hosting view answers
+        // from its SwiftUI graph, and SwiftUI rebuilds that graph when the
+        // view's place in the hierarchy changes: asked in between, it reads
+        // a graph that is gone and the app crashes (EXC_BAD_ACCESS under
+        // `NSHostingView._regionForOpaqueDescendants`). With the flag off,
+        // AppKit never asks the content.
         return accessory
     }
 
@@ -675,5 +682,17 @@ struct MacChatHeaderHost<Content: View>: View {
             .onPreferenceChange(MacItemHeaderPreference.self) { item in
                 MainActor.assumeIsolated { link.publishItem(item) }
             }
+    }
+}
+
+/// A clear title bar for the whole window: no band over a chat (the header
+/// draws its own backing there) and none over an open Decisions item, which
+/// runs up to the top of the window.
+///
+/// This is the toolbar's background hidden, and deliberately not the
+/// window's `titlebarAppearsTransparent`: see `MacChatHeaderAccessory.installed`.
+struct MacClearTitleBar: ViewModifier {
+    func body(content: Content) -> some View {
+        content.toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
     }
 }

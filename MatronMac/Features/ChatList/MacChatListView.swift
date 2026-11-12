@@ -582,6 +582,7 @@ struct MacChatListView: View {
             // `MacMarkdownPanelLayout` for the panel's share of it.
             .navigationSplitViewColumnWidth(min: Self.detailMinWidth, ideal: Self.detailMinWidth)
         }
+        .modifier(MacClearTitleBar())
         .environment(markdownPreview)
     }
 

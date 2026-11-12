@@ -160,11 +160,48 @@ final class MacChatHeaderAccessoryTests: XCTestCase {
         XCTAssertFalse(MacChatHeaderBar.drawsBacking(model), "the item runs up to the top: no band over it")
     }
 
-    func test_install_makesTheTitleBarClear() async throws {
+    /// The clear title bar is the toolbar's background hidden, never the
+    /// window flag: with the flag on, AppKit asks every hosting view under
+    /// the title bar where a click drags the window, and one whose SwiftUI
+    /// graph is being rebuilt crashes the app.
+    func test_install_leavesTheWindowTitleBarOpaqueToAppKit() async throws {
         let (window, _) = makeWindow()
         defer { window.close() }
         _ = try await settledAccessory(in: window, roomID: "room-a")
-        XCTAssertTrue(window.titlebarAppearsTransparent)
+        XCTAssertFalse(window.titlebarAppearsTransparent)
+    }
+
+    /// AppKit's drag-region pass must not reach the content under the
+    /// title bar. A plain view there sees the pass as an `isOpaque` read.
+    func test_dragRegionPass_doesNotAskTheContentUnderTheTitleBar() async throws {
+        let dragRegionPass = NSSelectorFromString("_resetDragMargins")
+        let probe = DragRegionProbeView()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
+                              styleMask: [.titled, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        try XCTSkipUnless(window.responds(to: dragRegionPass), "AppKit no longer has this pass")
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
+        probe.frame = content.bounds
+        probe.autoresizingMask = [.width, .height]
+        content.addSubview(probe)
+        window.contentView = content
+        window.orderFront(nil)
+
+        // The control: with the window flag on, the pass does ask the probe.
+        // If it stops doing so, this test can no longer see the pass.
+        window.titlebarAppearsTransparent = true
+        await Self.spin(seconds: 0.2)
+        probe.opaqueReads = 0
+        window.perform(dragRegionPass)
+        try XCTSkipUnless(probe.opaqueReads > 0, "AppKit no longer asks content views in this pass")
+        window.titlebarAppearsTransparent = false
+
+        _ = MacChatHeaderAccessory.installed(in: window, width: 400)
+        await Self.spin(seconds: 0.2)
+        probe.opaqueReads = 0
+        window.perform(dragRegionPass)
+        XCTAssertEqual(probe.opaqueReads, 0, "the header must not opt the window into AppKit's walk of the content")
     }
 
     // MARK: - Title placement
@@ -422,6 +459,17 @@ final class MacChatHeaderAccessoryTests: XCTestCase {
         while Date() < end {
             try? await Task.sleep(nanoseconds: 20_000_000)
         }
+    }
+}
+
+
+/// Counts AppKit's reads of `isOpaque`: its drag-region pass reads it on
+/// each content view it visits.
+private final class DragRegionProbeView: NSView {
+    var opaqueReads = 0
+    override var isOpaque: Bool {
+        opaqueReads += 1
+        return false
     }
 }
 #endif
