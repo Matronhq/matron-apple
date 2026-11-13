@@ -45,6 +45,9 @@ struct BoxesScreen: View {
                 if let spare = summary.spare {
                     spareCard(spare, summary: summary)
                 }
+                if !rows.isEmpty {
+                    historyLink
+                }
                 ForEach(rows) { row in
                     card(row)
                 }
@@ -77,6 +80,28 @@ struct BoxesScreen: View {
                 onOpenChat(convoID)
             }
         }
+    }
+
+    private var historyLink: some View {
+        NavigationLink(value: UsageHistoryScreen.path) {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Usage history").font(.subheadline.weight(.semibold)).foregroundStyle(Color.primary)
+                    Text("How much of each week's allowance went unused")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("boxes.usageHistory")
     }
 
     private func spareCard(_ spare: AllowanceSpare, summary: BoxesSummary) -> some View {

@@ -62,6 +62,7 @@ struct AppShellView: View {
     @State var memoriesVM: MemoriesViewModel
     /// The Boxes page's view model. Reads nothing until the page shows.
     @State var boxesVM: BoxesViewModel
+    @State var usageHistoryVM: UsageHistoryViewModel
     /// The Memories screen's "On your boxes" section. Asks no box until
     /// the screen appears, and is stopped with it.
     @State var localMemoriesVM: LocalMemoriesViewModel
@@ -89,6 +90,7 @@ struct AppShellView: View {
         let shellNav = navigation ?? AppShellNavigation()
         #if DEBUG
         if BoxesDemoData.isRequested { shellNav.tab = .boxes }
+        if BoxesDemoData.isHistoryRequested { shellNav.boxesPath = [UsageHistoryScreen.path] }
         #endif
         _nav = State(initialValue: shellNav)
         _chatListVM = State(initialValue: ChatListViewModel(chat: deps.chatService(for: session)))
@@ -96,6 +98,7 @@ struct AppShellView: View {
         _missionsVM = State(initialValue: deps.makeMissionsDashboardViewModel(for: session))
         _memoriesVM = State(initialValue: deps.makeMemoriesViewModel(for: session))
         _boxesVM = State(initialValue: deps.makeBoxesViewModel(for: session))
+        _usageHistoryVM = State(initialValue: deps.makeUsageHistoryViewModel(for: session))
         _localMemoriesVM = State(initialValue: deps.makeLocalMemoriesViewModel(for: session))
         _coordinatorConvoID = AppStorage(CoordinatorSetting.defaultsKey(for: session.userID))
     }
@@ -517,7 +520,9 @@ struct AppShellView: View {
     }
 
     @ViewBuilder private func boxesDestination(_ value: String) -> some View {
-        if let id = BoxRoute.id(from: value), let row = boxesVM.rows().first(where: { $0.id == id }) {
+        if value == UsageHistoryScreen.path {
+            UsageHistoryScreen(viewModel: usageHistoryVM)
+        } else if let id = BoxRoute.id(from: value), let row = boxesVM.rows().first(where: { $0.id == id }) {
             BoxSessionsView(row: row, onOpenChat: { nav.openChat($0) })
         }
     }
