@@ -7,7 +7,6 @@ import MatronModels
 import MatronPush
 import MatronSearch
 import MatronStorage
-import MatronSync
 import MatronViewModels
 
 /// The parts of `AppDependencies` that are the same in the iOS and Mac
