@@ -39,6 +39,18 @@ public final class TimelineViewModel {
     /// rows say so instead of offering the Ask again, across refreshes.
     public private(set) var askedProjectIDs: Set<String> = []
     public var error: String?
+    /// The shown week's projects past its stories, as far as they have
+    /// been paged, most active first (`weekExtras(for:)`). A re-read of the
+    /// week starts them over.
+    public private(set) var weekProjects: [TimelineWeekProject] = []
+    public private(set) var weekProjectsStatus: TimelineWeekExtras.Status = .done
+    /// nil until the week-projects read answers; false once the journal
+    /// answered 404 for it (it has the weeks, not that read). Its weeks then
+    /// keep their "Also moved" line and nothing asks for it again.
+    public private(set) var weekProjectsSupported: Bool?
+
+    /// Projects per week-projects read.
+    public static let weekProjectsPageSize = 24
 
     public var hasEarlierWeeks: Bool { weeksNextBefore != nil }
     public var hasMoreFinished: Bool { finishedNextBefore != nil }
@@ -61,6 +73,13 @@ public final class TimelineViewModel {
     @ObservationIgnored private var weekGeneration = 0
     /// Bumped by `refresh()`: a quiet/long result fetched before it is dropped.
     @ObservationIgnored private var refreshEpoch = 0
+    /// The week the paged projects belong to, and the next page's offset
+    /// (nil when there is none to read).
+    @ObservationIgnored private(set) var weekProjectsKey: String?
+    @ObservationIgnored private var weekProjectsNextOffset: Int?
+    /// Bumped each time a week lands: a page read for the week as it was
+    /// before is dropped.
+    @ObservationIgnored private var weekProjectsGeneration = 0
     @ObservationIgnored private var isLoadingEarlier = false
     @ObservationIgnored private var isLoadingFinished = false
     @ObservationIgnored private var isLoadingProjects = false
@@ -172,6 +191,63 @@ public final class TimelineViewModel {
         }
     }
 
+    /// Reads the next page of the shown week's projects past its stories:
+    /// when the page reaches its end, and for Retry. Asks for nothing while
+    /// a page is being read, after the last, or from a journal without the read.
+    public func loadMoreWeekProjects() async {
+        guard let key = weekProjectsKey, let offset = weekProjectsNextOffset,
+              weekProjectsStatus == .more || weekProjectsStatus == .failed else { return }
+        let generation = weekProjectsGeneration
+        weekProjectsStatus = .loading
+        do {
+            let page = try await timeline.timelineWeekProjects(key, offset: offset, limit: Self.weekProjectsPageSize)
+            guard generation == weekProjectsGeneration else { return }
+            weekProjectsSupported = true
+            // A project shows once: the week's own cards come first, and a
+            // list that shifted between pages repeats none.
+            var seen = Set((week?.stories ?? []).map(\.project.id) + weekProjects.map(\.project.id))
+            weekProjects += page.projects.filter { seen.insert($0.project.id).inserted }
+            // An offset that does not move on would read the same page forever.
+            if let next = page.nextOffset, next > offset {
+                weekProjectsNextOffset = next
+                weekProjectsStatus = .more
+            } else {
+                weekProjectsNextOffset = nil
+                weekProjectsStatus = .done
+            }
+        } catch JournalAPIError.notFound where offset == 0 {
+            guard generation == weekProjectsGeneration else { return }
+            weekProjectsSupported = false
+            weekProjectsNextOffset = nil
+            weekProjectsStatus = .unsupported
+        } catch {
+            guard generation == weekProjectsGeneration else { return }
+            // Called off too: the row offers Retry rather than asking again
+            // at once, which a transport that keeps calling reads off would
+            // turn into a loop.
+            weekProjectsStatus = .failed
+        }
+    }
+
+    /// A week landed: its projects past the stories start over, with
+    /// nothing to read when no other project moved or the journal has no
+    /// such read.
+    private func resetWeekProjects(for week: TimelineWeek) {
+        weekProjectsGeneration += 1
+        weekProjectsKey = week.week
+        weekProjects = []
+        if weekProjectsSupported == false {
+            weekProjectsNextOffset = nil
+            weekProjectsStatus = .unsupported
+        } else if week.also.isEmpty {
+            weekProjectsNextOffset = nil
+            weekProjectsStatus = .done
+        } else {
+            weekProjectsNextOffset = 0
+            weekProjectsStatus = .more
+        }
+    }
+
     /// Hands a stalled project to the Coordinator as a question.
     public func ask(about stalled: StalledProject) async {
         let title = stalled.project.title
@@ -221,7 +297,10 @@ public final class TimelineViewModel {
             case .week(let key):
                 let loaded = try await timeline.timelineWeek(key)
                 // A later select moved on, or a newer read started, while this was in flight.
-                if place == target, generation == weekGeneration { week = loaded }
+                if place == target, generation == weekGeneration {
+                    week = loaded
+                    resetWeekProjects(for: loaded)
+                }
             case .quiet:
                 let loaded = try await timeline.wentQuiet()
                 guard epoch == refreshEpoch else { return }

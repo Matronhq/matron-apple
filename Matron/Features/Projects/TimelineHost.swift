@@ -36,6 +36,8 @@ struct TimelinePlacePage<Footer: View>: View {
                           onAsk: { stalled in Task { await viewModel.ask(about: stalled) } },
                           onLoadMoreFinished: { Task { await viewModel.loadMoreFinished() } },
                           onLoadMoreProjects: { Task { await viewModel.loadMoreProjects() } },
+                          weekExtras: viewModel.weekExtras(for: place),
+                          onLoadMoreWeekProjects: { Task { await viewModel.loadMoreWeekProjects() } },
                           onRetry: { Task { await host.refresh() } }, footer: footer)
             .refreshable { await host.refresh() }
             .task(id: viewModel.imageBlobIDs(for: place)) {

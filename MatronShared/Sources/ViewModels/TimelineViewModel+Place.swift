@@ -46,9 +46,23 @@ extension TimelineViewModel {
         }
     }
 
-    /// The week's pictures to load (videos draw their own panel).
+    /// The shown week's projects past its stories and where their paging
+    /// stands; nil when `place` is not the week on screen.
+    public func weekExtras(for place: TimelinePlace?) -> TimelineWeekExtras? {
+        guard let week = Self.shownWeek(week, for: place) else { return nil }
+        // Projects read for another week never show under this one.
+        guard weekProjectsKey == week.week else {
+            return TimelineWeekExtras(week: week.week, status: weekProjectsSupported == false ? .unsupported : .done)
+        }
+        return TimelineWeekExtras(week: week.week, projects: weekProjects, status: weekProjectsStatus)
+    }
+
+    /// The week's pictures to load (videos draw their own panel): its
+    /// stories', then those of its projects paged in past them.
     public func imageBlobIDs(for place: TimelinePlace?) -> [String] {
-        Self.shownWeek(week, for: place)?.stories.compactMap(\.media).filter { !$0.isVideo }.map(\.blobID) ?? []
+        guard let week = Self.shownWeek(week, for: place) else { return [] }
+        let extras = weekExtras(for: place)?.projects.compactMap(\.media) ?? []
+        return (week.stories.compactMap(\.media) + extras).filter { !$0.isVideo }.map(\.blobID)
     }
 
     /// Whether `place`'s page says the last error over what it shows: a
