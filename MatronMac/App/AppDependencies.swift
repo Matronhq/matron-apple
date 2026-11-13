@@ -123,14 +123,15 @@ final class AppDependencies {
                              authResponses: { [revocation] status in revocation.noteResponse(status: status) })
         let dbURL = journalDirectory.appendingPathComponent("\(session.userID).sqlite")
         LaunchTimeline.shared.beginStoreOpen()
-        // `store.changeFeed` (off by default; `-store.changeFeed YES` on the
-        // command line for one run) serves the conversation streams from
-        // one change-fed index instead of whole-table re-reads per commit.
+        // `store.changeFeed` (on unless switched off in Settings → Storage;
+        // `-store.changeFeed NO` on the command line for one run) serves the
+        // conversation and item streams from change-fed indexes instead of
+        // whole-table re-reads per commit.
         // `store.pool` (off by default; `-store.pool YES`) opens the mirror
         // as a `DatabasePool`, so reads stop waiting behind sync writes.
         let store = try! JournalStore(
             databaseURL: dbURL, ownSender: "user:\(session.userID)",
-            usesChangeFeed: UserDefaults.standard.bool(forKey: JournalStore.changeFeedFlagKey),
+            usesChangeFeed: JournalStore.changeFeedEnabled(),
             usesPool: UserDefaults.standard.bool(forKey: JournalStore.poolFlagKey))
         LaunchTimeline.shared.endStoreOpen()
         // Un-gated, like MainThreadStallMonitor: a once-a-minute line per

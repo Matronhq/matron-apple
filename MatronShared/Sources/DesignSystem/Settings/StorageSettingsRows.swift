@@ -37,6 +37,11 @@ public struct StorageSettingsRows: View {
 
     public init(model: Model?) { self.model = model }
 
+    /// The switch for the store's change feed (`store.changeFeed`), shown
+    /// under these rows on both apps.
+    public static let changeFeedTitle = "Update lists row by row"
+    public static let changeFeedFooter = "The chat list, For you and items change only the rows a sync touched, instead of being re-read in full."
+
     public var body: some View {
         if let model {
             LabeledContent("Journal store", value: Self.byteText(model.journalBytes))

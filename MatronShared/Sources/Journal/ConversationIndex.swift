@@ -573,7 +573,7 @@ final class ConversationIndex: @unchecked Sendable {
 
     /// The subscription ended on a failed snapshot read. Resubscribe, after
     /// `ResubscribeBackoff`'s delay: 1 s, doubling while the failures
-    /// repeat, capped at 30 s. Until then the index keeps serving what it
+    /// repeat, capped at 8 s. Until then the index keeps serving what it
     /// last had. The count is shared with nothing else and starts over at
     /// the next delivered snapshot (`handle`).
     private func feedFailed(_ message: String) {

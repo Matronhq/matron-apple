@@ -29,6 +29,9 @@ struct DeviceSettingsView: View {
     /// Filled by the `.task` below; `nil` while the read is in flight, which
     /// is what `StorageSettingsRows` renders as a spinner.
     @State private var storage: StorageSettingsRows.Model?
+    /// On unless turned off, matching `JournalStore.changeFeedEnabled(in:)`.
+    /// Read once, when the journal store opens, so it applies next launch.
+    @AppStorage(JournalStore.changeFeedFlagKey) private var usesChangeFeed = true
     /// Settings → Security, held here so its sheets present from the
     /// `Form` (see `securitySettingsSheet(_:)`); nil without `deps`.
     @State private var security: SecuritySettingsModel?
@@ -128,8 +131,14 @@ struct DeviceSettingsView: View {
                 VoiceSettingsSection(settings: voiceSettings, synth: deps?.speechSynthesiser(for: session))
             }
             if let deps {
-                Section("Storage") {
+                Section {
                     StorageSettingsRows(model: storage)
+                    Toggle(StorageSettingsRows.changeFeedTitle, isOn: $usesChangeFeed)
+                        .accessibilityIdentifier("settings.changeFeed")
+                } header: {
+                    Text("Storage")
+                } footer: {
+                    Text("\(StorageSettingsRows.changeFeedFooter) Takes effect the next time Matron opens.")
                 }
             }
             // Only offered when the device can actually authenticate —
