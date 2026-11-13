@@ -52,35 +52,17 @@ public class MessageLinkRouter: NSObject, NSTextViewDelegate {
         default: url = nil
         }
         guard let url else { return false }
-        switch MatronItemLink.action(for: url, numbers: trackerNumberLinks?.origin) {
-        case .openTrackerNumber(let number):
-            // A shareable link: the user's own is looked up, then opened
-            // like the matching `matron://` link; another person's goes to
-            // the host's read-only viewer; else the browser.
-            trackerNumberLinks?.open(number, url: url, openItem: openTrackerItem, openPage: openPageLink,
-                                     openWeb: TrackerNumberLinks.openInBrowser)
-        case .openTrackerItem(let number):
-            // `matron://item/<n>` — opened in-app, and
-            // swallowed when no host installed a handler. The scheme is
-            // not registered with the OS, so it must never be handed on.
-            openTrackerItem?(number)
-        case .openConversation(let convoID):
-            // `matron://convo/<id>` — in-app, or swallowed with no host.
-            openConversation?(convoID)
-        case .openPage(let page):
-            // `matron://mission/<n>` / `matron://project/<n>` — same.
-            openPageLink?(page)
-        case .swallow, .openConsent:
-            // Legacy matrix/mxc links, which nothing can open; mirrors
-            // `MarkdownText.handle(url:)`. A
-            // consent link belongs on an item, not in prose.
-            break
-        case .system(let url):
-            openExternally(url)
-        case .blocked(let url):
-            // Not a web or email link: never handed to `NSWorkspace`.
-            presentBlocked(url)
-        }
+        // `matron://` links open in-app, and are swallowed when no host
+        // installed a handler: the scheme is not registered with the OS, so
+        // it must never be handed on. Legacy matrix/mxc links, which
+        // nothing can open, and consent links are swallowed too (a consent
+        // link belongs on an item, not in prose).
+        // Only web and email links reach `openExternally`.
+        let openExternally = self.openExternally
+        LinkTapRouter(openTrackerItem: openTrackerItem, openConversation: openConversation,
+                      openPageLink: openPageLink, trackerNumberLinks: trackerNumberLinks,
+                      openExternally: { openExternally($0) }, presentBlocked: presentBlocked)
+            .route(url)
         // Return `true` either way: we've decided the outcome, so the text
         // view shouldn't also hand the URL to its default opener.
         return true
