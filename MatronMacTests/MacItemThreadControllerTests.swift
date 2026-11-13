@@ -83,6 +83,39 @@ final class MacItemThreadControllerTests: XCTestCase {
                        accuracy: 1)
     }
 
+    func test_scrollToTopFromTheBottom() {
+        let c = mount(MacItemThreadFixtures.model(comments: 40), startsAtBottom: true)
+        XCTAssertTrue(c.geometry.scrollable)
+        XCTAssertFalse(c.geometry.atTop)
+        c.scrollToTop()
+        settle()
+        XCTAssertEqual(clip(c).bounds.minY, -c.scrollView.contentInsets.top, accuracy: 1)
+        XCTAssertTrue(c.geometry.atTop)
+        XCTAssertFalse(c.geometry.atBottom)
+    }
+
+    func test_atTopFollowsTheReader() throws {
+        let c = mount(MacItemThreadFixtures.model(comments: 40))
+        XCTAssertTrue(c.geometry.atTop)
+        try scroll(c, toTopOf: "comment:c10")
+        XCTAssertFalse(c.geometry.atTop)
+    }
+
+    func test_jumpToTopKeyIsOnlyForThisWindowAndNotWhileTyping() {
+        let c = mount(MacItemThreadFixtures.model(comments: 40))
+        XCTAssertTrue(c.takesJumpToTopKey(in: window))
+        XCTAssertFalse(c.takesJumpToTopKey(in: nil))
+        let other = NSWindow(contentRect: .zero, styleMask: [.titled], backing: .buffered, defer: true)
+        other.isReleasedWhenClosed = false
+        XCTAssertFalse(c.takesJumpToTopKey(in: other))
+        let field = NSTextView(frame: NSRect(x: 0, y: 0, width: 100, height: 20))
+        c.view.addSubview(field)
+        XCTAssertTrue(window.makeFirstResponder(field))
+        XCTAssertFalse(c.takesJumpToTopKey(in: window))
+        field.isEditable = false
+        XCTAssertTrue(c.takesJumpToTopKey(in: window))
+    }
+
     func test_buildsOnlyRowsOnScreen() {
         let c = mount(MacItemThreadFixtures.model(comments: 80))
         XCTAssertGreaterThan(c.rowCount, 80)
