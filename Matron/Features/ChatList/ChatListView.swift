@@ -434,6 +434,9 @@ struct ChatListView: View {
                             // A left drag here archives; it must not also
                             // switch tabs.
                             .ownsTrailingRowSwipe()
+                            // Outermost, after the swipe actions, or the
+                            // row keeps the system's cell colour.
+                            .listRowBackground(Color.matronPlainRow)
                         }
                     }
                 }
@@ -592,6 +595,7 @@ struct ChatListView: View {
                 }
             }
             .accessibilityIdentifier("chatList.archived")
+            .listRowBackground(Color.matronPlainRow)
         }
     }
 
@@ -662,10 +666,12 @@ extension ChatListView {
             Section("Pinned") {
                 ForEach(pins) { pin in
                     pinnedRow(pin, store: pinsStore)
+                        .listRowBackground(Color.matronPlainRow)
                     if let hint = pinsStore.successorHint(for: pin), let successor = pin.successor {
                         PinSuccessorHintRow(text: hint,
                                             onMove: { runPinAction { await $0.move(pin.convoID, to: successor.convoID) } },
                                             onDismiss: { runPinAction { await $0.dismissSuccessor(of: pin.convoID) } })
+                        .listRowBackground(Color.matronPlainRow)
                     }
                 }
             }

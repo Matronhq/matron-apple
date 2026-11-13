@@ -1,4 +1,5 @@
 import SwiftUI
+import MatronDesignSystem
 import MatronChat
 import MatronModels
 import MatronViewModels
@@ -69,6 +70,7 @@ struct ArchivedChatsView: View {
                     }
                     .tint(.indigo)
                 }
+                .listRowBackground(Color.matronPlainRow)
             }
             .listStyle(.plain)
         }
