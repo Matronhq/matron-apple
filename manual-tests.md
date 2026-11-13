@@ -321,6 +321,7 @@ Use a long conversation (thousands of events) unless an item says otherwise.
 - [ ] Select text wholly inside one fenced code block and copy: the pasteboard holds the bare code (no fence, no language tag, no surrounding prose).
 - [ ] An agent-chat request card and an agent-spawn request card in the timeline: Approve / Decline work, the card updates to its resolved state and its row resizes with no overlap; a started spawn's "Open room" opens it.
 - [ ] Item, milestone and mission cards/markers in the timeline: clicking each opens the tracker item pane, or the mission page, to the right entry.
+- [ ] Open an item with a long thread and scroll down: an up-arrow pill appears in the top-right corner, matching the chat's jump-to-my-message pill. Click it (or press ⌘↑ with the keyboard outside the reply box): the thread lands at its very top and the pill goes. A short thread never shows it, and ⌘↑ inside the reply box still moves the caret to the start.
 - [ ] A subtask card in the timeline: clicking it opens the sub-chat pane on that sub-chat.
 - [ ] Click a file attachment in a hosted row: the spinner shows while it downloads, then the file opens in its default app.
 - [ ] Drag a file and an image from Finder over the timeline rows (not only the empty area) and drop: the drop overlay shows while hovering anywhere on the column, and both land as attachments in the composer.

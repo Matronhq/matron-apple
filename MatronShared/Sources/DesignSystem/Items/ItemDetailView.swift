@@ -645,6 +645,12 @@ public struct ItemDetailView: View {
         placed && scrollable && !atBottom
     }
 
+    /// Whether the jump-to-top button is offered: the same rule as
+    /// `showsJumpToBottom`, for the other end of the thread.
+    public static func showsJumpToTop(placed: Bool, scrollable: Bool, atTop: Bool) -> Bool {
+        placed && scrollable && !atTop
+    }
+
     /// The one-time placement decision for an item (Bugbot, PR #198): it
     /// is made whether or not we scroll — staying at the top still arms
     /// follow-tail — and a bottom placement also marks the reader as AT

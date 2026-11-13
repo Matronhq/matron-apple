@@ -14,6 +14,7 @@ import MatronModels
 final class MacItemThreadController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
     struct Geometry: Equatable {
         var atBottom = false
+        var atTop = false
         var scrollable = false
         var placed = false
     }
@@ -67,6 +68,7 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
     private var isInSwiftUIUpdate = false
     private var isApplying = false
     private var catchUp: DispatchWorkItem?
+    private var jumpToTopKey: Any?
     private var commentsByID: [String: TrackerComment] = [:]
     /// Each card's selection ids, from one scan of its body, for as long
     /// as the body and attachments stay the same (a posted comment's do).
@@ -137,6 +139,7 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
         view = scrollView
         coalescer = MacFrameCoalescer(view: scrollView) { [weak self] in self?.widthSettled() }
         tableView.onEndLiveResize = { [weak self] in self?.catchUpWidth() }
+        installJumpToTopKey()
     }
 
     /// The SwiftUI thread's `.padding()`, and on Decisions its clearance
@@ -419,6 +422,35 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
         reportGeometry()
     }
 
+    func scrollToTop() {
+        setOffset(minOffset)
+        reportGeometry()
+    }
+
+    /// ⌘↑ jumps to the top of the thread, unless the reader is typing:
+    /// in a text field it keeps its own meaning (caret to the start).
+    private func installJumpToTopKey() {
+        guard jumpToTopKey == nil else { return }
+        jumpToTopKey = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, Self.isJumpToTopKey(event), self.takesJumpToTopKey(in: event.window) else { return event }
+            self.scrollToTop()
+            return nil
+        }
+    }
+
+    static func isJumpToTopKey(_ event: NSEvent) -> Bool {
+        event.type == .keyDown && event.keyCode == 126
+            && event.modifierFlags.intersection([.command, .shift, .option, .control]) == .command
+    }
+
+    /// Only for the window this thread is showing in, and never while an
+    /// editable text view has the keyboard.
+    func takesJumpToTopKey(in window: NSWindow?) -> Bool {
+        guard let window, window === view.window, !view.isHiddenOrHasHiddenAncestor else { return false }
+        if let text = window.firstResponder as? NSText, text.isEditable { return false }
+        return true
+    }
+
     private func placeInitiallyIfNeeded() {
         guard !geometry.placed, measuredWidth > 0, !rowIDs.isEmpty else { return }
         geometry.placed = true
@@ -455,6 +487,7 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
         let insets = scrollView.contentInsets
         next.scrollable = tableView.frame.height + insets.top + insets.bottom > clip.height + 8
         next.atBottom = clip.minY >= maxOffset - 8
+        next.atTop = clip.minY <= minOffset + 8
         guard next != geometry else { return }
         let bottomChanged = next.atBottom != geometry.atBottom
         geometry = next
@@ -486,6 +519,8 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
     }
 
     func tearDown() {
+        if let jumpToTopKey { NSEvent.removeMonitor(jumpToTopKey) }
+        jumpToTopKey = nil
         if let clip = scrollView?.contentView {
             NotificationCenter.default.removeObserver(self, name: NSView.boundsDidChangeNotification, object: clip)
         }
