@@ -1690,7 +1690,10 @@ public final class JournalStore: @unchecked Sendable {
                 // needs to reproduce the tombstone shape at read time.
                 convo.lastMessageType = event.type
                 convo.expiredSnippet = Self.expiredSnippet(type: event.type, payload: payload)
-                if event.sender != ownSender, event.seq > convo.readUpToSeq {
+                // A silent event is shown and never counted (protocol
+                // "Silent events"); `recountUnread` leaves it out too.
+                if event.sender != ownSender, event.seq > convo.readUpToSeq,
+                   !JournalEventType.isSilent(payload: event.payload) {
                     convo.unreadCount += 1
                 }
                 // A message brings an archived conversation back, as the
@@ -1728,15 +1731,23 @@ public final class JournalStore: @unchecked Sendable {
             return true
     }
 
+    /// Unread = message rows from someone else above the read marker, less
+    /// the silent ones (`JournalEventType.isSilent`). The payload column is
+    /// a blob, which SQLite's JSON functions cannot read as text, so the
+    /// few rows that mention the flag at all are decoded and checked here.
     private static func recountUnread(_ db: Database, convoID: String, after seq: Int64, ownSender: String) throws -> Int {
         let placeholders = JournalEventType.messageTypes.map { _ in "?" }.joined(separator: ",")
         var arguments: [DatabaseValueConvertible] = [convoID, seq]
         arguments.append(contentsOf: Array(JournalEventType.messageTypes))
         arguments.append(ownSender)
-        return try Int.fetchOne(db, sql: """
-            SELECT COUNT(*) FROM event
-            WHERE convo_id = ? AND seq > ? AND type IN (\(placeholders)) AND sender != ?
-            """, arguments: StatementArguments(arguments)) ?? 0
+        let filter = "convo_id = ? AND seq > ? AND type IN (\(placeholders)) AND sender != ?"
+        let total = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM event WHERE \(filter)",
+                                     arguments: StatementArguments(arguments)) ?? 0
+        let flagged = try EventRecord.fetchAll(db, sql: """
+            SELECT * FROM event WHERE \(filter) AND instr(CAST(payload AS TEXT), '"silent"') > 0
+            """, arguments: StatementArguments(arguments))
+        let silent = flagged.filter { JournalEventType.isSilent(payload: $0.journalEvent.payload) }.count
+        return max(0, total - silent)
     }
 
     /// Mirrors the server's snippetOf (src/journal.js).
