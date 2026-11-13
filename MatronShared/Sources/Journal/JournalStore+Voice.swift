@@ -97,6 +97,8 @@ extension JournalStore {
             for row in rows {
                 let payload = row.journalEvent.payload
                 if payload["fallback_for"] != nil { continue }
+                // A silent line is a record, not part of a reply to read out.
+                if JournalEventType.isSilent(payload: payload) { continue }
                 guard let body = payload["body"] as? String, !body.isEmpty else { continue }
                 guard let ref = payload["message_ref"] as? String, !ref.isEmpty else {
                     if newestPlain == nil { newestPlain = AgentReplyRow(seq: row.seq, messageRef: nil, body: body) }
@@ -114,6 +116,7 @@ extension JournalStore {
                     let nextPayload = next.journalEvent.payload
                     guard next.type == JournalEventType.text, next.sender == row.sender,
                           nextPayload["message_ref"] == nil, nextPayload["fallback_for"] == nil,
+                          !JournalEventType.isSilent(payload: nextPayload),
                           let more = nextPayload["body"] as? String else { break }
                     chunks.append(more)
                 }
