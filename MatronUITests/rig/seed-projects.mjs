@@ -450,6 +450,58 @@ const PROJECTS = [
   },
 ];
 
+// RIG_BUSY_WEEK=1: a busy week. Twenty-four more projects move this week,
+// the busiest first, and the Coordinator writes about none of them, so the
+// week page has far more projects than cards it was given: they page in
+// after the written ones. Every third has a picture; some have something
+// waiting on the user or done this week.
+if (process.env.RIG_BUSY_WEEK === '1') {
+  const BUSY = [
+    ['Release notes', ['Listed what changed since the last release', 'Grouped the fixes by screen', 'Notes for the next release drafted']],
+    ['Crash reporting', ['Crashes collected from the beta', 'A crash now says which screen it happened on', 'The five most common crashes fixed']],
+    ['Settings search', ['Every setting given a name to search by', 'Typing in Settings finds any switch', 'Results jump to the switch and flash it']],
+    ['Font picker', ['Three reading fonts chosen', 'The picker previews a font on a real message']],
+    ['Keyboard shortcuts', ['Every menu command has a shortcut', 'A sheet lists every shortcut']],
+    ['Shared links preview', ['Links show a title and a picture', 'Previews load after the message, never before']],
+    ['Draft autosave', ['Drafts are kept as you type', 'A draft follows you to your other devices']],
+    ['Calendar export', ['Dates in a message can be added to a calendar', 'The event keeps a link back to the chat']],
+    ['Voice notes', ['Record a voice note from the composer', 'Voice notes play at double speed too']],
+    ['Image compression', ['Pictures sent at a smaller size by default', 'Full size kept for anyone who asks']],
+    ['Reading position', ['Each chat opens where you left it', 'A marker shows the first unread message']],
+    ['Sign-in page refresh', ['A cleaner sign-in page drawn', 'Built in light and dark']],
+    ['Bulk archive', ['Choose many chats at once', 'Archive them in one go']],
+    ['Quiet hours', ['Set hours when nothing makes a sound', 'Quiet hours follow your time zone']],
+    ['Usage meter', ['A meter of storage used', 'Tells you which chats take the most room']],
+    ['Help centre', ['Twenty answers written', 'Help opens from every settings screen']],
+    ['Translation', ['Messages can be translated in place', 'The original is one tap away']],
+    ['Pinned messages', ['Pin a message to the top of a chat', 'Up to three pins per chat']],
+    ['Emoji reactions', ['React to a message with an emoji', 'Reactions show who added them']],
+    ['Print a chat', ['A chat prints as a tidy document']],
+    ['Account deletion', ['Delete your account from Settings', 'A copy of your data is offered first']],
+    ['Link safety', ['Links to known bad sites are flagged']],
+    ['Welcome email', ['A welcome email with three tips']],
+    ['Status page', ['A page that says whether the service is up']],
+  ];
+  const colours = [BLUE, CORAL, GREEN, VIOLET, AMBER, TEAL, ROSE, SLATE];
+  const draw = [page, phone, chart];
+  BUSY.forEach(([title, steps], i) => {
+    const moves = Math.max(1, 9 - Math.floor(i / 3));
+    const milestones = Array.from({ length: moves }, (_, k) => [at(0, k % 4, 8 + Math.floor(k / 4) + k % 3), steps[k % steps.length]]);
+    // The newest milestone is the card's sentence: the last step.
+    milestones.push([at(0, 3, 15), steps[steps.length - 1]]);
+    const items = [];
+    if (i % 3 === 0) {
+      const name = `busy-${i}.png`;
+      FILES[name] = () => draw[(i / 3) % 3](colours[(i / 3) % colours.length]);
+      items.push({ kind: 'notice', title: `${title}, as it looks today`, when: at(0, 2, 10), closed: at(0, 2, 12), resolution: 'done',
+        comments: [[at(0, 2, 10), 'How it looks now.', [name]]] });
+    }
+    if (i % 4 === 1) items.push({ kind: 'question', title: `Ready to ship ${title.toLowerCase()}?`, when: at(0, 1, 11), waiting: true, comments: [] });
+    if (i % 5 === 2) items.push({ kind: 'task', title: `Check ${title.toLowerCase()} on a phone`, when: at(0, 0, 10), closed: at(0, 1, 9), comments: [] });
+    PROJECTS.push({ title, missions: [{ title, started: at(1, 4, 9), state: 'running', milestones, items }] });
+  });
+}
+
 // What the Coordinator says about each week, one entry per project.
 const THIS_WEEK = [
   ['Docs site launch', 'Search on the new site now shows the sentence that matched, and every old address lands on the right guide.',

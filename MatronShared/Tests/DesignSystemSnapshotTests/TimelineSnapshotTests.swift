@@ -255,8 +255,19 @@ final class TimelineSnapshotTests: XCTestCase {
                             longCount: D.long.total, finishedCount: 289, selection: .constant(place), onLoadEarlier: {})
     }
 
-    private func weekPage(_ week: TimelineWeek) -> TimelineWeekView<EmptyView> {
-        TimelineWeekView(week: week, now: D.now, images: Self.images, sizes: D.sizes, onOpenProject: { _ in })
+    private func weekPage(_ week: TimelineWeek, extras: TimelineWeekExtras? = nil,
+                          layout: TimelineWeekLayout = .tiles) -> TimelineWeekView<EmptyView> {
+        TimelineWeekView(week: week, extras: extras, now: D.now, images: Self.images, sizes: D.sizes,
+                         layoutStore: Self.layoutStore(layout), onOpenProject: { _ in })
+    }
+
+    /// A store of its own holding `layout`: the page reads its layout from it.
+    private static func layoutStore(_ layout: TimelineWeekLayout) -> UserDefaults {
+        let name = "timeline-snapshots-\(layout.rawValue)"
+        let store = UserDefaults(suiteName: name)!
+        store.removePersistentDomain(forName: name)
+        store.set(layout.rawValue, forKey: TimelineWeekLayout.storageKey)
+        return store
     }
 
     /// A card at a Mac column's width and at the iPhone page's.
@@ -454,5 +465,76 @@ final class TimelineSnapshotTests: XCTestCase {
             ProjectFilesGridView(files: D.docsProjectPage.files.rows, images: Self.images, now: D.now, hasMore: false,
                                  onOpenFile: { _ in }, onLoadMore: {})
         }, named: "project-files")
+    }
+
+    // MARK: Every project of the week
+
+    /// Unset, or set to something this build does not know: tiles.
+    func testWeekLayoutDefaultsToTiles() {
+        let name = "timeline-layout-default"
+        let store = UserDefaults(suiteName: name)!
+        store.removePersistentDomain(forName: name)
+        XCTAssertEqual(TimelineWeekLayout.storageKey, "projects.weekLayout")
+        XCTAssertEqual(TimelineWeekLayout.default, .tiles)
+        XCTAssertEqual(TimelineWeekLayout.stored(in: store), .tiles)
+        store.set("list", forKey: TimelineWeekLayout.storageKey)
+        XCTAssertEqual(TimelineWeekLayout.stored(in: store), .list)
+        store.set("mosaic", forKey: TimelineWeekLayout.storageKey)
+        XCTAssertEqual(TimelineWeekLayout.stored(in: store), .tiles)
+        store.removePersistentDomain(forName: name)
+    }
+
+    /// Paged projects follow every story as cards; from a journal without
+    /// the read, eight cards and the foot line as before.
+    func testCardsWithPagedProjects() {
+        let extras = TimelineWeekExtras(week: D.thisWeek.week, projects: D.thisWeekExtras, status: .done)
+        XCTAssertEqual(TimelineFormat.cards(D.thisWeek, extras: extras).map(\.project.num),
+                       D.thisWeek.stories.map(\.project.num) + [20, 21, 22, 23, 24])
+        XCTAssertEqual(TimelineFormat.cards(D.crowdedWeek, extras: TimelineWeekExtras(week: D.crowdedWeek.week, status: .more)).count,
+                       10, "every story is a card once the rest are paged")
+        XCTAssertEqual(TimelineFormat.cards(D.crowdedWeek, extras: TimelineWeekExtras(week: D.crowdedWeek.week, status: .unsupported)),
+                       TimelineFormat.cards(D.crowdedWeek))
+        XCTAssertEqual(TimelineFormat.cards(D.crowdedWeek, extras: nil), TimelineFormat.cards(D.crowdedWeek))
+    }
+
+    func testRowLabel() {
+        XCTAssertEqual(TimelineFormat.rowLabel(D.thisWeekExtras[0].story),
+                       "Release notes. Notes for 4.2 were drafted and the changelog page now groups fixes. 3 done, has a next step")
+        XCTAssertEqual(TimelineFormat.rowLabel(D.thisWeekExtras[3].story), "Font picker. Moved this week")
+    }
+
+    /// A row with a picture, with none, with a video, and with no marks, at
+    /// a Mac page's width and the iPhone's.
+    func testWeekRows() {
+        func rows() -> some View {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(([D.thisWeek.stories[1]] + D.thisWeekExtras.map(\.story)).enumerated()), id: \.offset) { _, story in
+                    TimelineWeekRow(story: story, image: story.media.flatMap { Self.images[$0.blobID] })
+                    Divider()
+                }
+            }
+            .padding(.horizontal, 16)
+        }
+        assertVariants(of: rows().frame(width: 640), named: "timeline-rows-mac")
+        assertVariants(of: rows().frame(width: 390), named: "timeline-rows-phone")
+    }
+
+    /// The week as a list: a compact row for every story and every paged
+    /// project, then the loading row while more are to come.
+    func testWeekListWithPagedProjects() {
+        let extras = TimelineWeekExtras(week: D.thisWeek.week, projects: D.thisWeekExtras, status: .more)
+        assertVariants(of: macWindow(.week(D.thisWeek.week)) { weekPage(D.thisWeek, extras: extras, layout: .list) },
+                       named: "timeline-week-list-mac")
+        assertVariants(of: phone(weekPage(D.thisWeek, extras: extras, layout: .list)), named: "timeline-week-list-phone")
+    }
+
+    /// The week as tiles: the stories' cards, then a card for each paged
+    /// project, and Retry where the next page failed. Tall enough to show the end.
+    func testWeekTilesWithPagedProjects() {
+        let extras = TimelineWeekExtras(week: D.thisWeek.week, projects: D.thisWeekExtras, status: .failed)
+        assertVariants(of: weekPage(D.thisWeek, extras: extras).frame(width: 980, height: 1_900),
+                       named: "timeline-week-tiles-mac")
+        assertVariants(of: weekPage(D.thisWeek, extras: extras).frame(width: 390, height: 3_300),
+                       named: "timeline-week-tiles-phone")
     }
 }

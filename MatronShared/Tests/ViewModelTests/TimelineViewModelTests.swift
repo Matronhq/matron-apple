@@ -26,6 +26,9 @@ private final class FakeTimeline: TimelineProviding, @unchecked Sendable {
         var projectPages: [String?: TimelineProjectList] = [:]
         var projectsError: Error?
         var projectsCalls: [String?] = []
+        var weekProjectPages: [String: TimelineWeekProjectsPage] = [:]
+        var weekProjectsError: Error?
+        var weekProjectsCalls: [String] = []
         var gated: Set<String> = []
         var held: [String: CheckedContinuation<Void, Never>] = [:]
     }
@@ -64,6 +67,15 @@ private final class FakeTimeline: TimelineProviding, @unchecked Sendable {
     /// What every all-projects read throws, when set.
     var projectsError: Error? { get { read(\.projectsError) } set { write { $0.projectsError = newValue } } }
     var projectsCalls: [String?] { read(\.projectsCalls) }
+
+    /// A week's other projects by "<week>:<offset>"; a page not scripted
+    /// answers 404, as a journal without the route does.
+    var weekProjectPages: [String: TimelineWeekProjectsPage] {
+        get { read(\.weekProjectPages) } set { write { $0.weekProjectPages = newValue } }
+    }
+    var weekProjectsError: Error? { get { read(\.weekProjectsError) } set { write { $0.weekProjectsError = newValue } } }
+    /// "<week>:<offset>" per read, in order.
+    var weekProjectsCalls: [String] { read(\.weekProjectsCalls) }
 
     // MARK: Gates
 
@@ -140,6 +152,18 @@ private final class FakeTimeline: TimelineProviding, @unchecked Sendable {
             return (state.projectPages[before], state.projectsError)
         }
         await holdIfGated("projects:\(before ?? "nil")")
+        if let failure { throw failure }
+        guard let page else { throw JournalAPIError.notFound }
+        return page
+    }
+
+    func timelineWeekProjects(_ week: String, offset: Int, limit: Int?) async throws -> TimelineWeekProjectsPage {
+        let key = "\(week):\(offset)"
+        let (page, failure) = lock.withLock { () -> (TimelineWeekProjectsPage?, Error?) in
+            state.weekProjectsCalls.append(key)
+            return (state.weekProjectPages[key], state.weekProjectsError)
+        }
+        await holdIfGated("weekprojects:\(key)")
         if let failure { throw failure }
         guard let page else { throw JournalAPIError.notFound }
         return page
@@ -784,6 +808,176 @@ final class TimelineViewModelTests: XCTestCase {
     func testFlagKey() {
         XCTAssertEqual(TimelineViewModel.flagKey, "projects.timeline")
     }
+
+    // MARK: A week's other projects
+
+    private func weekWithAlso(_ key: String, stories: [Int] = [1], also: [Int] = [2, 3, 4, 5, 6]) -> TimelineWeek {
+        TimelineWeek(week: key, start: now, end: now, final: true,
+                     stories: stories.map { TimelineStory(project: project($0)) }, also: also.map(project))
+    }
+
+    private func extra(_ n: Int, media: String? = nil) -> TimelineWeekProject {
+        TimelineWeekProject(project: project(n), moved: 1, sentence: "Did \(n)",
+                            media: media.map { TimelineMedia(blobID: $0, contentType: "image/png", name: "\($0).png") })
+    }
+
+    private func page(_ week: String, _ offset: Int, _ nums: [Int], next: Int?, media: String? = nil) -> TimelineWeekProjectsPage {
+        TimelineWeekProjectsPage(week: week, total: 5, offset: offset, nextOffset: next,
+                                 projects: nums.map { extra($0, media: $0 == nums.first ? media : nil) })
+    }
+
+    private func makePaged() -> (TimelineViewModel, FakeTimeline) {
+        let (vm, fake, _) = make()
+        fake.weekDetails["2026-11-02"] = weekWithAlso("2026-11-02")
+        fake.weekProjectPages = ["2026-11-02:0": page("2026-11-02", 0, [2, 3], next: 2, media: "pic"),
+                                 "2026-11-02:2": page("2026-11-02", 2, [4, 5], next: 4),
+                                 "2026-11-02:4": page("2026-11-02", 4, [6], next: nil)]
+        return (vm, fake)
+    }
+
+    func testTheWeekAsksForNothingUntilThePageReachesItsEnd() async {
+        let (vm, fake) = makePaged()
+        await vm.start()
+        XCTAssertTrue(fake.weekProjectsCalls.isEmpty)
+        XCTAssertEqual(vm.weekExtras(for: vm.place), TimelineWeekExtras(week: "2026-11-02", status: .more))
+    }
+
+    func testFirstPageOfTheWeeksOtherProjects() async {
+        let (vm, fake) = makePaged()
+        await vm.start()
+        await vm.loadMoreWeekProjects()
+        XCTAssertEqual(fake.weekProjectsCalls, ["2026-11-02:0"])
+        let extras = vm.weekExtras(for: vm.place)
+        XCTAssertEqual(extras?.projects.map(\.project.num), [2, 3])
+        XCTAssertEqual(extras?.status, .more)
+        XCTAssertEqual(vm.weekProjectsSupported, true)
+        XCTAssertTrue(vm.imageBlobIDs(for: vm.place).contains("pic"), "a paged project's picture loads too")
+    }
+
+    func testNextPagesAppendAndTheLastStops() async {
+        let (vm, fake) = makePaged()
+        await vm.start()
+        await vm.loadMoreWeekProjects()
+        await vm.loadMoreWeekProjects()
+        await vm.loadMoreWeekProjects()
+        XCTAssertEqual(vm.weekExtras(for: vm.place)?.projects.map(\.project.num), [2, 3, 4, 5, 6])
+        XCTAssertEqual(vm.weekExtras(for: vm.place)?.status, .done)
+        await vm.loadMoreWeekProjects()
+        XCTAssertEqual(fake.weekProjectsCalls, ["2026-11-02:0", "2026-11-02:2", "2026-11-02:4"], "nothing after the last page")
+    }
+
+    func testAProjectShowsOnceAcrossTheStoriesAndPages() async {
+        let (vm, fake) = makePaged()
+        fake.weekProjectPages["2026-11-02:0"] = page("2026-11-02", 0, [1, 2, 3], next: 2)
+        fake.weekProjectPages["2026-11-02:2"] = page("2026-11-02", 2, [3, 4], next: nil)
+        await vm.start()
+        await vm.loadMoreWeekProjects()
+        await vm.loadMoreWeekProjects()
+        XCTAssertEqual(vm.weekExtras(for: vm.place)?.projects.map(\.project.num), [2, 3, 4])
+    }
+
+    func testAnOffsetThatDoesNotMoveOnEndsThePaging() async {
+        let (vm, fake) = makePaged()
+        fake.weekProjectPages["2026-11-02:0"] = page("2026-11-02", 0, [2], next: 0)
+        await vm.start()
+        await vm.loadMoreWeekProjects()
+        XCTAssertEqual(vm.weekExtras(for: vm.place)?.status, .done)
+    }
+
+    func testAJournalWithoutTheReadKeepsTheLineAndIsNotAskedAgain() async {
+        let (vm, fake) = makePaged()
+        fake.weekProjectPages = [:]
+        fake.weekDetails["2026-10-26"] = weekWithAlso("2026-10-26")
+        await vm.start()
+        await vm.loadMoreWeekProjects()
+        XCTAssertEqual(vm.weekProjectsSupported, false)
+        XCTAssertEqual(vm.weekExtras(for: vm.place)?.status, .unsupported)
+        XCTAssertNil(vm.error, "a 404 is not a failure")
+        await vm.select(.week("2026-10-26"))
+        XCTAssertEqual(vm.weekExtras(for: vm.place)?.status, .unsupported)
+        await vm.loadMoreWeekProjects()
+        await vm.refresh()
+        await vm.loadMoreWeekProjects()
+        XCTAssertEqual(fake.weekProjectsCalls, ["2026-11-02:0"])
+    }
+
+    func testAWeekWithNoOtherProjectsAsksForNone() async {
+        let (vm, fake) = makePaged()
+        fake.weekDetails["2026-11-02"] = weekWithAlso("2026-11-02", also: [])
+        await vm.start()
+        XCTAssertEqual(vm.weekExtras(for: vm.place)?.status, .done)
+        await vm.loadMoreWeekProjects()
+        XCTAssertTrue(fake.weekProjectsCalls.isEmpty)
+    }
+
+    func testRereadingTheWeekStartsItsProjectsOver() async {
+        let (vm, fake) = makePaged()
+        await vm.start()
+        await vm.loadMoreWeekProjects()
+        await vm.loadMoreWeekProjects()
+        XCTAssertEqual(vm.weekProjects.count, 4)
+        await vm.refresh()
+        XCTAssertEqual(vm.weekExtras(for: vm.place), TimelineWeekExtras(week: "2026-11-02", status: .more))
+        await vm.loadMoreWeekProjects()
+        XCTAssertEqual(fake.weekProjectsCalls, ["2026-11-02:0", "2026-11-02:2", "2026-11-02:0"])
+        XCTAssertEqual(vm.weekProjects.map(\.project.num), [2, 3])
+    }
+
+    func testAPageReadBeforeARefreshIsDropped() async {
+        let (vm, fake) = makePaged()
+        await vm.start()
+        await vm.loadMoreWeekProjects()
+        fake.gate("weekprojects:2026-11-02:2")
+        let stale = Task { await vm.loadMoreWeekProjects() }
+        await fake.waitUntilHeld("weekprojects:2026-11-02:2")
+        XCTAssertEqual(vm.weekProjectsStatus, .loading)
+        await vm.loadMoreWeekProjects()
+        XCTAssertEqual(fake.weekProjectsCalls.count, 2, "one read at a time")
+        await vm.refresh()
+        await vm.loadMoreWeekProjects()
+        fake.release("weekprojects:2026-11-02:2")
+        await stale.value
+        XCTAssertEqual(vm.weekProjects.map(\.project.num), [2, 3], "the old page never lands on the new list")
+        XCTAssertEqual(vm.weekProjectsStatus, .more)
+    }
+
+    func testSwitchingWeeksDropsAPageOfTheOldOne() async {
+        let (vm, fake) = makePaged()
+        fake.weekDetails["2026-10-26"] = weekWithAlso("2026-10-26", also: [])
+        await vm.start()
+        fake.gate("weekprojects:2026-11-02:0")
+        let stale = Task { await vm.loadMoreWeekProjects() }
+        await fake.waitUntilHeld("weekprojects:2026-11-02:0")
+        await vm.select(.week("2026-10-26"))
+        fake.release("weekprojects:2026-11-02:0")
+        await stale.value
+        XCTAssertEqual(vm.weekExtras(for: vm.place), TimelineWeekExtras(week: "2026-10-26", status: .done))
+    }
+
+    func testAFailedPageOffersRetry() async {
+        let (vm, fake) = makePaged()
+        await vm.start()
+        await vm.loadMoreWeekProjects()
+        fake.weekProjectsError = JournalAPIError.transport("offline")
+        await vm.loadMoreWeekProjects()
+        XCTAssertEqual(vm.weekExtras(for: vm.place)?.status, .failed)
+        XCTAssertEqual(vm.weekProjects.map(\.project.num), [2, 3], "what loaded stays")
+        XCTAssertNil(vm.error, "the page's own row says so, not the alert")
+        fake.weekProjectsError = nil
+        await vm.loadMoreWeekProjects()
+        XCTAssertEqual(vm.weekExtras(for: vm.place)?.status, .more)
+        XCTAssertEqual(vm.weekProjects.map(\.project.num), [2, 3, 4, 5])
+        XCTAssertEqual(fake.weekProjectsCalls, ["2026-11-02:0", "2026-11-02:2", "2026-11-02:2"])
+    }
+
+    func testACalledOffPageIsNotAFailure() async {
+        let (vm, fake) = makePaged()
+        await vm.start()
+        fake.weekProjectsError = CancellationError()
+        await vm.loadMoreWeekProjects()
+        XCTAssertEqual(vm.weekProjectsStatus, .more)
+    }
+
 }
 
 private actor AskLog {

@@ -82,6 +82,24 @@ enum TimelineDemoData {
         ],
         also: thisWeek.also)
 
+    /// This week's five other projects as the journal pages them, most
+    /// active first: some with a picture, one with a video, some with none.
+    static let thisWeekExtras: [TimelineWeekProject] = [
+        TimelineWeekProject(project: project(20, "Release notes"), moved: 6,
+                            sentence: "Notes for 4.2 were drafted and the changelog page now groups fixes.",
+                            media: image("chart", "changelog.png"), marks: TimelineMarks(done: 3, next: true)),
+        TimelineWeekProject(project: project(21, "Crash reporting"), moved: 5,
+                            sentence: "Crashes now arrive with the screen they happened on.",
+                            marks: TimelineMarks(forYou: 1)),
+        TimelineWeekProject(project: project(22, "Settings search"), moved: 3,
+                            sentence: "Typing in Settings now finds every switch, even the ones two levels down.",
+                            media: image("cropper", "settings.png"), marks: TimelineMarks(done: 1)),
+        TimelineWeekProject(project: project(23, "Font picker"), moved: 2,
+                            media: TimelineMedia(blobID: "font-video", contentType: "video/mp4", name: "fonts.mp4")),
+        TimelineWeekProject(project: project(24, "Keyboard shortcuts"), moved: 1,
+                            sentence: "A shortcut sheet lists every key.", marks: TimelineMarks(next: true)),
+    ]
+
     /// A card with no picture or video that week.
     static let noMediaStory = TimelineStory(
         project: audit, sentence: "The report was written and two fixes went in.",

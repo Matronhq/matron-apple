@@ -230,6 +230,11 @@ curl -s -X POST http://127.0.0.1:$PORT/login -H 'content-type: application/json'
 RIG_DIR=$RIG RIG_PORT=$PORT node <this folder>/seed-projects.mjs
 ```
 
+With `RIG_BUSY_WEEK=1` it adds twenty-four more projects that move this
+week but that the Coordinator does not write about, every third with a
+picture: the week page then pages them in after its written cards (a
+journal with `GET /timeline/weeks/:week/projects`).
+
 Give each app its own login (`device_name`) and write the session file as
 `rebuild-rig.sh` does, with `homeserverURL` on the rig's port. The
 Projects screens are behind a setting; a launch argument turns it on for
