@@ -715,6 +715,16 @@ final class AppDependencies {
     /// the journal store file — agent device ids are only unique within a
     /// journal, so an app-global cache would show one account another's
     /// numbers. `signOut()` removes the account's key alongside the wipes.
+    /// The Boxes page's usage history: one read of what the journal has kept.
+    @MainActor func makeUsageHistoryViewModel(for session: UserSession) -> UsageHistoryViewModel {
+        #if DEBUG
+        if BoxesDemoData.isRequested {
+            return UsageHistoryViewModel(api: BoxesDemoData())
+        }
+        #endif
+        return UsageHistoryViewModel(api: JournalUsageHistoryService(api: core(for: session).api))
+    }
+
     /// The Boxes page's view model. Reads what the journal holds; asks no
     /// box anything until a Wake is tapped.
     @MainActor func makeBoxesViewModel(for session: UserSession) -> BoxesViewModel {
