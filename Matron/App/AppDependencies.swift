@@ -8,6 +8,7 @@ import MatronDesignSystem
 import MatronJournal
 import MatronModels
 import MatronPush
+import MatronPushContent
 import MatronSearch
 import MatronStorage
 import MatronSync
@@ -804,7 +805,27 @@ final class AppDependencies {
     }
 
     func pushService(for session: UserSession) -> any PushService {
-        JournalPushService(api: core(for: session).api, environment: pushEnvironment)
+        // With this device's key, so the journal can seal what each
+        // notification says for the notification extension to open.
+        JournalPushService(api: core(for: session).api, environment: pushEnvironment,
+                           pushKey: { PushKeyStore.live().publicKeyForRegistration() })
+    }
+
+    /// A button tapped on an item's notification: the same answer a tap on
+    /// the item's own button sends (the label as both the action and the
+    /// comment's text). It may run with the app launched in the
+    /// background and no session core built, so it uses the stored session
+    /// and a plain API client. Returns whether the journal took the answer.
+    func answerItem(fromNotification answer: PushNotificationActions.Answer) async -> Bool {
+        guard let session = try? await auth.restoreSession() else { return false }
+        let api = JournalAPI(serverURL: session.homeserverURL, token: session.accessToken)
+        do {
+            _ = try await api.commentItem(id: answer.itemID, body: answer.label, attachments: [], action: answer.label,
+                                          replyTo: answer.replyTo, idempotencyKey: UUID().uuidString)
+            return true
+        } catch {
+            return false
+        }
     }
 
     /// Devices/pairing surface (Settings → Manage Devices). The session's

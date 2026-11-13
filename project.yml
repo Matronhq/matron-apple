@@ -233,6 +233,10 @@ targets:
         product: MatronDesignSystem
       - package: MatronShared
         product: MatronPush
+      # This device's key for sealed notification content, and the buttons
+      # on an item's notification. Shared with the notification extension.
+      - package: MatronShared
+        product: MatronPushContent
       # Local FTS5 search index + search UI. Platform-agnostic library;
       # both apps link it directly.
       - package: MatronShared
@@ -532,7 +536,12 @@ targets:
     # losing the manually-maintained `keychain-access-groups` entry.
     # `CODE_SIGN_ENTITLEMENTS` above points the build system at the
     # plist; same pattern as `MatronMac` (see its comment).
-    dependencies: []
+    dependencies:
+      # Opening a push's sealed content: the key, the box, the buttons.
+      # Deliberately not the journal client: the extension has a tight
+      # memory limit.
+      - package: MatronShared
+        product: MatronPushContent
 
   # Share extension: "Matron" in the iOS share sheet. Sends files, photos,
   # links and text into a conversation. The logic lives in the MatronShare

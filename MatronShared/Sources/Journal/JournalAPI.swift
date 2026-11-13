@@ -899,9 +899,16 @@ public actor JournalAPI {
     /// Registers this device for APNs pushes. Server: POST /push/register
     /// (client devices only). Xcode debug builds register sandbox tokens;
     /// TestFlight/App Store builds are prod.
-    public func registerPush(tokenHex: String, environment: PushEnvironment) async throws {
-        _ = try await request(path: "/push/register", method: "POST",
-                              body: ["apns_token": tokenHex, "environment": environment.rawValue])
+    ///
+    /// `pushKey` is this device's public key for sealed notification
+    /// content (unpadded base64url of 32 raw X25519 bytes). With one, the
+    /// journal seals what each notification says to it; without, pushes
+    /// carry no content the device can open. A journal that predates the
+    /// field ignores it.
+    public func registerPush(tokenHex: String, environment: PushEnvironment, pushKey: String? = nil) async throws {
+        var body: [String: Any] = ["apns_token": tokenHex, "environment": environment.rawValue]
+        if let pushKey { body["push_key"] = pushKey }
+        _ = try await request(path: "/push/register", method: "POST", body: body)
     }
 
     /// Clears this device's push registration (apns_token: null per protocol).

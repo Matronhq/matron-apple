@@ -243,6 +243,12 @@ struct AppShellView: View {
             reportTappedNotificationsSeen()
             nav.openChat(roomID)
         }
+        // A notification about a tracker item opens the item.
+        .onReceive(NotificationDelegate.shared.tappedItemID) { itemID in
+            reportTappedNotificationsSeen()
+            _ = NotificationDelegate.shared.consumePendingItemID()
+            nav.openItem(itemID)
+        }
         #if DEBUG || MATRON_PERF_PROBE
         // Perf gate (UIKit timeline plan, Task 29): open a conversation
         // straight from the launch environment — no UI automation needed.
@@ -273,6 +279,9 @@ struct AppShellView: View {
             reportTappedNotificationsSeen()
             if let pending = NotificationDelegate.shared.consumePendingRoomID() {
                 nav.openChat(pending)
+            }
+            if let pending = NotificationDelegate.shared.consumePendingItemID() {
+                nav.openItem(pending)
             }
         }
         // Mirror the cached setting into the nav rules and the list filter.
