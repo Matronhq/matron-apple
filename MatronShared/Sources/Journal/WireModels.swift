@@ -108,6 +108,18 @@ public enum JournalEventType {
         // chat-list row keeps advertising a settled ask forever.
         spawnOutcome,
     ]
+
+    /// A silent event is content the user can read in the chat but is
+    /// never told about: `silent: true` on the payload of any message type
+    /// (protocol "Silent events"). It is shown like any other row, but
+    /// never counts as unread and is never raised as needing the user. A
+    /// bridge sets it on a card that only records something, such as the
+    /// one for a reminder an agent set itself. Only a JSON `true` counts,
+    /// as on the server.
+    public static func isSilent(payload: [String: Any]) -> Bool {
+        guard let flag = payload["silent"] as? NSNumber else { return false }
+        return CFGetTypeID(flag) == CFBooleanGetTypeID() && flag.boolValue
+    }
 }
 
 /// One durable journal row. `payloadData` keeps the raw JSON object bytes so

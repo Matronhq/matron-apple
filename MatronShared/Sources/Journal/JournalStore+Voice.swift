@@ -53,6 +53,8 @@ extension JournalStore {
             for record in candidates where record.sender != own {
                 let event = record.journalEvent
                 if (event.payload["kind"] as? String) == "queued_release" { continue }
+                // A silent card records something and asks nothing.
+                if JournalEventType.isSilent(payload: event.payload) { continue }
                 let later = try EventRecord.fetchAll(db, sql: """
                     SELECT * FROM event
                     WHERE convo_id = ? AND type IN ('text', 'file', 'image', 'prompt_reply')
