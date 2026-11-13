@@ -57,13 +57,13 @@ public struct TimelineWeekView<Footer: View>: View {
                             .accessibilityIdentifier("timeline.week.empty")
                     }
                     let stories = TimelineFormat.cards(week, extras: extras)
-                    if !stories.isEmpty {
+                    if !stories.isEmpty || pagesProjects {
                         switch layout {
                         case .tiles: cards(stories, columns: Self.columnCount(pageWidth: geo.size.width))
                         case .list: rows(stories)
                         }
                     }
-                    if pagesProjects { pageEnd } else { also }
+                    if !pagesProjects { also }
                     footer
                 }
                 .padding(TimelinePage.padding)
@@ -132,6 +132,7 @@ public struct TimelineWeekView<Footer: View>: View {
                 }
                 .fixedSize(horizontal: false, vertical: true)
             }
+            if pagesProjects { pageEnd }
         }
     }
 
@@ -157,11 +158,14 @@ public struct TimelineWeekView<Footer: View>: View {
                 .accessibilityAction { onOpenProject(story.project.id) }
                 .accessibilityIdentifier("timeline.week.row.\(story.project.num)")
             }
+            if pagesProjects { pageEnd.padding(.top, 8) }
         }
     }
 
     /// The end of the paged projects: a loading row (reaching it asks for
-    /// the next page), or Retry when the last read failed.
+    /// the next page), or Retry when the last read failed. It is the last
+    /// child of the lazy stack, so it appears only when scrolled near: in
+    /// the plain stack round it, it would appear at once and read every page.
     @ViewBuilder private var pageEnd: some View {
         if let extras {
             switch extras.status {
@@ -174,10 +178,12 @@ public struct TimelineWeekView<Footer: View>: View {
                 .padding(.vertical, 8)
                 .accessibilityElement(children: .combine)
                 .accessibilityIdentifier("timeline.week.loading")
-                // Keyed by the whole paging state: a page that lands with the
-                // row still in view (too short to scroll) asks for the next,
-                // and so does a re-read of the week.
-                .task(id: extras) {
+                // A new row for each paging state, asking on appear: the lazy
+                // stack builds it only near the screen, so a page that lands
+                // with the end still in view (too short to scroll) asks for
+                // the next, and one that pushed the end away does not.
+                .id("\(extras.week) \(extras.projects.count) \(extras.status)")
+                .onAppear {
                     if extras.status == .more { onLoadMore() }
                 }
             case .failed:

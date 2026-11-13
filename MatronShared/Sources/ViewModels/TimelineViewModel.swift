@@ -222,8 +222,10 @@ public final class TimelineViewModel {
             weekProjectsStatus = .unsupported
         } catch {
             guard generation == weekProjectsGeneration else { return }
-            // Called off is not a failure: the end of the page asks again.
-            weekProjectsStatus = error.isReadCancellation ? .more : .failed
+            // Called off too: the row offers Retry rather than asking again
+            // at once, which a transport that keeps calling reads off would
+            // turn into a loop.
+            weekProjectsStatus = .failed
         }
     }
 

@@ -970,12 +970,15 @@ final class TimelineViewModelTests: XCTestCase {
         XCTAssertEqual(fake.weekProjectsCalls, ["2026-11-02:0", "2026-11-02:2", "2026-11-02:2"])
     }
 
-    func testACalledOffPageIsNotAFailure() async {
+    /// A read called off offers Retry, so a transport that keeps calling
+    /// reads off never loops; it says nothing in the alert.
+    func testACalledOffPageOffersRetryAndDoesNotLoop() async {
         let (vm, fake) = makePaged()
         await vm.start()
         fake.weekProjectsError = CancellationError()
         await vm.loadMoreWeekProjects()
-        XCTAssertEqual(vm.weekProjectsStatus, .more)
+        XCTAssertEqual(vm.weekProjectsStatus, .failed)
+        XCTAssertNil(vm.error)
     }
 
 }
