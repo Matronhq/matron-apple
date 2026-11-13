@@ -364,8 +364,14 @@ public final class JournalStore: @unchecked Sendable {
     let changeFeed: StoreChangeFeed
 
     /// The `UserDefaults` key of the `usesChangeFeed` flag. A launch
-    /// argument `-store.changeFeed YES` sets it for one run.
+    /// argument `-store.changeFeed NO` turns it off for one run.
     public static let changeFeedFlagKey = "store.changeFeed"
+
+    /// Whether the apps open the store with `usesChangeFeed`: on unless the
+    /// user turned it off (Settings → Storage), so an unset key reads as on.
+    public static func changeFeedEnabled(in defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: changeFeedFlagKey) as? Bool ?? true
+    }
 
     /// The `UserDefaults` key of `init`'s `usesPool`. A launch argument
     /// `-store.pool YES` sets it for one run.
@@ -381,8 +387,10 @@ public final class JournalStore: @unchecked Sendable {
     /// streams (`needsUserCountsStream()`, `needsYouItemsByMissionStream()`,
     /// the mission and project item streams) from one shared `ItemsIndex`,
     /// which also serves `itemSectionsStream(scope:)` to the items panels.
-    /// Off by default; when off, the streams are exactly the value
-    /// observations, and the items panels read `itemsStream(scope:)`.
+    /// `init` defaults it to off; the apps turn it on unless the user
+    /// switched it off (`changeFeedEnabled(in:)`). When off, the streams are
+    /// exactly the value observations, and the items panels read
+    /// `itemsStream(scope:)`.
     public let usesChangeFeed: Bool
 
     private let conversationIndexHolder = OSAllocatedUnfairLock<ConversationIndex?>(initialState: nil)

@@ -73,7 +73,13 @@ extension JournalStore {
                 for await _ in wakes {
                     let work = pending.take()
                     do {
-                        let update = try state.apply(work, db: db, metrics: metrics)
+                        let current = state
+                        let (next, update) = try await FeedReads.run {
+                            var next = current
+                            let update = try next.apply(work, db: db, metrics: metrics)
+                            return (next, update)
+                        }
+                        state = next
                         pending.finish(holding: state.heldSeqs)
                         if let update { continuation.yield(update) }
                     } catch {
@@ -99,7 +105,7 @@ extension JournalStore {
 }
 
 /// The rows a `convoEventsFeedStream` holds. Reader-confined.
-struct ConvoEventsState {
+struct ConvoEventsState: Sendable {
     let convoID: String
     let query: ConvoEventsQuery
     private var rows: [Int64: JournalEvent] = [:]

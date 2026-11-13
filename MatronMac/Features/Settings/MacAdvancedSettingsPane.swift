@@ -9,6 +9,8 @@ struct MacAdvancedSettingsPane: View {
     /// Read once, when the journal store opens (`AppDependencies`), so a
     /// change applies from the next launch.
     @AppStorage(JournalStore.poolFlagKey) private var usesStorePool = false
+    /// On unless turned off, matching `JournalStore.changeFeedEnabled(in:)`.
+    @AppStorage(JournalStore.changeFeedFlagKey) private var usesChangeFeed = true
     let session: UserSession
     let deps: AppDependencies
     /// Filled by the `.task` below; `nil` while the read is in flight, which
@@ -20,10 +22,12 @@ struct MacAdvancedSettingsPane: View {
             Section {
                 StorageSettingsRows(model: storage)
                 Toggle("Concurrent reads", isOn: $usesStorePool)
+                Toggle(StorageSettingsRows.changeFeedTitle, isOn: $usesChangeFeed)
+                    .accessibilityIdentifier("settings.changeFeed")
             } header: {
                 Text("Storage")
             } footer: {
-                Text("Concurrent reads: reads the chat history beside incoming messages instead of waiting for them. Takes effect the next time Matron opens.")
+                Text("Concurrent reads: reads the chat history beside incoming messages instead of waiting for them. \(StorageSettingsRows.changeFeedTitle): \(StorageSettingsRows.changeFeedFooter) Both take effect the next time Matron opens.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

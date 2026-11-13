@@ -318,7 +318,7 @@ class StoreChangeFeedTests: XCTestCase {
     func testResubscribeBackoffDoublesToACapAndResetsOnSuccess() {
         var backoff = ResubscribeBackoff()
         let delays = (0..<8).map { _ in backoff.recordFailure() }
-        XCTAssertEqual(delays, [1, 2, 4, 8, 16, 30, 30, 30])
+        XCTAssertEqual(delays, [1, 2, 4, 8, 8, 8, 8, 8])
         XCTAssertEqual(backoff.consecutiveFailures, 8)
         backoff.recordSuccess()
         XCTAssertEqual(backoff.consecutiveFailures, 0)
@@ -588,6 +588,35 @@ class StoreChangeFeedTests: XCTestCase {
         XCTAssertEqual(mirror.sets.last?.events, [:])
         XCTAssertEqual(mirror.rows, try freshEventKeys(store))
         XCTAssertEqual(Set(mirror.rows.keys), [2])
+    }
+
+    /// A purge bigger than `eventRowsBeforeReset` is published as a reset
+    /// of `event` alone: the event readers reload once instead of being
+    /// handed every deleted row, and the conversation readers still get
+    /// their rows itemised.
+    func testABulkPurgeIsAnEventResetNotAnItemisedDelete() throws {
+        let store = try makeStore()
+        let count = StoreChangeFeed.eventRowsBeforeReset + 10
+        _ = try store.applyJournalBatch((1...Int64(count)).map { event($0, convo: "a") } + [event(Int64(count) + 1, convo: "b")])
+        try store.setArchived(["a"], archived: true)
+        let raw = FeedRecorder()
+        let rawSubscription = store.changeFeed.subscribe(raw.handle)
+        defer { rawSubscription.cancel() }
+        let (mirror, subscription) = try subscribeEventMirror(store)
+        defer { subscription.cancel() }
+
+        XCTAssertEqual(try store.purgeArchivedHistory(["a"]), ["a"])
+
+        XCTAssertEqual(raw.sets.last?.resetTables, .event)
+        XCTAssertEqual(raw.sets.last?.deletedEventRowIDs, [])
+        XCTAssertEqual(raw.sets.last?.conversations.upserted.count, 1, "the purge mark on the conversation is still itemised")
+        XCTAssertEqual(mirror.snapshots, 2, "the reset hands the event reader a new snapshot")
+        XCTAssertEqual(mirror.rows, try freshEventKeys(store))
+
+        // A small write after it is itemised again.
+        try store.applyJournal(event(Int64(count) + 2, convo: "b"))
+        XCTAssertEqual(raw.sets.last?.resetTables, [])
+        XCTAssertEqual(mirror.rows, try freshEventKeys(store))
     }
 
     /// `wipe()` resets the events and the comments with everything else,
