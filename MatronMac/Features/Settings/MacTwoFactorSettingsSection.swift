@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 import MatronJournal
 import MatronViewModels
@@ -246,4 +245,3 @@ struct MacTwoFactorSecuritySheet: View {
         Task { await flow.submit() }
     }
 }
-#endif

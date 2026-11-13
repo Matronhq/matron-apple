@@ -2,7 +2,7 @@ import Foundation
 import UserNotifications
 import MatronJournal
 
-/// `PushService` implementation backed by the journal server's
+/// Push registration backed by the journal server's
 /// `/push/register` endpoint (`JournalAPI.registerPush` /
 /// `unregisterPush`), replacing `PushServiceLive`'s SDK-side
 /// `setPusher`/`deletePusher` calls now that push registration is a plain
@@ -12,7 +12,7 @@ import MatronJournal
 /// stored state is a value type (`JournalAPI` is an actor reference, safe
 /// to share) plus a `Sendable` enum, but nothing here actually needs the
 /// opt-out — kept for parity with the sibling live service.
-public final class JournalPushService: PushService, @unchecked Sendable {
+public final class JournalPushService: @unchecked Sendable {
     private let api: JournalAPI
     private let environment: JournalAPI.PushEnvironment
     private let pushKey: @Sendable () -> String?
@@ -41,7 +41,7 @@ public final class JournalPushService: PushService, @unchecked Sendable {
         }
     }
 
-    /// `pusherBaseURL` is part of the legacy `PushService` protocol
+    /// `pusherBaseURL` is part of the legacy push registration
     /// signature (the Sygnal pusher URL); the journal server doesn't need
     /// it — registration is keyed on the authenticated device alone — so
     /// its value is ignored here.

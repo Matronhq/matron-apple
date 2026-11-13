@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 import MatronDesignSystem
 import MatronJournal
@@ -564,4 +563,3 @@ struct MacAgentPickerHeader: View {
         .accessibilityHidden(true)
     }
 }
-#endif

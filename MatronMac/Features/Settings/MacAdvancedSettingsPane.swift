@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 import MatronModels
 import MatronDesignSystem
@@ -47,4 +46,3 @@ struct MacAdvancedSettingsPane: View {
         }
     }
 }
-#endif

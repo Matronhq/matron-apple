@@ -59,9 +59,8 @@ public struct ToolCallCard: View {
             }
             .buttonStyle(.plain)
             #if os(macOS)
-            // `.pointerStyle(.link)` would be the modern spelling but needs
-            // macOS 15; the package targets macOS 14, so push/pop the cursor
-            // by hand on hover. SwiftUI doesn't guarantee a final
+            // The cursor is pushed and popped by hand on hover rather than
+            // with `.pointerStyle(.link)`. SwiftUI doesn't guarantee a final
             // `onHover(false)` when the view leaves the hierarchy mid-hover
             // (scrolled off, or the row replaced by an `m.replace` update
             // landing on a hovered running card), so `cursorPushed` tracks

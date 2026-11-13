@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 import AppKit
 import MatronDesignSystem
@@ -300,4 +299,3 @@ struct MacBoxesPage: View {
         .padding(.bottom, 10)
     }
 }
-#endif

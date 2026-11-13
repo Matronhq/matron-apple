@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 import MatronJournal
 import MatronViewModels
@@ -36,4 +35,3 @@ struct MacAutoArchiveSettingsSection: View {
         }
     }
 }
-#endif

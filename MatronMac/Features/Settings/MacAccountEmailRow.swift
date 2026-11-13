@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 import AppKit
 import MatronJournal
@@ -98,4 +97,3 @@ struct MacAccountEmailSheet: View {
         }
     }
 }
-#endif

@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 import MatronModels
 import MatronDesignSystem
@@ -77,4 +76,3 @@ struct MacAccountSettingsPane: View {
         .frame(width: MacSettingsLayout.paneWidth, height: 640)
     }
 }
-#endif

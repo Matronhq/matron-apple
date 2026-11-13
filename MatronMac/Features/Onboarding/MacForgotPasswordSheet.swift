@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 import AppKit
 import MatronViewModels
@@ -59,4 +58,3 @@ struct MacForgotPasswordSheet: View {
         .frame(width: 380)
     }
 }
-#endif

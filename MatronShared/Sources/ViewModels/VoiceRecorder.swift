@@ -18,8 +18,7 @@ public enum AudioInterruption: Equatable, Sendable {
 }
 
 /// Records a short voice note to a temporary AAC `.m4a` file for sending as
-/// an `audio/*` attachment. Works on both iOS and macOS (the base
-/// deployment targets — iOS 17 / macOS 14 — both ship
+/// an `audio/*` attachment. Works on both iOS and macOS (both ship
 /// `AVAudioApplication.requestRecordPermission()` and `AVAudioRecorder`).
 ///
 /// The `AVAudioRecorder` is reached through the `AudioRecording` seam and
@@ -318,11 +317,7 @@ public final class VoiceRecorder {
         // unless the user chose another), so connecting AirPods alone
         // doesn't move a note onto them.
         let session = AVAudioSession.sharedInstance()
-        #if compiler(>=6.2)
         try session.setCategory(.record, mode: .default, options: [.allowBluetoothHFP])
-        #else
-        try session.setCategory(.record, mode: .default, options: [.allowBluetooth])
-        #endif
         try session.setActive(true)
         Self.logSessionState(session, at: "start")
         #endif

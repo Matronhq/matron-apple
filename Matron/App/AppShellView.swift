@@ -263,7 +263,7 @@ struct AppShellView: View {
         // asked for (a /start sent from here) opens; a session an agent or
         // a routine started is marked new in the list and nothing moves.
         .task(id: session.userID) {
-            for await born in await deps.syncService(for: session).newConversations() {
+            for await born in deps.syncEngine(for: session).newConversations() {
                 if nav.conversationBorn(born) { chatListVM.markNew(born.id) }
             }
         }

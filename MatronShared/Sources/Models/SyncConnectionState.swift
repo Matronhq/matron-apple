@@ -16,8 +16,7 @@ import Foundation
 /// flight.
 ///
 /// Lives in MatronModels so the design system and the journal sync engine
-/// can both consume it without depending on each other. `MatronSync` keeps
-/// a `public typealias` so existing call sites there keep compiling.
+/// can both consume it without depending on each other.
 public enum SyncConnectionState: Equatable, Sendable {
     case connecting
     case catchingUp

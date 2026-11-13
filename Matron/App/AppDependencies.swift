@@ -11,7 +11,6 @@ import MatronPush
 import MatronPushContent
 import MatronSearch
 import MatronStorage
-import MatronSync
 import MatronViewModels
 import MatronVoice
 
@@ -472,13 +471,6 @@ final class AppDependencies {
     /// `coldStartIfNeeded` applies for the same reason (head-side holes
     /// hidden by stale complete flags). Indexed messages are untouched and
     /// re-indexing is idempotent, so the cost is re-paging history once.
-     /// `any SyncService` (not `JournalSyncEngine` directly) so existing
-    /// view code calling `sync.start()` / `.stateStream()` keeps working
-    /// unchanged — `JournalSyncEngine` conforms via the
-    /// `JournalSyncConformance.swift` shim. Callers that need engine-only
-    /// behaviour (e.g. the scenePhase reconnect `nudge()`) downcast with
-    /// `as? JournalSyncEngine`.
-    func syncService(for session: UserSession) -> any SyncService { core(for: session).engine }
 
     /// Settings → Sync on this device: the scope and the day's sync counts.
     func syncEngine(for session: UserSession) -> JournalSyncEngine { core(for: session).engine }
@@ -804,7 +796,7 @@ final class AppDependencies {
         return JournalVoiceSender(api: c.api, engine: c.engine, items: c.items)
     }
 
-    func pushService(for session: UserSession) -> any PushService {
+    func pushService(for session: UserSession) -> JournalPushService {
         // With this device's key, so the journal can seal what each
         // notification says for the notification extension to open.
         JournalPushService(api: core(for: session).api, environment: pushEnvironment,

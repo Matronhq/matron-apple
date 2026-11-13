@@ -5,10 +5,6 @@ import MatronModels
 import MatronViewModels
 import MatronVoice
 
-// Voice mode needs `VoiceCapture`, which only an Xcode with the iOS 26 SDK
-// compiles (see `VoiceCapture.swift`).
-#if compiler(>=6.2)
-
 /// Voice mode on the car's display: a thin adapter between the voice
 /// engine and CarPlay's templates. It maps engine state to a voice-control
 /// template and that template's buttons to engine events; no voice logic
@@ -135,7 +131,7 @@ final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
         if let session {
             // A note still on its way out gets the same grace as on the
             // iPhone before the databases are let go of.
-            OutboxBackgroundGrace.holdIfNeeded(engine: deps.syncService(for: session) as? JournalSyncEngine)
+            OutboxBackgroundGrace.holdIfNeeded(engine: deps.syncEngine(for: session))
         }
         releaseDatabases()
         // The iPhone's window reports the background only when it was in
@@ -184,7 +180,7 @@ final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
         guard VoiceModeAvailability.isSupported else { return show(.unavailable) }
         // With the phone locked the car is the only scene there is, and
         // nothing else has started the sync.
-        try? await deps.syncService(for: session).start()
+        await deps.syncEngine(for: session).beginSync()
         // Everything below is checked after the last wait: the user may
         // have signed out, left, or started recording on the iPhone since.
         // The same sign-in, whatever has happened to its tokens since.
@@ -480,5 +476,3 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         controller?.enteredBackground()
     }
 }
-
-#endif

@@ -1,7 +1,7 @@
 import Foundation
 
 /// A top-level conversation born while the client was connected and caught
-/// up — what `SyncService.newConversations()` yields.
+/// up — what `JournalSyncEngine.newConversations()` yields.
 ///
 /// `startedHere` is the whole difference between "open it" and "leave the
 /// user alone": true only when THIS device asked for a session just before
