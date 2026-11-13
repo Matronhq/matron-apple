@@ -69,6 +69,37 @@ final class MatronDarkAppearanceTests: XCTestCase {
         XCTAssertGreaterThan(rowY, 0, "no row drawn in the card colour")
     }
 
+    /// A plain `List` whose rows have swipe actions (the Chats list): the
+    /// rows must come out in the page colour, flush with the list around
+    /// them, not the system's near-black cell colour.
+    func test_aPlainListWithSwipeActionsUsesThePageColour() throws {
+        let host = UIHostingController(rootView: List {
+            Section("Today") {
+                Text("Row").frame(maxWidth: .infinity, minHeight: 60)
+                    .swipeActions(edge: .trailing) { Button("Archive") {} }
+                    .listRowBackground(Color.matronPlainRow)
+            }
+        }.listStyle(.plain))
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 390, height: 400)
+        window.overrideUserInterfaceStyle = .dark
+        window.rootViewController = host
+        window.isHidden = false
+        RunLoop.main.run(until: Date().addingTimeInterval(1))
+        window.layoutIfNeeded()
+        defer { window.isHidden = true }
+
+        let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+            window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+        }
+        // Every sampled point down the middle is the page colour: header,
+        // row and the empty list below alike.
+        for y in stride(from: 20, to: 380, by: 20) {
+            assertClose(try XCTUnwrap(pixel(in: image, x: 300, y: y)), MatronDarkSurface.page)
+        }
+    }
+
     private func pixel(in image: UIImage, x: Int, y: Int) -> (Double, Double, Double)? {
         guard let cg = image.cgImage,
               let context = CGContext(data: nil, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
