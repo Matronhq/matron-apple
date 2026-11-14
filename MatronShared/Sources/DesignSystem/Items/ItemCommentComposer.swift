@@ -157,6 +157,9 @@ public struct ItemCommentComposer: View {
                 .accessibilityLabel("Attach")
 
             field
+                // Drags on the text (a selection handle, the caret) are
+                // the text's, not the row's pull-down.
+                .keepsDragsForText()
 
             // The mic stays beside a draft, as in chat: a
             // voice note takes the typed text and the tray with it, as one

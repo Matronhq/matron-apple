@@ -223,6 +223,9 @@ struct ComposerView: View {
                 .padding(Self.inputPadding)
                 .background(.regularMaterial)
                 .clipShape(RoundedRectangle(cornerRadius: 16))
+                // Drags on the text (a selection handle, the caret) are
+                // the text's, not the composer's pull-down.
+                .keepsDragsForText()
                 // Lets the field accept pasted photos and files (it only
                 // offers Paste for text on its own). Sits in a background so
                 // it lands as a sibling of the field's backing text view,
