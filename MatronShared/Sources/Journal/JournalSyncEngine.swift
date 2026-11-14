@@ -71,7 +71,7 @@ public actor JournalSyncEngine {
     public nonisolated let archive: ArchiveSync
     private let store: JournalStore
     private let connector: any WebSocketConnecting
-    private let token: String
+    private var token: String
     private let ownSender: String
     /// `var`, not `let`, purely so `attachSearch(_:)` can fill it in later —
     /// see there. Only ever goes nil → non-nil.
@@ -97,6 +97,9 @@ public actor JournalSyncEngine {
     /// (no `.offline` blip in the UI, no backoff sleep) — the network is
     /// there, we're just rebinding to it.
     private var pathChangeReconnect = false
+    /// Sync stopped because the journal refused this device's token. A new
+    /// token (an unlock) starts it again.
+    private var stoppedByRejection = false
     /// Trailing-edge debounce for path-change rebinds. A flapping network
     /// (Wi-Fi↔cellular handoff, train travel) fires the monitor in bursts;
     /// each burst used to close the socket and start a zero-delay
@@ -343,12 +346,14 @@ public actor JournalSyncEngine {
 
     public func beginSync() {
         guard runTask == nil else { return }
+        stoppedByRejection = false
         attempt = 0
         runTask = Task { await runLoop() }
         startPathMonitor()
     }
 
     public func endSync() async {
+        stoppedByRejection = false
         runTask?.cancel()
         runTask = nil
         pathMonitor?.cancel()
@@ -392,6 +397,26 @@ public actor JournalSyncEngine {
         try await withCheckedThrowingContinuation { continuation in
             readyWaiters.append(continuation)
         }
+    }
+
+    /// Replaces this device's token (an unlock of a locked account gave it
+    /// a new one) and starts over on a new socket with it: the old socket,
+    /// and every request waiting on it, belong to the old token.
+    public func replaceToken(_ newToken: String) {
+        token = newToken
+        failAllRPC(RPCRequestError.offline)
+        if stoppedByRejection {
+            // The old token was refused while the unlock's answer was on
+            // its way: sync stopped, and starts again with the new one.
+            beginSync()
+            return
+        }
+        if let connection = liveConnection {
+            pathChangeReconnect = true
+            setState(.connecting)
+            connection.close()
+        }
+        nudge()
     }
 
     public func nudge() {
@@ -1741,6 +1766,10 @@ public actor JournalSyncEngine {
             // the same head-of-backlog forever without ever advancing the
             // cursor (livelock).
             var replayBuffer: [JournalEvent] = []
+            // The token this pass says hello with. A refusal of it means
+            // nothing once it has been replaced (an unlock gave this device
+            // a new one while the hello was out): the next pass uses the new.
+            var helloToken = token
             await parkWhileDatabasesSuspended()
             if Task.isCancelled { break }
             do {
@@ -1763,9 +1792,16 @@ public actor JournalSyncEngine {
                 // also covers a scope that came from settings at launch.
                 if syncScope == .forYou { try? store.markForYouStart() }
                 let cursor = store.cursor
+                helloToken = token
                 let (connection, headSeq) = try await JournalConnection.establish(
-                    connector: connector, wsURL: api.wsURL, token: token, cursor: cursor,
+                    connector: connector, wsURL: api.wsURL, token: helloToken, cursor: cursor,
                     archiveSince: archive.helloArchiveSince(), sync: syncScope)
+                guard helloToken == token else {
+                    // Accepted with a token that has since been replaced:
+                    // start again with the new one.
+                    connection.close()
+                    continue
+                }
                 liveConnection = connection
                 // Fetched over the last socket; this one starts behind them.
                 caughtUpViewed.removeAll()
@@ -2051,11 +2087,13 @@ public actor JournalSyncEngine {
                         for c in boxStatusContinuations.values { c.yield((deviceID: deviceID, status: status)) }
                     case .boxLock(let deviceID, let lock):
                         for c in boxLockContinuations.values { c.yield((deviceID: deviceID, lock: lock)) }
-                    case .accountPanic(let on):
-                        // The journal closes the socket next, with a
-                        // "revoked" error: the app must say the account is
-                        // locked, not that this device was signed out.
-                        if on { credentialSignals?(.accountLocked) }
+                    case .accountPanic(let on, let lock):
+                        // The journal closes the socket next: with a
+                        // "revoked" error when it signed this device out
+                        // (the app must say the account is locked, not
+                        // that the device was signed out elsewhere), an
+                        // ordinary close when it froze it.
+                        if on { credentialSignals?(.accountLocked(lock)) }
                     case .notify(let settings):
                         for c in notifyContinuations.values { c.yield(settings) }
                     case .defaults(let defaults):
@@ -2097,6 +2135,12 @@ public actor JournalSyncEngine {
                 // replay buffered before the cut. The next connect's hello
                 // acks the advanced cursor, so the server resumes past it.
                 flushReplayBufferOnTeardown(&replayBuffer)
+            } catch JournalConnectionError.authRejected where helloToken != token {
+                // The old token was refused after it was replaced: say
+                // hello again at once with the new one.
+                flushReplayBufferOnTeardown(&replayBuffer)
+                liveConnection = nil
+                continue
             } catch JournalConnectionError.authRejected {
                 flushReplayBufferOnTeardown(&replayBuffer)
                 Self.logger.warning("server rejected auth — stopping sync (signed out by server)")
@@ -2105,15 +2149,20 @@ public actor JournalSyncEngine {
                 failReadyWaiters(JournalSyncError.authRevoked)
                 failAllRPC(RPCRequestError.offline)
                 runTask = nil
+                stoppedByRejection = true
                 credentialSignals?(.rejected)
                 return
-            } catch JournalConnectionError.accountLocked {
+            } catch JournalConnectionError.accountLocked where helloToken != token {
+                flushReplayBufferOnTeardown(&replayBuffer)
+                liveConnection = nil
+                continue
+            } catch JournalConnectionError.accountLocked(let lock) {
                 flushReplayBufferOnTeardown(&replayBuffer)
                 // The token still exists but the account is locked. The
                 // journal does not say when the lock is cleared, so keep
                 // trying at the backoff's pace.
                 Self.logger.warning("server refused the hello: account locked")
-                credentialSignals?(.accountLocked)
+                credentialSignals?(.accountLocked(lock))
             } catch {
                 flushReplayBufferOnTeardown(&replayBuffer)
                 // Fall through to backoff — but never silently: the

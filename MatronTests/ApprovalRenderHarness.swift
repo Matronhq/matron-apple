@@ -119,11 +119,27 @@ final class ApprovalRenderHarness: XCTestCase {
             try write(behind, sheet: sheet, name, to: directory, dark: dark)
         }
 
-        // The locked-account banner, across the top of a screen.
+        // The locked-account banner, across the top of a screen: all a
+        // locked device showed before it could unlock.
         let monitor = AccountLockMonitor()
-        monitor.note(status: 423)
+        monitor.note(lock: AccountLock(since: ApprovalFixtures.lockedSince, canUnlock: false))
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertTrue(monitor.isLocked)
         try write(boxesScreen.accountLockedBanner(monitor), "account-locked", to: directory)
+
+        // A device the lock froze: the locked screen with its Unlock
+        // button, the confirm sheet over it, and a refused try.
+        func lockedScreen(error: String? = nil) -> some View {
+            boxesScreen.overlay {
+                AccountLockedScreen(since: ApprovalFixtures.lockedSince, method: method, isUnlocking: false,
+                                    error: error, onUnlock: {}, onSignOut: {})
+            }
+        }
+        try write(lockedScreen(), "account-locked-unlock", to: directory)
+        try write(lockedScreen(), "account-locked-unlock", to: directory, dark: true)
+        let clear = ApprovalPromptPresenter.sheetController(ApprovalConfirmView(
+            model: ApprovalFixtures.clearPanicModel(method: method), onConfirm: {}, onCancel: {}))
+        try write(lockedScreen(), sheet: clear, "confirm-clear-panic", to: directory)
+        try write(lockedScreen(error: JournalAPIError.approvalInvalidText("mismatch")), "account-locked-unlock-error", to: directory)
     }
 }

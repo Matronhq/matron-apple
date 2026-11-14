@@ -338,9 +338,10 @@ public enum ServerFrame: Equatable, Sendable {
     /// frame, which is sent whenever it changes). `lock` nil: the box
     /// reports no lock. Transient, like `boxStatus`.
     case boxLock(deviceID: Int64, lock: BoxLock?)
-    /// The whole account was locked (`on`) from another device. The
-    /// socket is closed straight after.
-    case accountPanic(on: Bool)
+    /// The whole account was locked (`on`). The socket is closed straight
+    /// after: as a revoked device's when this device was signed out, an
+    /// ordinary close when it was frozen (`lock.canUnlock`).
+    case accountPanic(on: Bool, lock: AccountLock)
     /// A box's own capacity report, fanned live to client sockets (journal
     /// PR #82) — the same shape `GET /devices` serves as `status`. Transient
     /// like `deviceMeta`: no seq, never replayed; a client that misses one
@@ -572,7 +573,7 @@ public enum ServerFrame: Equatable, Sendable {
                                tagCharKnown: obj["tag_char"] != nil)
         case "panic":
             guard let on = obj["on"] as? Bool else { return nil }
-            return .accountPanic(on: on)
+            return .accountPanic(on: on, lock: AccountLock.decode(obj))
         case "box_status":
             guard let id = (obj["device_id"] as? NSNumber)?.int64Value,
                   let status = BoxStatus.parse(obj) else { return nil }

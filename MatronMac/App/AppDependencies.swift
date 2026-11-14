@@ -39,6 +39,12 @@ final class AppDependencies {
     private let journalDirectory: URL
 
     private var cores: [String: JournalCore] = [:]
+
+    /// Whether `core` is still the signed-in account's: a sign-out removes
+    /// it, and a new sign-in replaces it. Never creates one.
+    func isCurrent(_ core: JournalCore, userID: String) -> Bool {
+        cores[userID] === core
+    }
     /// Read-state reporter per session (`SeenTracker`), created on first use
     /// and dropped with the cores on sign-out.
     private var seenTrackers: [String: SeenTracker] = [:]
@@ -124,7 +130,8 @@ final class AppDependencies {
                              authResponses: { [revocation, accountLock] status in
                                  revocation.noteResponse(status: status)
                                  accountLock.note(status: status)
-                             })
+                             },
+                             accountLocks: { [accountLock] lock in accountLock.note(lock: lock) })
         let dbURL = journalDirectory.appendingPathComponent("\(session.userID).sqlite")
         LaunchTimeline.shared.beginStoreOpen()
         // `store.changeFeed` (on unless switched off in Settings → Storage;
@@ -154,8 +161,11 @@ final class AppDependencies {
             ownSender: "user:\(session.userID)", search: search,
             credentialSignals: { [revocation, accountLock] signal in
                 revocation.handle(signal)
-                if signal == .accountLocked { accountLock.noteLockedBySocket() }
-                if signal == .accepted { accountLock.noteSocketAccepted() }
+                switch signal {
+                case .accountLocked(let lock): accountLock.noteLockedBySocket(lock)
+                case .accepted: accountLock.noteSocketAccepted()
+                case .rejected: break
+                }
             }
         )
         // Task 9 (items tracker): the marker/reconnect streams come straight

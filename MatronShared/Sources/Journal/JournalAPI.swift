@@ -142,6 +142,37 @@ extension JournalAPIError {
     }
 }
 
+/// What the journal says when it refuses a request because the whole
+/// account is locked: since when, and whether this device can unlock it
+/// (it holds an approval key old enough, so the journal froze it instead
+/// of signing it out).
+public struct AccountLock: Equatable, Sendable {
+    /// When the lock began, epoch ms; nil when the answer left it out.
+    public let since: Int64?
+    /// This device was frozen, not signed out: it keeps its token and can
+    /// unlock the account with a signed statement.
+    public let canUnlock: Bool
+
+    public init(since: Int64?, canUnlock: Bool) {
+        self.since = since
+        self.canUnlock = canUnlock
+    }
+
+    /// From an object that says `account_locked`: an HTTP answer's body or
+    /// a socket's control error. `since` and `unlock` as the journal sends
+    /// them.
+    public static func decode(_ obj: [String: Any]) -> AccountLock {
+        AccountLock(since: (obj["since"] as? NSNumber)?.int64Value, canUnlock: obj["unlock"] as? Bool ?? false)
+    }
+
+    /// From an HTTP answer: 423 with `account_locked`, or any 423.
+    static func decode(status: Int, data: Data) -> AccountLock? {
+        let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        guard status == 423 || obj?["error"] as? String == "account_locked" else { return nil }
+        return decode(obj ?? [:])
+    }
+}
+
 /// What a box that checks approvals reports about its lock, in `GET
 /// /devices` and in live `device_meta` frames: `{on, until,
 /// lockdown_until}`. A box that does not check approvals reports nothing.
@@ -409,13 +440,37 @@ public actor JournalAPI {
     /// `CredentialRevocationMonitor`). Unauthenticated requests and
     /// transport failures are not reported.
     private let authResponses: (@Sendable (Int) -> Void)?
+    /// Told each time a token-bearing request is refused because the whole
+    /// account is locked (HTTP 423 `account_locked`), with what the answer
+    /// says about it.
+    private let accountLocks: (@Sendable (AccountLock) -> Void)?
 
     public init(serverURL: URL, urlSession: URLSession = .shared, token: String? = nil,
-                authResponses: (@Sendable (Int) -> Void)? = nil) {
+                authResponses: (@Sendable (Int) -> Void)? = nil,
+                accountLocks: (@Sendable (AccountLock) -> Void)? = nil) {
         self.serverURL = serverURL
         self.urlSession = urlSession
         self.token = token
         self.authResponses = authResponses
+        self.accountLocks = accountLocks
+    }
+
+    /// Replaces this device's token: the journal gave it a new one (an
+    /// unlock of a locked account) and the old one no longer works. A
+    /// request still out with the old token is dropped when it answers,
+    /// and its answer is not reported: a 401 for a token that has been
+    /// replaced says nothing about the new one.
+    public func replaceToken(_ newToken: String) {
+        token = newToken
+    }
+
+    /// What an answer to a request sent with `sentWith` means for the
+    /// owner, reported; throws when the token was replaced meanwhile.
+    private func report(status: Int, data: Data, sentWith: String?) throws {
+        guard let sentWith else { return }
+        guard sentWith == token else { throw JournalAPIError.transport(JournalAPIError.cancelledDetail) }
+        authResponses?(Self.credentialStatus(status, data: data))
+        if let lock = AccountLock.decode(status: status, data: data) { accountLocks?(lock) }
     }
 
     public nonisolated var wsURL: URL {
@@ -673,7 +728,7 @@ public actor JournalAPI {
         var request = URLRequest(url: components.url!)
         request.httpMethod = "POST"
         request.timeoutInterval = 300
-        let sentToken = token != nil
+        let sentToken = token
         if let token {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
@@ -703,7 +758,7 @@ public actor JournalAPI {
             }
             task.resume()
         }
-        if sentToken { authResponses?(response.statusCode) }
+        try report(status: response.statusCode, data: respData, sentWith: sentToken)
         guard response.statusCode == 200 else { throw Self.error(status: response.statusCode, data: respData) }
         guard let obj = (try? JSONSerialization.jsonObject(with: respData)) as? [String: Any],
               let mediaID = obj["media_id"] as? String
@@ -1139,7 +1194,7 @@ public actor JournalAPI {
         if !query.isEmpty { components.queryItems = query }
         var request = URLRequest(url: components.url!)
         request.httpMethod = method
-        let sentToken = authenticated && token != nil
+        let sentToken = authenticated ? token : nil
         if authenticated, let token {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
@@ -1162,7 +1217,7 @@ public actor JournalAPI {
             guard let http = response as? HTTPURLResponse else {
                 throw JournalAPIError.transport("non-HTTP response")
             }
-            if sentToken { authResponses?(Self.credentialStatus(http.statusCode, data: data)) }
+            try report(status: http.statusCode, data: data, sentWith: sentToken)
             return (data, http)
         } catch let error as JournalAPIError {
             throw error

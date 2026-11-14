@@ -16,7 +16,7 @@ public protocol WebSocketConnection: AnyObject, Sendable {
 public enum JournalConnectionError: Error, Equatable, Sendable {
     case authRejected
     /// The journal refused the hello because the whole account is locked.
-    case accountLocked
+    case accountLocked(AccountLock)
     case badHandshake
     case socketClosed
     case handshakeTimeout

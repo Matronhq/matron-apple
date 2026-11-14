@@ -225,7 +225,7 @@ class JournalSyncEngineTests: XCTestCase {
         let live = FakeWebSocketConnection()
         live.serve(helloOK(0))
         let refused = FakeWebSocketConnection()
-        refused.serve(#"{"kind":"control","op":"error","code":"account_locked","since":1790000000000}"#)
+        refused.serve(#"{"kind":"control","op":"error","code":"account_locked","since":1790000000000,"unlock":true}"#)
         let store = try seededStore()
         let engine = JournalSyncEngine(api: JournalAPI(serverURL: URL(string: "https://x")!), store: store,
                                        connector: FakeConnector([live, refused]), token: "t", ownSender: "user:alice",
@@ -234,17 +234,80 @@ class JournalSyncEngineTests: XCTestCase {
         await engine.beginSync()
         try await engine.waitUntilReady()
         live.serve(#"{"kind":"panic","on":true,"since":1790000000000}"#)
-        for _ in 0..<200 where signals.all.filter({ $0 == .accountLocked }).count < 1 {
+        for _ in 0..<200 where signals.locks.count < 1 {
             try await Task.sleep(for: .milliseconds(10))
         }
-        XCTAssertEqual(signals.all, [.accepted, .accountLocked])
+        XCTAssertEqual(signals.all, [.accepted, .accountLocked(AccountLock(since: 1_790_000_000_000, canUnlock: false))])
         live.serve(#"{"kind":"control","op":"error","code":"revoked"}"#)
         live.close()
-        for _ in 0..<200 where signals.all.filter({ $0 == .accountLocked }).count < 2 {
+        for _ in 0..<200 where signals.locks.count < 2 {
             try await Task.sleep(for: .milliseconds(10))
         }
-        XCTAssertEqual(signals.all.prefix(3), [.accepted, .accountLocked, .accountLocked])
+        XCTAssertEqual(signals.locks.count, 2)
+        // The refused hello says this device was frozen: it can unlock.
+        XCTAssertEqual(signals.locks.last, AccountLock(since: 1_790_000_000_000, canUnlock: true))
         XCTAssertFalse(signals.all.contains(.rejected))
+        await engine.endSync()
+    }
+
+    /// An unlock gives this device a new token: the engine drops the
+    /// socket it had and says hello again on a new one, with the new token.
+    func testReplaceToken_reconnectsWithTheNewToken() async throws {
+        let first = FakeWebSocketConnection()
+        first.serve(helloOK(0))
+        let second = FakeWebSocketConnection()
+        second.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([first, second]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        XCTAssertTrue(first.sent.first?.contains(#""token":"t""#) ?? false)
+        await engine.replaceToken("fresh")
+        for _ in 0..<300 where second.sent.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertTrue(first.isClosed)
+        XCTAssertTrue(second.sent.first?.contains(#""token":"fresh""#) ?? false, "\(second.sent)")
+        await engine.endSync()
+    }
+
+    /// A hello that went out with the old token and is refused after an
+    /// unlock replaced it is not a sign-out: the engine says hello again
+    /// with the new token.
+    func testAnOldTokensRefusedHello_afterReplaceToken_isNotASignOut() async throws {
+        let signals = SignalLog()
+        let first = FakeWebSocketConnection()
+        let second = FakeWebSocketConnection()
+        second.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = JournalSyncEngine(api: JournalAPI(serverURL: URL(string: "https://x")!), store: store,
+                                       connector: FakeConnector([first, second]), token: "old", ownSender: "user:alice",
+                                       search: nil, backoffBaseSeconds: 0.01,
+                                       credentialSignals: { signals.add($0) })
+        await engine.beginSync()
+        for _ in 0..<300 where first.sent.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        await engine.replaceToken("fresh")
+        first.serve(#"{"kind":"control","op":"error","code":"auth"}"#)
+        try await engine.waitUntilReady()
+        XCTAssertTrue(second.sent.first?.contains(#""token":"fresh""#) ?? false)
+        XCTAssertFalse(signals.all.contains(.rejected))
+        XCTAssertEqual(signals.all, [.accepted])
+        await engine.endSync()
+    }
+
+    /// The old token was refused (the unlock committed before its answer
+    /// arrived) and sync stopped; the new token starts it again.
+    func testReplaceToken_afterARefusalStoppedSync_startsItAgain() async throws {
+        let first = FakeWebSocketConnection()
+        first.serve(#"{"kind":"control","op":"error","code":"auth"}"#)
+        let second = FakeWebSocketConnection()
+        second.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([first, second]))
+        await engine.beginSync()
+        for _ in 0..<300 where first.sent.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        try await Task.sleep(for: .milliseconds(100))
+        await engine.replaceToken("fresh")
+        try await engine.waitUntilReady()
+        XCTAssertTrue(second.sent.first?.contains(#""token":"fresh""#) ?? false)
         await engine.endSync()
     }
 
@@ -1981,4 +2044,7 @@ private final class SignalLog: @unchecked Sendable {
     private var signals: [CredentialSignal] = []
     func add(_ signal: CredentialSignal) { lock.withLock { signals.append(signal) } }
     var all: [CredentialSignal] { lock.withLock { signals } }
+    var locks: [AccountLock] {
+        all.compactMap { if case .accountLocked(let lock) = $0 { return lock } else { return nil } }
+    }
 }

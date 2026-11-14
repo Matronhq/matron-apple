@@ -82,7 +82,8 @@ final class JournalServerHarness {
     /// `node src/server.js` on a free port, and polls `GET /snapshot`
     /// (expects 401) until ready.
     static func start(
-        users: [UserSpec] = [], agents: [AgentSpec] = [], publicURL: Bool = false
+        users: [UserSpec] = [], agents: [AgentSpec] = [], publicURL: Bool = false,
+        panic: (token: String, account: String)? = nil
     ) async throws -> JournalServerHarness {
         let serverPath = try requireServerRepo()
         let nodePath = try resolveNodePath()
@@ -117,10 +118,15 @@ final class JournalServerHarness {
             // what switches approval keys on (statements name its host).
             // A throwaway token key comes with it: two-factor sign-in
             // needs one, and a key is enrolled with a two-factor code.
-            let extra = publicURL
+            var extra = publicURL
                 ? ["MATRON_PUBLIC_URL": "http://127.0.0.1:\(port)",
                    "MATRON_TOKEN_KEY": (0..<32).map { _ in String(format: "%02x", UInt8.random(in: 0...255)) }.joined()]
                 : [:]
+            // `panic`: the token a watcher locks the account with.
+            if let panic {
+                extra["MATRON_PANIC_TOKEN"] = panic.token
+                extra["MATRON_PANIC_ACCOUNT"] = panic.account
+            }
             let (process, diagnostics) = try bootServer(nodePath: nodePath, serverPath: serverPath, dbPath: dbPath, port: port,
                                                         environment: extra)
             bootedProcess = process
@@ -168,6 +174,18 @@ final class JournalServerHarness {
 
     /// Runs `matron-admin` against the running server's database.
     @discardableResult
+    /// Runs one SQL statement on the server's database, with the system's
+    /// `sqlite3` (WAL mode: safe beside the running server). For setting up
+    /// what a test cannot wait for, such as a key enrolled a day ago.
+    func sql(_ statement: String) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        process.arguments = [dbPath, statement]
+        try process.run()
+        process.waitUntilExit()
+        if process.terminationStatus != 0 { throw HarnessError.adminCLIFailed(arguments: ["sqlite3", statement], output: "") }
+    }
+
     func admin(_ arguments: [String]) throws -> String {
         try Self.runAdminCLI(nodePath: nodePath, serverPath: serverPath, dbPath: dbPath, arguments: arguments)
     }

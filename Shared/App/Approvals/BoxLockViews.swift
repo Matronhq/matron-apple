@@ -193,3 +193,129 @@ struct AccountLockedBanner: View {
         .accessibilityIdentifier("accountLocked.banner")
     }
 }
+
+/// Covers the app while the account is locked and this device can unlock
+/// it: the journal froze it instead of signing it out, because it holds an
+/// approval key old enough.
+struct AccountLockedScreen: View {
+    /// When the lock began, epoch ms.
+    let since: Int64?
+    /// "Face ID" or "Touch ID".
+    let method: String
+    let isUnlocking: Bool
+    let error: String?
+    let onUnlock: () -> Void
+    /// For a device that cannot unlock (its key no longer works).
+    var onSignOut: (() -> Void)? = nil
+    @State private var confirmingSignOut = false
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 18) {
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 44, weight: .semibold))
+                    .foregroundStyle(.red)
+                    .padding(.top, 8)
+                VStack(spacing: 6) {
+                    Text("This account is locked")
+                        .font(.title2.weight(.bold))
+                    if let sinceText {
+                        Text(sinceText)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .multilineTextAlignment(.center)
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("It was locked to stop it being misused. While it is locked, your boxes take no new work and no device can sign in.")
+                    Text("This device can unlock it with its approval key. Unlocking signs out every other device on the account; sign them in again afterwards.")
+                    Text("Only unlock it if you know why it was locked.")
+                        .fontWeight(.semibold)
+                }
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(14)
+                .background(Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
+                Button(action: onUnlock) {
+                    HStack(spacing: 8) {
+                        if isUnlocking {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName: method == "Touch ID" ? "touchid" : "faceid")
+                        }
+                        Text(isUnlocking ? "Unlocking…" : "Unlock with \(method)")
+                            .fontWeight(.semibold)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(isUnlocking)
+                .accessibilityIdentifier("accountLocked.unlock")
+                if let error {
+                    Label {
+                        Text(error).fixedSize(horizontal: false, vertical: true)
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                    }
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("accountLocked.error")
+                }
+                if let onSignOut {
+                    Button("Can't unlock? Sign Out of This Device") { confirmingSignOut = true }
+                        .buttonStyle(.borderless)
+                        .font(.footnote)
+                        .padding(.top, 4)
+                        .accessibilityIdentifier("accountLocked.signOut")
+                        .confirmationDialog("Sign out of this device?", isPresented: $confirmingSignOut, titleVisibility: .visible) {
+                            Button("Sign Out", role: .destructive, action: onSignOut)
+                        } message: {
+                            Text("While the account is locked you can't sign in again. Once the lock is cleared, sign in and re-attach this device's key.")
+                        }
+                }
+            }
+            .padding(24)
+            .frame(maxWidth: 480)
+            .frame(maxWidth: .infinity)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.background)
+        .accessibilityIdentifier("accountLocked.screen")
+    }
+
+    private var sinceText: String? {
+        guard let since else { return nil }
+        let date = Date(timeIntervalSince1970: TimeInterval(since) / 1000)
+        return "Locked since " + date.formatted(date: .abbreviated, time: .shortened)
+    }
+}
+
+/// Something the user must read after the lock has gone, with a button to
+/// put it away.
+struct AccountWarningBanner: View {
+    let text: String
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+            Text(text)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 4)
+            Button("OK", action: onDismiss)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .accessibilityIdentifier("accountWarning.dismiss")
+        }
+        .font(.footnote)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity)
+        .background(Color.orange.opacity(0.25))
+        .accessibilityIdentifier("accountWarning.banner")
+    }
+}

@@ -68,7 +68,7 @@ struct MatronApp: App {
                         .task { await bootstrap() }
                 } else if let session {
                     AppShellView(session: session, deps: dependencies, onSignOut: { signOut() })
-                        .accountLockedBanner(dependencies.accountLock)
+                        .accountLocked(dependencies, session: session, onSignOut: { signOut() })
                     // Settings (a sheet off the chat list) reads this to
                     // render the Privacy section — sheets inherit the
                     // presenting hierarchy's environment.
@@ -176,7 +176,8 @@ struct MatronApp: App {
                     SignInView(
                         viewModel: revokedSession.map {
                             SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron iOS", signedOutRemotely: $0,
-                                            accountLocked: dependencies.accountLock.isLocked)
+                                            accountLocked: dependencies.accountLock.isLocked,
+                                            unlockAnswerLost: AppDependencies.pendingUnlock(for: $0).isPending)
                         } ?? SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron iOS"),
                         linkViewModel: linkViewModel,
                         rendezvousViewModel: RendezvousSignInViewModel(relay: RelayClient(), link: linkViewModel),
@@ -196,7 +197,8 @@ struct MatronApp: App {
                                 await dependencies.awaitPendingTeardown()
                                 await dependencies.wipeLocalDataForFreshLogin()
                                 self.revokedSession = nil
-                                dependencies.accountLock.signedIn()
+                                dependencies.accountLock.cleared()
+                                AppDependencies.pendingUnlock(for: session).clear()
                                 self.session = session
                                 CarPlayLink.shared.publish(session: session)
                             }

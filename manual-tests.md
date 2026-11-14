@@ -390,3 +390,15 @@ approval keys on and an account with two-factor on.
 - [ ] Lock Now needs no Face ID and returns the box to "Locked".
 - [ ] A box in lockdown answers an unlock with a sentence saying so and offers Clear Lockdown…, which asks for Face ID.
 - [ ] While the server answers 423, "This account is locked" shows across the top of the app, and goes when the lock is cleared.
+
+### Unlocking a locked account
+
+Needs a test journal with a panic token set, and an approval key on the
+iPhone enrolled more than a day before the lock (or its `created_at` moved
+back on the test database).
+
+- [ ] Lock the account with the panic token. The iPhone shows the locked screen ("This account is locked", the time it began, Unlock with Face ID); a device with no key goes to the sign-in screen, which says the device was signed out because the account was locked.
+- [ ] Unlock with Face ID shows the confirm sheet with `op: clear_panic` and the lock's start as `since`. Cancel leaves the locked screen as it was.
+- [ ] Confirm with Face ID: the locked screen goes, chats and items load again without signing in, and the other devices are signed out. Quit and reopen the app: it is still signed in (the new token was saved).
+- [ ] Lock again, turn off the network after confirming but before the answer arrives, then turn it on: if the account was unlocked, the app goes to the sign-in screen and says the server's answer was lost. Sign in, then remove the old entry for this device in Settings ▸ Devices (Face ID re-attaches the key first).
+- [ ] With the account locked, a key enrolled less than a day ago does not freeze the device: it is signed out like a device with no key.

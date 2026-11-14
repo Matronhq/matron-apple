@@ -604,7 +604,11 @@ final class WireModelsTests: XCTestCase {
     }
 
     func test_panicFrame_andLockedHelloError() {
-        XCTAssertEqual(ServerFrame.decode(#"{"kind":"panic","on":true,"since":1790000000000}"#), .accountPanic(on: true))
+        XCTAssertEqual(ServerFrame.decode(#"{"kind":"panic","on":true,"since":1790000000000}"#),
+                       .accountPanic(on: true, lock: AccountLock(since: 1_790_000_000_000, canUnlock: false)))
+        // A frozen device: it can unlock.
+        XCTAssertEqual(ServerFrame.decode(#"{"kind":"panic","on":true,"since":1790000000000,"unlock":true}"#),
+                       .accountPanic(on: true, lock: AccountLock(since: 1_790_000_000_000, canUnlock: true)))
         XCTAssertEqual(ServerFrame.decode(#"{"kind":"control","op":"error","code":"account_locked","since":1790000000000}"#),
                        .error(code: "account_locked", ref: nil, requestID: nil, detail: nil))
     }

@@ -134,6 +134,18 @@ enum ApprovalFixtures {
                                   method: method, fingerprint: "7734f909")
     }
 
+    /// The lock's start in the locked-account renders.
+    static let lockedSince: Int64 = 1_790_000_000_000
+
+    /// Unlocking the whole account, from a device the lock froze.
+    static func clearPanicModel(method: String) -> ApprovalConfirmView.Model {
+        ApprovalConfirmView.Model(
+            headline: "Unlock this account",
+            detail: ApprovalCenter.unlockDetail(since: lockedSince),
+            subject: lines(ApprovalSubjects.clearPanic(since: lockedSince)),
+            method: method, fingerprint: "7734f909")
+    }
+
     /// Unlocking a locked box, sent to the box itself.
     static func unlockModel(method: String) -> ApprovalConfirmView.Model {
         ApprovalConfirmView.Model(

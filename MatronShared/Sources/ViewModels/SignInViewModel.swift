@@ -112,11 +112,18 @@ public final class SignInViewModel {
     /// in only takes the password.
     /// `accountLocked`: the sign-out came with the account being locked,
     /// so the notice says that instead.
+    /// `unlockAnswerLost`: this device sent an unlock of a locked account
+    /// and never heard back; the account was probably unlocked and this
+    /// device's old token stopped working.
     public init(auth: AuthService, deviceDisplayName: String, signedOutRemotely session: UserSession,
-                accountLocked: Bool = false) {
+                accountLocked: Bool = false, unlockAnswerLost: Bool = false) {
         self.auth = auth
         self.deviceDisplayName = deviceDisplayName
-        self.notice = accountLocked ? AccountLockMonitor.lockedNotice : Self.signedOutRemotelyNotice
+        if unlockAnswerLost {
+            self.notice = PendingUnlockStore.lostAnswerNotice
+        } else {
+            self.notice = accountLocked ? AccountLockMonitor.lockedNotice : Self.signedOutRemotelyNotice
+        }
         self.serverURL = session.homeserverURL.absoluteString
         self.username = session.userID
     }
