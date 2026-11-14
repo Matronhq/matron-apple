@@ -16,7 +16,10 @@ extension JournalAPI: CoordinatorProviding {
     }
 
     public func setCoordinator(_ convoID: String?) async throws -> String? {
-        let body: [String: Any] = ["convo_id": convoID.map { $0 as Any } ?? NSNull()]
+        // One change per request once the account has an approval key.
+        let body = try await approved(["convo_id": convoID.map { $0 as Any } ?? NSNull()], ApprovalRequest(
+            kind: .account, subject: ApprovalSubjects.setCoordinator(convoID: convoID),
+            headline: convoID == nil ? "Remove the Coordinator" : "Change the Coordinator"))
         return Self.decodeCoordinator(try await request(path: "/coordinator", method: "PUT", body: body))
     }
 
@@ -44,7 +47,10 @@ extension JournalAPI: CoordinatorConsentProviding {
     }
 
     public func setCoordinatorConsent(_ enabled: Bool) async throws -> Bool? {
-        Self.decodeCoordinatorConsent(try await request(path: "/coordinator", method: "PUT", body: ["consent": enabled]))
+        let body = try await approved(["consent": enabled], ApprovalRequest(
+            kind: .account, subject: ApprovalSubjects.setConsent(which: .spawns, on: enabled),
+            headline: enabled ? "Let the Coordinator approve requests" : "Stop the Coordinator approving requests"))
+        return Self.decodeCoordinatorConsent(try await request(path: "/coordinator", method: "PUT", body: body))
     }
 
     static func decodeCoordinatorConsent(_ obj: [String: Any]) -> Bool? {

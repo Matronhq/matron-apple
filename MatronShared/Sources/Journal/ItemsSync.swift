@@ -910,6 +910,16 @@ public actor ItemsSync {
             return .pause
         case .conflict:
             return .poison
+        case .approvalRequired, .approvalInvalid:
+            // A tap the journal will not take unsigned (the item became
+            // step-up, or the account got a key, after it was queued):
+            // refused for good, with the reason shown, so the person can
+            // tap again and sign.
+            return .poison
+        case .accountLocked:
+            // The whole account is locked: nothing is wrong with the row.
+            // Leave it queued until the lock is cleared.
+            return .pause
         case .notFound:
             // The journal never deletes items server-side (fix round 2,
             // IMPORTANT #3b) — a 404 on a write is far likelier "this
@@ -945,6 +955,12 @@ public actor ItemsSync {
             return message
         case .conflict:
             return "The journal refused this reply: it conflicts with the item's current state."
+        case .approvalRequired:
+            return "This answer needs a signature from your approval key. Tap the button again to approve it."
+        case .approvalInvalid(let reason):
+            return JournalAPIError.approvalInvalidText(reason)
+        case .accountLocked:
+            return "This account is locked."
         default:
             return "The journal refused this reply: \(error.localizedDescription)"
         }

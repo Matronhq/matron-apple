@@ -1103,6 +1103,17 @@ public final class JournalStore: @unchecked Sendable {
             try Self.addColumnIfMissing(db, table: "item", column: "device_name", .text)
             try db.execute(sql: "DELETE FROM meta WHERE key = 'items_watermark_all' OR key LIKE 'items_watermark_convo_%'")
         }
+        // Step-up items (approval keys): whether a tap needs a signature,
+        // and the subject signed with it. Additive and nullable. A cached
+        // item has neither and a `since` refresh skips it until it changes,
+        // so the item watermarks are cleared and the next refresh refetches
+        // every item: a step-up item must never be tapped unsigned because
+        // its cached copy predates the mark.
+        migrator.registerMigration("item_step_up") { db in
+            try Self.addColumnIfMissing(db, table: "item", column: "step_up", .boolean)
+            try Self.addColumnIfMissing(db, table: "item", column: "subject_json", .text)
+            try db.execute(sql: "DELETE FROM meta WHERE key = 'items_watermark_all' OR key LIKE 'items_watermark_convo_%'")
+        }
         return migrator
     }
 

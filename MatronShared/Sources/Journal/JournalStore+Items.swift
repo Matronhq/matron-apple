@@ -92,6 +92,10 @@ public struct ItemRecord: Codable, FetchableRecord, PersistableRecord, Equatable
     /// The box that filed the item. Nullable: added by the
     /// `item_device_name` migration.
     public var deviceName: String?
+    /// Step-up mark and subject. Nullable: added by the `item_step_up`
+    /// migration; `nil` reads as not step-up.
+    public var stepUp: Bool?
+    public var subjectJson: String?
 
     enum CodingKeys: String, CodingKey {
         case id, num, kind, state, resolution, awaiting, rank, title, body, supersedes
@@ -107,6 +111,8 @@ public struct ItemRecord: Codable, FetchableRecord, PersistableRecord, Equatable
         case handoverJson = "handover_json"
         case contributorJson = "contributor_json"
         case deviceName = "device_name"
+        case stepUp = "step_up"
+        case subjectJson = "subject_json"
     }
 
     public init(_ i: TrackerItem) {
@@ -124,6 +130,8 @@ public struct ItemRecord: Codable, FetchableRecord, PersistableRecord, Equatable
         handoverJson = i.handover.map { enc($0) }
         contributorJson = i.contributor.map { enc($0) }
         deviceName = i.deviceName
+        stepUp = i.stepUp ? true : nil
+        subjectJson = i.subject.map { enc($0) }
     }
 
     public var item: TrackerItem {
@@ -141,7 +149,8 @@ public struct ItemRecord: Codable, FetchableRecord, PersistableRecord, Equatable
                         .flatMap { $0.launch == StoredItemWorking.launch ? $0.working : nil },
                     handover: handoverJson.flatMap { dec($0, ItemHandover.self) },
                     contributor: contributorJson.flatMap { dec($0, Contributor.self) },
-                    deviceName: deviceName)
+                    deviceName: deviceName,
+                    stepUp: stepUp ?? false, subject: subjectJson.flatMap { dec($0, [String: String].self) })
     }
 }
 
@@ -164,6 +173,7 @@ public struct ItemCommentRecord: Codable, FetchableRecord, PersistableRecord, Eq
         var actions: [String]?; var chosenAction: String?; var replyTo: String?
         var deviceName: String?; var convoID: String?; var convoTitle: String?
         var contributor: Contributor?; var attribution: String?; var replaces: String?
+        var stepUp: Bool?; var subject: [String: String]?; var signedKeyID: String?
     }
     private struct Snap: Codable { var state: String?; var resolution: String?; var awaiting: String? }
 
@@ -172,12 +182,14 @@ public struct ItemCommentRecord: Codable, FetchableRecord, PersistableRecord, Eq
         body = c.body; attachmentsJson = enc(c.attachments); createdAt = ms(c.createdAt)
         if c.statusFrom != nil || c.statusTo != nil || c.action != nil || !c.actions.isEmpty || c.chosenAction != nil || c.replyTo != nil
             || c.deviceName != nil || c.convoID != nil || c.convoTitle != nil
-            || c.contributor != nil || c.attribution != nil || c.replaces != nil {
+            || c.contributor != nil || c.attribution != nil || c.replaces != nil
+            || c.stepUp || c.subject != nil || c.signedKeyID != nil {
             let snap = { (s: TrackerItem.StatusSnapshot?) in s.map { Snap(state: $0.state?.rawValue, resolution: $0.resolution?.rawValue, awaiting: $0.awaiting?.rawValue) } }
             metaJson = enc(Meta(from: snap(c.statusFrom), to: snap(c.statusTo), action: c.action,
                                 actions: c.actions.isEmpty ? nil : c.actions, chosenAction: c.chosenAction, replyTo: c.replyTo,
                                 deviceName: c.deviceName, convoID: c.convoID, convoTitle: c.convoTitle,
-                                contributor: c.contributor, attribution: c.attribution, replaces: c.replaces))
+                                contributor: c.contributor, attribution: c.attribution, replaces: c.replaces,
+                                stepUp: c.stepUp ? true : nil, subject: c.subject, signedKeyID: c.signedKeyID))
         } else { metaJson = nil }
     }
 
@@ -193,7 +205,8 @@ public struct ItemCommentRecord: Codable, FetchableRecord, PersistableRecord, Eq
                               action: meta?.action, actions: meta?.actions ?? [], chosenAction: meta?.chosenAction,
                               replyTo: meta?.replyTo,
                               deviceName: meta?.deviceName, convoID: meta?.convoID, convoTitle: meta?.convoTitle,
-                              contributor: meta?.contributor, attribution: meta?.attribution, replaces: meta?.replaces)
+                              contributor: meta?.contributor, attribution: meta?.attribution, replaces: meta?.replaces,
+                              stepUp: meta?.stepUp ?? false, subject: meta?.subject, signedKeyID: meta?.signedKeyID)
     }
 }
 
