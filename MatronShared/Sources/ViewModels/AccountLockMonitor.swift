@@ -16,6 +16,10 @@ import Observation
 @Observable @MainActor
 public final class AccountLockMonitor {
     public private(set) var isLocked = false
+    /// The live socket said so. An HTTP answer cannot undo that: one sent
+    /// before the lock can arrive after it. Only the socket being accepted
+    /// again, or a sign-in, does.
+    @ObservationIgnored private var lockedBySocket = false
     @ObservationIgnored private var clearedHandlers: [() -> Void] = []
 
     /// Shown on the sign-in screen after a lock signed this device out.
@@ -34,17 +38,36 @@ public final class AccountLockMonitor {
     /// Safe to call from any thread.
     public nonisolated func note(status: Int) {
         guard let locked = Self.verdict(status) else { return }
-        Task { @MainActor in self.set(locked) }
+        Task { @MainActor in
+            if !locked, self.lockedBySocket { return }
+            self.set(locked)
+        }
     }
 
     /// The live socket said the account is locked. Safe to call from any
     /// thread.
     public nonisolated func noteLockedBySocket() {
-        Task { @MainActor in self.set(true) }
+        Task { @MainActor in
+            self.lockedBySocket = true
+            self.set(true)
+        }
+    }
+
+    /// The journal accepted this device's hello: the account is not
+    /// locked. Safe to call from any thread.
+    public nonisolated func noteSocketAccepted() {
+        Task { @MainActor in
+            guard self.lockedBySocket else { return }
+            self.lockedBySocket = false
+            self.set(false)
+        }
     }
 
     /// A sign-in went through: the account is not locked.
-    public func signedIn() { set(false) }
+    public func signedIn() {
+        lockedBySocket = false
+        set(false)
+    }
 
     private func set(_ locked: Bool) {
         guard isLocked != locked else { return }

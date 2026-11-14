@@ -126,6 +126,17 @@ final class ApprovalPromptPresenter {
                 return
             }
             changedMeanwhile = true
+        } else if center.prompt?.id != shownID {
+            // The transition ended before it reached the request that is
+            // waiting (the last sheet's dismissal never called back). Go
+            // again, under the same limit.
+            failedPresentations += 1
+            if failedPresentations > 3 {
+                failedPresentations = 0
+                center.cancel()
+                return
+            }
+            changedMeanwhile = true
         } else {
             failedPresentations = 0
         }

@@ -53,7 +53,10 @@ final class BoxesLockStateTests: XCTestCase {
         viewModel.approvalSigner = { _ in SignedApproval(statement: "{}", signature: "sig") }
         let unlocked = await viewModel.unlock(box, minutes: 10)
         XCTAssertTrue(unlocked)
-        // The roster still says "locked"; the box's own answer wins.
+        // The roster still says "locked"; the box's own answer wins, and a
+        // read straight after does not bring the old state back.
+        XCTAssertEqual(lock(of: viewModel)?.isUnlocked(), true)
+        await viewModel.load()
         XCTAssertEqual(lock(of: viewModel)?.isUnlocked(), true)
     }
 
@@ -82,6 +85,13 @@ final class BoxesLockStateTests: XCTestCase {
         viewModel.approvalSigner = { _ in SignedApproval(statement: "{}", signature: "sig") }
         let unlocked = await viewModel.unlock(box, minutes: 10)
         XCTAssertFalse(unlocked)
+        XCTAssertTrue(viewModel.isInLockdown(box))
+        // The box republishes its state without the lockdown field: the
+        // answer it gave still counts.
+        let watch = Task { await viewModel.watch() }
+        defer { watch.cancel() }
+        api.feed.continuation.yield((deviceID: 5, lock: BoxLock(on: true)))
+        try? await Task.sleep(for: .milliseconds(100))
         XCTAssertTrue(viewModel.isInLockdown(box))
     }
 }
@@ -249,6 +259,10 @@ final class BoxLockControlTests: XCTestCase {
         try? await Task.sleep(for: .milliseconds(50))
         XCTAssertTrue(monitor.isLocked)
         monitor.note(status: 401)
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(monitor.isLocked)
+        // An answer sent before the lock, arriving after it.
+        monitor.note(status: 200)
         try? await Task.sleep(for: .milliseconds(50))
         XCTAssertTrue(monitor.isLocked)
         monitor.signedIn()

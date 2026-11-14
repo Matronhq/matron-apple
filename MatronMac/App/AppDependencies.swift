@@ -155,6 +155,7 @@ final class AppDependencies {
             credentialSignals: { [revocation, accountLock] signal in
                 revocation.handle(signal)
                 if signal == .accountLocked { accountLock.noteLockedBySocket() }
+                if signal == .accepted { accountLock.noteSocketAccepted() }
             }
         )
         // Task 9 (items tracker): the marker/reconnect streams come straight

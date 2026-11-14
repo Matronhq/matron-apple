@@ -87,10 +87,18 @@ public final class BoxesViewModel {
     }
 
     public func load() async {
+        let started = Date()
         do {
             let agents = try await api.devices().filter { $0.kind == "agent" }
             let snapshot = try? await api.roster()
             devices = agents
+            // A lock state a box or a live frame gave while this read was
+            // out, or just before it, is newer than what the read holds.
+            let cutoff = started.addingTimeInterval(-Self.lockGrace)
+            lockAdoptions = lockAdoptions.filter { $0.value.at > cutoff }
+            for (boxID, adoption) in lockAdoptions {
+                if let index = devices.firstIndex(where: { $0.id == boxID }) { devices[index].locked = adoption.lock }
+            }
             if let snapshot { roster = snapshot }
             for agent in agents {
                 if let status = agent.status { adopt(status, for: agent.id) }
@@ -212,6 +220,8 @@ public final class BoxesViewModel {
             // journal too, a moment later: reading the roster now could
             // bring the old state back, so only an answer without a state
             // (an older box) is followed by a read.
+            // A box in lockdown would have refused.
+            lockdownBoxes.remove(device.id)
             if let reported {
                 adopt(lock: reported, for: device.id)
             } else {
@@ -225,8 +235,14 @@ public final class BoxesViewModel {
     private func adopt(lock: BoxLock?, for boxID: Int64) {
         guard let index = devices.firstIndex(where: { $0.id == boxID }) else { return }
         devices[index].locked = lock
-        if lock?.isInLockdown() != true { lockdownBoxes.remove(boxID) }
+        lockAdoptions[boxID] = (lock: lock, at: Date())
     }
+
+    /// Lock states taken from a box's answer or a live frame, and when. A
+    /// box reports to the journal a moment after it answers, so a roster
+    /// read for a few seconds either side can still hold the old state.
+    private var lockAdoptions: [Int64: (lock: BoxLock?, at: Date)] = [:]
+    private static let lockGrace: TimeInterval = 5
 
     public func wake(_ device: DeviceDTO) async {
         await waker.wake(agent: device)

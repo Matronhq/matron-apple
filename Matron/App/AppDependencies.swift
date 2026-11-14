@@ -294,6 +294,7 @@ final class AppDependencies {
             credentialSignals: { [revocation, accountLock] signal in
                 revocation.handle(signal)
                 if signal == .accountLocked { accountLock.noteLockedBySocket() }
+                if signal == .accepted { accountLock.noteSocketAccepted() }
             },
             // Settings → Sync on this device. Per device, so it lives in
             // this phone's defaults, not on the journal.
