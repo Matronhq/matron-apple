@@ -112,4 +112,49 @@ final class JournalSyncEngineRestartTests: XCTestCase {
         XCTAssertTrue(caughtUp)
         await engine.endSync()
     }
+
+    private func sendOps(_ socket: FakeWebSocketConnection) -> [String] {
+        socket.sent.filter {
+            ((try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any])?["op"] as? String == "send"
+        }
+    }
+
+    /// The race the generation token exists for: the old loop is past its
+    /// hello, suspended in a post-hello send, while a restart publishes the
+    /// new socket. When the old send finally returns, nothing it does may
+    /// reach the new loop's socket, state or send bookkeeping.
+    func testOldLoopSuspendedInAPostHelloSendCannotDisturbTheNewLoop() async throws {
+        let first = FakeWebSocketConnection()
+        first.holdSends(after: 1) // the hello goes out; the next send waits
+        first.serve(helloOK(5)) // behind the head: the old loop would report catching up
+        let second = FakeWebSocketConnection()
+        second.serve(helloOK(0))
+        let connector = FakeConnector([first, second])
+        let engine = makeEngine(store: try seededStore(), connector: connector)
+
+        await engine.beginSync()
+        await waitUntil(first.heldCount == 1)
+        XCTAssertEqual(first.heldCount, 1, "the old loop is suspended in a post-hello send")
+
+        // endSync waits for the old loop, which cannot finish yet.
+        let stopping = Task { await engine.endSync() }
+        let deadline = Date().addingTimeInterval(2)
+        while await engine.isRunning, Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        try await engine.sendMessage(convoID: "c1", body: "x", localID: "L1")
+        await waitUntil(sendOps(second).count == 1)
+        XCTAssertEqual(sendOps(second).count, 1)
+
+        first.releaseHeldSends()
+        await stopping.value
+        try await Task.sleep(for: .milliseconds(200))
+
+        XCTAssertFalse(second.isClosed, "the old loop must not close the new socket")
+        let caughtUp = await engine.isConnectedAndCaughtUp
+        XCTAssertTrue(caughtUp, "the old loop must not flip the state to catching up")
+        XCTAssertEqual(sendOps(second).count, 1, "the old loop must not reset the send bookkeeping and resend")
+        XCTAssertEqual(connector.connectCount, 2)
+        await engine.endSync()
+    }
 }

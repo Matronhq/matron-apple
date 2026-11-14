@@ -42,6 +42,7 @@ final class MacSyncLifecycle {
     private var applyTask: Task<Void, Never>?
     private var stateTask: Task<Void, Never>?
     private var voiceTailTask: Task<Void, Never>?
+    private var probing = false
     private var systemAsleep = false
     private var appActive = false
     private var stopped = false
@@ -163,13 +164,19 @@ final class MacSyncLifecycle {
         }
     }
 
-    private func refresh() {
+    private func refresh(probed: Bool = false) {
         guard !stopped else { return }
         let now = now
         policy.setWindowsVisible(anyWindowVisible(), at: now)
         policy.setAppActive(appActive, at: now)
         policy.setAsleep(systemAsleep, at: now)
         policy.setStayConnected(UserDefaults.standard.bool(forKey: Self.stayConnectedKey), at: now)
+        // Every close path looks at the outbox first: queued messages need
+        // the socket, and the policy only knows what it was last told.
+        if !probed, policy.wouldClose(at: now) {
+            probeOutboxThenRefresh()
+            return
+        }
         let decision = policy.decide(at: now)
         if policy.holdsActivity { beginActivity() } else { endActivity() }
         switch decision {
@@ -184,30 +191,48 @@ final class MacSyncLifecycle {
         scheduleWake(now: now)
     }
 
-    /// The next time nothing else will prompt a look: the end of the grace,
-    /// or a re-check of the outbox while it holds the socket. The assertion
-    /// is held across both (the socket is open with nothing on screen), so
-    /// this timer is not throttled.
+    /// Reads the engine's outbox into the policy, then decides with it. The
+    /// assertion stays as it was meanwhile (the socket is still open).
+    private func probeOutboxThenRefresh() {
+        guard !probing else { return }
+        probing = true
+        let engine = engine
+        Task { [weak self] in
+            let pending = await engine.hasPendingOutbox
+            guard let self else { return }
+            self.probing = false
+            guard !self.stopped else { return }
+            self.policy.setOutboxPending(pending, at: self.now)
+            self.refresh(probed: true)
+        }
+    }
+
+    /// The next time nothing else will prompt a look: the end of the grace or
+    /// of the activation window, or a re-check of the outbox while it holds
+    /// the socket. The assertion is held across both (the socket is open with
+    /// nothing on screen), so this timer is not throttled.
     private func scheduleWake(now: TimeInterval) {
         deadlineTask?.cancel()
         deadlineTask = nil
         let delay: TimeInterval
+        let probeOutbox: Bool
         if let deadline = policy.nextDeadline {
             delay = max(0, deadline - now)
+            probeOutbox = false
         } else if policy.outboxPending {
             delay = 5
+            probeOutbox = true
         } else {
             return
         }
-        let engine = engine
         deadlineTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(delay))
-            guard !Task.isCancelled else { return }
-            // Closing would drop queued messages' socket: look first.
-            let pending = await engine.hasPendingOutbox
             guard let self, !self.stopped, !Task.isCancelled else { return }
-            self.policy.setOutboxPending(pending, at: self.now)
-            self.refresh()
+            if probeOutbox {
+                self.probeOutboxThenRefresh()
+            } else {
+                self.refresh() // probes the outbox itself if this would close
+            }
         }
     }
 

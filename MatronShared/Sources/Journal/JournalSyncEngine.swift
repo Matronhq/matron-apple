@@ -92,12 +92,14 @@ public actor JournalSyncEngine {
     /// mid-teardown when the next one starts, and must not close the new
     /// socket or overwrite the new state.
     private var runGeneration = 0
-    /// Hellos in flight. `JournalConnection.establish` cannot observe
-    /// cancellation (its receive only ends when the socket does, or after the
-    /// handshake timeout), so `endSync()` does not wait for a loop that is
-    /// inside one: that loop notices it is stale when the hello returns and
-    /// drops the socket.
-    private var handshakesInFlight = 0
+    /// The generations whose run loop is inside a hello.
+    /// `JournalConnection.establish` cannot observe cancellation (its receive
+    /// only ends when the socket does, or after the handshake timeout), so
+    /// `endSync()` does not wait for a loop that is inside one: that loop
+    /// notices it is stale when the hello returns and drops the socket. Per
+    /// generation, so a newer loop's hello never excuses waiting for an older
+    /// loop that is somewhere else.
+    private var handshakingGenerations: Set<Int> = []
     private var pathMonitor: NWPathMonitor?
     /// Status + sorted interface names of the last observed network path.
     /// macOS fires a burst of path callbacks at app startup (interface
@@ -374,6 +376,7 @@ public actor JournalSyncEngine {
     public func endSync() async {
         stoppedByRejection = false
         let stoppedTask = runTask
+        let stoppedGeneration = runGeneration
         runGeneration &+= 1
         runTask?.cancel()
         runTask = nil
@@ -400,7 +403,7 @@ public actor JournalSyncEngine {
         if case .offline = state {} else {
             setState(.offline(reason: nil))
         }
-        if handshakesInFlight == 0 { await stoppedTask?.value }
+        if !handshakingGenerations.contains(stoppedGeneration) { await stoppedTask?.value }
     }
 
     private func isCurrent(_ generation: Int) -> Bool { generation == runGeneration }
@@ -1824,17 +1827,17 @@ public actor JournalSyncEngine {
                 if syncScope == .forYou { try? store.markForYouStart() }
                 let cursor = store.cursor
                 helloToken = token
-                handshakesInFlight += 1
+                handshakingGenerations.insert(generation)
                 let established: (connection: JournalConnection, headSeq: Int64)
                 do {
                     established = try await JournalConnection.establish(
                         connector: connector, wsURL: api.wsURL, token: helloToken, cursor: cursor,
                         archiveSince: archive.helloArchiveSince(), sync: syncScope)
                 } catch {
-                    handshakesInFlight -= 1
+                    handshakingGenerations.remove(generation)
                     throw error
                 }
-                handshakesInFlight -= 1
+                handshakingGenerations.remove(generation)
                 let (connection, headSeq) = established
                 guard helloToken == token else {
                     // Accepted with a token that has since been replaced:
@@ -1884,6 +1887,9 @@ public actor JournalSyncEngine {
                 if store.cursor > 0 {
                     try? await connection.send(.ack(cursor: store.cursor))
                 }
+                // Stopped (and maybe restarted) during the sends above: the
+                // state below belongs to the loop that owns the live socket.
+                guard isCurrent(generation) else { connection.close(); return }
                 refreshSummariesTask?.cancel()
                 refreshSummariesTask = Task { await self.refreshSummaries() } // title/state stopgap (spec §7 ask 4)
                 // Fresh socket: everything unconfirmed is eligible to resend

@@ -137,12 +137,41 @@ final class SocketLifecyclePolicyTests: XCTestCase {
         XCTAssertFalse(policy.holdsActivity)
     }
 
-    func testResigningActiveStartsTheGraceWhenNothingIsVisible() {
-        var policy = SocketLifecyclePolicy(grace: 60, windowsVisible: false, appActive: true, now: 0)
-        XCTAssertNil(policy.nextDeadline)
-        policy.setAppActive(false, at: 10)
-        XCTAssertEqual(policy.nextDeadline, 70)
-        XCTAssertEqual(policy.decide(at: 70), .close)
+    func testActivationAloneDoesNotOutlastTheActivationWindow() {
+        var policy = SocketLifecyclePolicy(grace: 60, windowsVisible: false, now: 0)
+        XCTAssertEqual(policy.decide(at: 60), .close)
+        policy.setAppActive(true, at: 500)
+        XCTAssertEqual(policy.decide(at: 500), .reconnectFromCursor)
+        XCTAssertEqual(policy.nextDeadline, 505)
+        XCTAssertEqual(policy.decide(at: 504.9), .keep)
+        XCTAssertEqual(policy.decide(at: 505), .close, "active, but no window ever showed")
+        XCTAssertFalse(policy.holdsActivity)
+    }
+
+    func testClosingTheLastWindowWhileStillActiveClosesAfterTheGrace() {
+        var policy = make()
+        policy.setAppActive(true, at: 0)
+        policy.setWindowsVisible(false, at: 100) // red button; Matron stays frontmost
+        XCTAssertEqual(policy.nextDeadline, 160)
+        XCTAssertEqual(policy.decide(at: 159), .keep)
+        XCTAssertEqual(policy.decide(at: 160), .close, "appActive stays true, windowsVisible alone decides")
+        XCTAssertFalse(policy.holdsActivity)
+    }
+
+    func testMinimisingWhileActiveStartsTheGraceAtOnce() {
+        var policy = make()
+        policy.setAppActive(true, at: 0)
+        policy.setWindowsVisible(false, at: 1_000)
+        XCTAssertEqual(policy.decide(at: 1_030), .keep)
+        XCTAssertEqual(policy.decide(at: 1_060), .close)
+    }
+
+    func testResigningActiveInsideTheWindowDoesNotShortenTheGrace() {
+        var policy = make()
+        policy.setWindowsVisible(false, at: 0)
+        policy.setAppActive(true, at: 10)
+        policy.setAppActive(false, at: 11)
+        XCTAssertEqual(policy.nextDeadline, 60)
     }
 
     // MARK: Displays sleeping while the system stays awake
@@ -213,6 +242,21 @@ final class SocketLifecyclePolicyTests: XCTestCase {
         XCTAssertNil(policy.nextDeadline)
         policy.setOutboxPending(false, at: 501)
         XCTAssertEqual(policy.decide(at: 501), .close)
+    }
+
+    func testVoiceNoteTailDoesNotCloseOverAQueuedOutbox() {
+        var policy = make()
+        policy.setWindowsVisible(false, at: 0)
+        policy.setOutboxPending(true, at: 10)   // text queued before hiding
+        XCTAssertEqual(policy.decide(at: 100), .keep, "hidden past the grace, the outbox holds it")
+        policy.setVoiceNoteActive(true, at: 100)
+        XCTAssertEqual(policy.decide(at: 101), .keep)
+        policy.setVoiceNoteActive(false, at: 110) // note delivered, tail ended
+        XCTAssertFalse(policy.wouldClose(at: 110), "the outbox is still pending")
+        XCTAssertEqual(policy.decide(at: 110), .keep)
+        policy.setOutboxPending(false, at: 120)
+        XCTAssertTrue(policy.wouldClose(at: 120))
+        XCTAssertEqual(policy.decide(at: 120), .close)
     }
 
     func testStayConnectedKeepsTheSocketWhileHidden() {

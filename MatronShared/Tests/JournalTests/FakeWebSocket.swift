@@ -37,7 +37,36 @@ final class FakeWebSocketConnection: WebSocketConnection, @unchecked Sendable {
         pending.forEach { $0.resume(throwing: JournalConnectionError.socketClosed) }
     }
 
+    private var holdAfter: Int?
+    private var held: [CheckedContinuation<Void, Never>] = []
+    /// Sends currently waiting at the gate.
+    var heldCount: Int { lock.withLock { held.count } }
+
+    /// From now on, a send made once `n` frames have gone out waits until
+    /// `releaseHeldSends()`. Lets a test freeze the engine mid-send.
+    func holdSends(after n: Int) { lock.withLock { holdAfter = n } }
+
+    func releaseHeldSends() {
+        let waiting = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            holdAfter = nil
+            let waiting = held
+            held = []
+            return waiting
+        }
+        waiting.forEach { $0.resume() }
+    }
+
     func sendText(_ text: String) async throws {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            lock.lock()
+            if let holdAfter, _sent.count >= holdAfter {
+                held.append(continuation)
+                lock.unlock()
+            } else {
+                lock.unlock()
+                continuation.resume()
+            }
+        }
         lock.lock()
         defer { lock.unlock() }
         if closed { throw JournalConnectionError.socketClosed }
