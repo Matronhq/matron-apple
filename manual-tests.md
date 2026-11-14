@@ -407,6 +407,8 @@ back on the test database).
 
 Needs a signed-in Mac build and a journal you can watch (its log, or any tool listing open connections for the device). "Hidden" means every window hidden (`⌘H`), minimised, or fully covered by other windows.
 
+If the Matron bridge also runs on this Mac, it may keep the Mac awake on its own, separately from this app. These checks cover the app only, so run them with the bridge on or off as you prefer.
+
 - [ ] With a window visible, turn Wi-Fi off, wait 30 s, turn it on — the chat list shows connecting/offline, then reconnects within about 30 s of the network returning, and an event sent while it was off appears.
 - [ ] With a window visible and the app idle for 5 minutes, drop the connection without the OS noticing (for example block the journal host in the firewall for 90 s, then unblock) — the app notices and reconnects without a click.
 - [ ] Hide all windows and wait 90 s — the journal shows the device's socket closed (and Activity Monitor's "Preventing App Nap" column for Matron reads Yes while visible, No after the close).
