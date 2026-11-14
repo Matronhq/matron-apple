@@ -192,6 +192,17 @@ final class ApprovalCenterTests: XCTestCase {
         XCTAssertEqual(center.status, .revoked)
     }
 
+    func test_serverWithoutApprovalKeys_goesUnsigned_evenWhenThisDeviceHoldsAKey() async throws {
+        // The route does not exist on a server from before approval keys.
+        try await giveDeviceAKey()
+        await api.set(keysError: JournalAPIError.notFound)
+        let approval = try await center.sign(request)
+        XCTAssertNil(approval)
+        XCTAssertNil(center.prompt)
+        XCTAssertEqual(center.status, .disabled)
+        XCTAssertNil(center.loadError)
+    }
+
     func test_keysCannotBeRead_isNotSilentlyUnsigned() async throws {
         try await giveDeviceAKey()
         await api.set(keysError: JournalAPIError.transport("offline"))

@@ -123,6 +123,15 @@ public final class ApprovalCenter {
             loadError = nil
             recompute()
             return fresh
+        } catch JournalAPIError.notFound {
+            // A server from before approval keys has no such route: no
+            // account on it has a key, so nothing needs a signature and
+            // every request goes as it always did.
+            let absent = ApprovalKeysState(enabled: false, journal: nil, keys: [])
+            state = absent
+            loadError = nil
+            recompute()
+            return absent
         } catch {
             loadError = error.localizedDescription
             throw error
