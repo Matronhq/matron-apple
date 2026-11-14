@@ -95,10 +95,15 @@ final class ApprovalKeysServerTests: XCTestCase {
         // A journal from before approval keys answers 404 here.
         var request = URLRequest(url: harness.baseURL.appendingPathComponent("approval-keys"))
         request.setValue("Bearer \(harness.agentTokens["box-a"] ?? "")", forHTTPHeaderField: "Authorization")
-        let (_, response) = try await URLSession.shared.data(for: request)
-        if (response as? HTTPURLResponse)?.statusCode == 404 {
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            if (response as? HTTPURLResponse)?.statusCode == 404 {
+                throw XCTSkip("this journal checkout has no approval keys; point MATRON_JOURNAL_PATH at one that does")
+            }
+        } catch {
+            // The caller's own `defer` is not in place yet.
             harness.stop()
-            throw XCTSkip("this journal checkout has no approval keys; point MATRON_JOURNAL_PATH at one that does")
+            throw error
         }
         return harness
     }
@@ -136,10 +141,17 @@ final class ApprovalKeysServerTests: XCTestCase {
             var confirmed: Set<UUID> = []
             while !Task.isCancelled {
                 for center in centers {
-                    if let prompt = center.prompt, !confirmed.contains(prompt.id), !center.isSigning {
+                    guard let prompt = center.prompt, !center.isSigning else { continue }
+                    if !confirmed.contains(prompt.id) {
                         confirmed.insert(prompt.id)
                         seen.requests.append(prompt.request)
                         center.confirm()
+                    } else if let error = center.promptError {
+                        // A failed try leaves the sheet up for another:
+                        // report it and back out, or the test would wait
+                        // for ever.
+                        XCTFail("signing failed: \(error)")
+                        center.cancel()
                     }
                 }
                 try? await Task.sleep(for: .milliseconds(5))

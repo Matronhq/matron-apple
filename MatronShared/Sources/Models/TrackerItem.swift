@@ -317,9 +317,15 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
         /// What the action is about, shown with the question and signed
         /// over; `nil` when none was given (the subject signed is then `{}`).
         let subject: [String: String]?
+        /// What kind of consent ask the journal says this item stands for
+        /// ("spawn", "chat", "transfer", …); `nil` for every other item.
+        /// Set by the journal alone (an agent cannot), and read only from
+        /// a fresh fetch: the local store does not keep it.
+        let consentKind: String?
     }
 
     public var id: String { storage.fields.id }
+    public var consentKind: String? { storage.fields.consentKind }
     public var stepUp: Bool { storage.fields.stepUp }
     public var subject: [String: String]? { storage.fields.subject }
     public var num: Int { storage.fields.num }
@@ -362,7 +368,8 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
                 missionID: String? = nil, missionNum: Int? = nil, actions: [String] = [], chosenAction: String? = nil,
                 originConvoTitle: String? = nil, lastUserInputAt: Date? = nil,
                 working: ItemWorking? = nil, handover: ItemHandover? = nil, contributor: Contributor? = nil,
-                deviceName: String? = nil, stepUp: Bool = false, subject: [String: String]? = nil) {
+                deviceName: String? = nil, stepUp: Bool = false, subject: [String: String]? = nil,
+                consentKind: String? = nil) {
         storage = Storage(Fields(
             id: id, num: num, kind: kind, state: state, resolution: resolution, awaiting: awaiting, rank: rank,
             title: title, body: body, labels: labels, links: links, attachments: attachments,
@@ -375,7 +382,7 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
                 let t = $0.trimmingCharacters(in: .whitespacesAndNewlines)
                 return t.isEmpty ? nil : t
             },
-            stepUp: stepUp, subject: subject))
+            stepUp: stepUp, subject: subject, consentKind: consentKind))
     }
 
     public static func == (lhs: TrackerItem, rhs: TrackerItem) -> Bool {
@@ -417,7 +424,8 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
             contributor: Contributor(json: json["contributor"]),
             deviceName: json["device_name"] as? String,
             stepUp: json["step_up"] as? Bool ?? false,
-            subject: json["subject"] as? [String: String])
+            subject: json["subject"] as? [String: String],
+            consentKind: json["consent"] as? String)
     }
 
     /// Where a closed item sorts in the For you list's Closed tab, and the

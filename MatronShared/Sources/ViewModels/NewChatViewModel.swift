@@ -724,6 +724,9 @@ public final class NewChatViewModel {
                     subject: ApprovalSubjects.start(box: agent.name, workdir: trimmed.isEmpty ? nil : trimmed, prompt: nil),
                     headline: "Start a session on \(agent.name)", box: agent.name)
                 if let approval = try await approvalSigner(request) { params["approval"] = approval.json }
+                // The sheet may have closed, or another box been picked,
+                // while the approval was on screen: nothing is started.
+                guard !isAbandoned, !Task.isCancelled, Self.sameFolderAgent(phase, agent) else { return }
             } catch ApprovalKeyFailure.cancelled {
                 return
             } catch {

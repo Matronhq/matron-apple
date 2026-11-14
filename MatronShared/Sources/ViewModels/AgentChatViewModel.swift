@@ -96,7 +96,8 @@ public final class AgentChatViewModel {
         do {
             do {
                 try await api.answerAgentChat(
-                    roomID: row.roomID, targetDeviceID: row.targetDeviceID,
+                    ChatAsk(roomID: row.roomID, targetDeviceID: row.targetDeviceID,
+                            justification: row.justification ?? ""),
                     decision: decision)
             } catch JournalAPIError.conflict {
                 // Already resolved elsewhere — fall through to the refresh.

@@ -21,6 +21,11 @@ extension AppDependencies {
             user: session.userID, deviceID: Int64(session.deviceID), deviceName: Self.approvalKeyName)
         core.approvals = center
         core.approvalPresenter = ApprovalPromptPresenter(center: center)
+        // Replies held while the account was locked go once it is cleared.
+        accountLock.whenCleared { [weak core] in
+            guard let items = core?.items else { return }
+            Task { await items.drainOutbox() }
+        }
         let signer = center.signer
         let api = core.api
         Task {

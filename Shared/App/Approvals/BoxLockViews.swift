@@ -139,7 +139,10 @@ struct BoxUnlockSheet: View {
                 Section {
                     Button {
                         Task {
-                            if await viewModel.unlock(device, minutes: minutes) { close() }
+                            let unlocked = await viewModel.unlock(device, minutes: minutes)
+                            // In lockdown, the way forward is Clear
+                            // Lockdown on the box's card, behind this sheet.
+                            if unlocked || viewModel.lockdownBoxes.contains(device.id) { close() }
                         }
                     } label: {
                         HStack {

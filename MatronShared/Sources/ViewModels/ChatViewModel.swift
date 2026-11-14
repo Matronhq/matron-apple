@@ -1613,7 +1613,7 @@ public final class ChatViewModel {
         do {
             try await agentChat.answerAgentChat(
                 ChatAsk(roomID: request.roomID, targetDeviceID: request.targetDeviceID,
-                        justification: request.justification, headline: request.headline),
+                        justification: request.justification ?? "", headline: request.headline),
                 decision: decision)
             rememberAgentChatAnswer(eventID, decision.rawValue)
         } catch ApprovalKeyFailure.cancelled {

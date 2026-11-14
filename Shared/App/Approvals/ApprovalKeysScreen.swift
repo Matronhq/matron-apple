@@ -22,18 +22,21 @@ struct ApprovalKeysScreen: View {
         .formStyle(.grouped)
         #endif
         .navigationTitle(ApprovalKeysScreenModel.title)
-        .task { await model.load() }
-        .task(id: model.center.status == .waitingForApproval) {
-            // While this device waits to be approved elsewhere, look again
-            // every few seconds: nothing pushes the answer.
-            guard model.center.status == .waitingForApproval else { return }
+        .task {
+            // While the screen is up, look again every few seconds:
+            // nothing pushes another device's request, or its approval of
+            // this one's.
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(3))
                 await model.load()
-                if model.center.status != .waitingForApproval { return }
+                try? await Task.sleep(for: .seconds(model.center.status == .waitingForApproval ? 3 : 6))
             }
         }
-        .sheet(item: $model.form) { form in
+        #if os(iOS)
+        .refreshable { await model.load() }
+        #endif
+        // `onDismiss`: a swipe closes the form without its Cancel, and what
+        // was typed must not stay in the model.
+        .sheet(item: $model.form, onDismiss: { model.closeForm() }) { form in
             ApprovalKeyPasswordForm(model: model, form: form)
         }
         .confirmationDialog(

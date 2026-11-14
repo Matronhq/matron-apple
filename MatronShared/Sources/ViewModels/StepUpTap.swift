@@ -13,14 +13,7 @@ public enum StepUpTap {
     /// asks for no signature on it. `comment` is the follow-up question
     /// whose button was tapped; nil for the item's own buttons.
     public static func request(item: TrackerItem, comment: TrackerComment?, label: String) -> ApprovalRequest? {
-        let reference = "#\(item.num)"
-        if item.labels.contains(TrackerItem.consentLabel) {
-            // A consent ask is answered with a `consent` statement over the
-            // subject the journal published, and only its yes is signed.
-            guard item.stepUp, comment == nil, TrackerItem.isAffirmativeAnswer(label) else { return nil }
-            return ApprovalRequest(kind: .consent, subject: item.subject ?? [:], headline: item.title,
-                                   reference: reference, button: label, detail: item.body)
-        }
+        guard item.consentKind == nil else { return nil }
         guard item.stepUp || comment?.stepUp == true else { return nil }
         // The asking comment's own subject when that comment is step-up,
         // else the item's; none is signed as `{}`.
@@ -29,8 +22,51 @@ public enum StepUpTap {
             ?? PromptDigest.item(title: item.title, body: item.body)
         return ApprovalRequest(
             kind: .itemTap(itemID: item.id, num: item.num, replyTo: comment?.id, action: label, promptDigest: digest),
-            subject: subject, headline: item.title, reference: reference, button: label,
+            subject: subject, headline: item.title, reference: "#\(item.num)", button: label,
             detail: comment?.body ?? item.body)
+    }
+
+    /// Whether a tap on `label` may need a signature, judged from the
+    /// cached item: enough to decide between the outbox and `send`, which
+    /// reads the item again before anything is signed.
+    public static func mayNeedSignature(item: TrackerItem, comment: TrackerComment?, label: String) -> Bool {
+        if item.stepUp || comment?.stepUp == true { return true }
+        return false
+    }
+
+    /// What a consent item's Approve signs. A consent ask is answered with
+    /// a `consent` statement over the subject the journal published, and
+    /// only its yes is signed.
+    ///
+    /// The subject names the work by a hash, which nobody can read. So the
+    /// app signs only when it holds the very text that hash is of and has
+    /// shown it: `verifiedText` is the spawn's task as its card carries it.
+    /// A spawn with no card to hand, and a chat invite (whose message this
+    /// path never has), are sent to their cards instead. A file transfer's
+    /// subject is the file's own hash and size, shown as they are.
+    static func consentRequest(item: TrackerItem, label: String, verifiedText: String?) throws -> ApprovalRequest? {
+        guard let kind = item.consentKind, item.stepUp, TrackerItem.isAffirmativeAnswer(label) else { return nil }
+        let subject = item.subject ?? [:]
+        guard subject["op"] == kind, subject["decision"] == "approve" else {
+            throw ApprovalError.subjectMismatch("This request's details don't match what would be approved. Reload it and read it again.")
+        }
+        var detail: String?
+        switch kind {
+        case "spawn":
+            guard let task = verifiedText else {
+                throw ApprovalError.subjectMismatch("Open this request and approve it from its card, where the task is shown in full.")
+            }
+            guard subject["task_sha256"] == ApprovalSubjects.sha256(task) else {
+                throw ApprovalError.subjectMismatch("The task on this request is not the task that would be approved. Reload the request and read it again.")
+            }
+            detail = task
+        case "transfer":
+            detail = item.body
+        default:
+            throw ApprovalError.subjectMismatch("Approve this request from its card in the conversation, or in Settings ▸ Agent Chats, where its message is shown in full.")
+        }
+        return ApprovalRequest(kind: .consent, subject: subject, headline: item.title, reference: "#\(item.num)",
+                               button: label, detail: detail)
     }
 
     public enum Outcome: Equatable, Sendable {
@@ -52,19 +88,28 @@ public enum StepUpTap {
     /// the user was signing) refetches it once more, so the next tap signs
     /// the new words.
     @MainActor
-    public static func send(item: TrackerItem, comment: TrackerComment?, label: String,
+    public static func send(item: TrackerItem, comment: TrackerComment?, label: String, verifiedText: String? = nil,
                             api: any ItemsProviding, sync: any ItemsSyncing, signer: ApprovalSigner?) async -> Outcome {
-        guard request(item: item, comment: comment, label: label) != nil else { return .unsigned }
+        guard mayNeedSignature(item: item, comment: comment, label: label) else { return .unsigned }
         guard let signer else {
             return .failed(ApprovalError.noKeyOnThisDevice.localizedDescription)
         }
         do {
-            // The current words: the digest must be over the stored text.
+            // The current words: the digest must be over the stored text,
+            // and only a fresh read says whether this is a consent ask.
             let fresh = try await api.item(id: item.id)
-            let freshComment = comment.flatMap { asked in fresh.comments.first { $0.id == asked.id } }
-            guard let request = request(item: fresh.item, comment: comment == nil ? nil : freshComment, label: label),
-                  comment == nil || freshComment != nil else {
-                // No longer step-up (the mark was lowered): an ordinary tap.
+            let request: ApprovalRequest?
+            if fresh.item.consentKind != nil {
+                request = comment == nil ? try consentRequest(item: fresh.item, label: label, verifiedText: verifiedText) : nil
+            } else if let comment {
+                request = fresh.comments.first { $0.id == comment.id }
+                    .flatMap { Self.request(item: fresh.item, comment: $0, label: label) }
+            } else {
+                request = Self.request(item: fresh.item, comment: nil, label: label)
+            }
+            guard let request else {
+                // No longer step-up (the mark was lowered), a decline, or
+                // the asking comment has gone: an ordinary tap.
                 await sync.refreshItem(id: item.id)
                 return .unsigned
             }
@@ -110,6 +155,8 @@ public struct SpawnAsk: Equatable, Sendable {
 public struct ChatAsk: Equatable, Sendable {
     public var roomID: String
     public var targetDeviceID: Int64
+    /// The message the user was shown; `""` when the ask carried none, and
+    /// `nil` only when the caller does not know it (nothing is signed then).
     public var justification: String?
     public var headline: String?
 
@@ -184,28 +231,38 @@ public struct SigningConsentService: AgentSpawnAnswering, AgentChatProviding {
 
     // MARK: Subjects
 
-    /// The open consent item that stands for `link`, if the journal filed
-    /// one.
-    private func consentItem(_ link: ConsentLink) async -> TrackerItem? {
+    /// The open consent item of `kind` that stands for `link`, if the
+    /// journal filed one. `kind` is the journal's own mark on the item, so
+    /// an item an agent filed with the same link is never taken for it.
+    private func consentItem(_ link: ConsentLink, kind: String) async -> TrackerItem? {
         var query = ItemsListQuery()
         query.label = TrackerItem.consentLabel
         query.state = .open
         query.limit = 200
-        guard let page = try? await api.listItems(query) else { return nil }
-        return page.items.first { $0.links.contains { $0.url == link.url } }
+        var seen: Set<String> = []
+        // Every page: the ask may not be among the first 200.
+        for _ in 0..<20 {
+            guard let page = try? await api.listItems(query) else { return nil }
+            if let item = page.items.first(where: { item in
+                item.consentKind == kind && item.links.contains { $0.url == link.url }
+            }) { return item }
+            guard let next = page.nextCursor, seen.insert(next).inserted else { return nil }
+            query.cursor = next
+        }
+        return nil
     }
+
+    private static let openTheCard = "Open this request and approve it from its card, where it is shown in full."
 
     private func spawnApproval(_ ask: SpawnAsk) async throws -> SignedApproval? {
         let subject: ApprovalSubject
-        var detail = ask.task
         var reference: String?
         var headline = ask.headline ?? "Start a session"
-        if let item = await consentItem(.spawn(requestID: ask.requestID)) {
+        if let item = await consentItem(.spawn(requestID: ask.requestID), kind: "spawn") {
             guard item.stepUp else { return nil }
             subject = item.subject ?? [:]
             reference = "#\(item.num)"
             headline = item.title
-            if detail == nil { detail = item.body }
         } else {
             // No item to read the subject from: build it from the card and
             // the box's stored name, when the box is protected.
@@ -215,27 +272,42 @@ public struct SigningConsentService: AgentSpawnAnswering, AgentChatProviding {
             subject = ApprovalSubjects.spawn(ask: ask.requestID, box: box.name, workdir: workdir, task: task)
         }
         try Self.check(subject, op: "spawn", ask: ask.requestID)
-        if let task = ask.task, subject["task_sha256"] != ApprovalSubjects.sha256(task) {
+        // The subject names the task by its hash. Only the task itself,
+        // as the card showed it, may stand behind a signature.
+        guard let task = ask.task else { throw ApprovalError.subjectMismatch(Self.openTheCard) }
+        guard subject["task_sha256"] == ApprovalSubjects.sha256(task) else {
             throw ApprovalError.subjectMismatch("The task on this request is not the task that would be approved. Reload the request and read it again.")
         }
+        if let workdir = ask.workdir, !Self.matches(subject, "workdir", workdir) {
+            throw ApprovalError.subjectMismatch("The folder on this request is not the folder that would be approved. Reload the request and read it again.")
+        }
         return try await signer(ApprovalRequest(kind: .consent, subject: subject, headline: headline,
-                                                reference: reference, button: "Approve", detail: detail))
+                                                reference: reference, button: "Approve", detail: task))
     }
 
     private func chatApproval(_ ask: ChatAsk) async throws -> SignedApproval? {
-        guard let item = await consentItem(.chat(roomID: ask.roomID, deviceID: ask.targetDeviceID)), item.stepUp else {
+        guard let item = await consentItem(.chat(roomID: ask.roomID, deviceID: ask.targetDeviceID), kind: "chat"),
+              item.stepUp else {
             // Not aimed at a protected box, or no item to read the subject
             // from: sent unsigned, and the journal says so if it needed one.
             return nil
         }
         let subject = item.subject ?? [:]
         try Self.check(subject, op: "chat", ask: "\(ask.roomID)/\(ask.targetDeviceID)")
-        if let message = ask.justification, subject["message_sha256"] != ApprovalSubjects.sha256(message) {
+        guard let message = ask.justification else { throw ApprovalError.subjectMismatch(Self.openTheCard) }
+        guard subject["message_sha256"] == ApprovalSubjects.sha256(message) else {
             throw ApprovalError.subjectMismatch("The message on this request is not the one that would be approved. Reload the request and read it again.")
         }
         return try await signer(ApprovalRequest(kind: .consent, subject: subject, headline: item.title,
                                                 reference: "#\(item.num)", button: "Approve",
-                                                detail: ask.justification ?? item.body))
+                                                detail: message.isEmpty ? item.body : message))
+    }
+
+    /// Whether the subject's `name` (or its hashed form, for a long value)
+    /// is `value`.
+    private static func matches(_ subject: ApprovalSubject, _ name: String, _ value: String) -> Bool {
+        if let plain = subject[name] { return plain == value }
+        return subject[name + "_sha256"] == ApprovalSubjects.sha256(value)
     }
 
     /// The published subject must be about this ask, and an approval.

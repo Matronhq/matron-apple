@@ -66,9 +66,15 @@ final class ApprovalPromptPresenter {
     private func sync() {
         let prompt = center.prompt
         guard prompt?.id != shownID else { return }
-        dismiss()
-        shownID = prompt?.id
-        if prompt != nil { present() }
+        // The sheet on screen goes first, and the next request is shown
+        // only once it has gone: presenting during a dismissal is refused.
+        dismiss { [weak self] in
+            guard let self else { return }
+            // Read again: the request may have changed meanwhile.
+            let current = self.center.prompt
+            self.shownID = current?.id
+            if current != nil { self.present() }
+        }
     }
 
     #if os(iOS)
@@ -96,9 +102,13 @@ final class ApprovalPromptPresenter {
         return host
     }
 
-    private func dismiss() {
-        controller?.dismiss(animated: true)
+    private func dismiss(then next: @escaping () -> Void) {
+        guard let shown = controller, shown.presentingViewController != nil else {
+            controller = nil
+            return next()
+        }
         controller = nil
+        shown.dismiss(animated: true, completion: next)
     }
 
     private static func topController() -> UIViewController? {
@@ -130,10 +140,11 @@ final class ApprovalPromptPresenter {
     /// The confirm sheet's size on the Mac.
     static let sheetSize = CGSize(width: 460, height: 640)
 
-    private func dismiss() {
+    private func dismiss(then next: @escaping () -> Void) {
         if let sheet { parent?.endSheet(sheet) }
         sheet = nil
         parent = nil
+        next()
     }
     #endif
 }

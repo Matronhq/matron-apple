@@ -8,15 +8,24 @@ import Observation
 @Observable @MainActor
 public final class AccountLockMonitor {
     public private(set) var isLocked = false
+    @ObservationIgnored private var clearedHandlers: [() -> Void] = []
 
     public init() {}
+
+    /// Runs `handler` each time the lock is cleared: what waited behind it
+    /// (the reply outbox) can go again.
+    public func whenCleared(_ handler: @escaping () -> Void) {
+        clearedHandlers.append(handler)
+    }
 
     /// The status of an answered request that carried this device's token.
     /// Safe to call from any thread.
     public nonisolated func note(status: Int) {
         guard let locked = Self.verdict(status) else { return }
         Task { @MainActor in
-            if self.isLocked != locked { self.isLocked = locked }
+            guard self.isLocked != locked else { return }
+            self.isLocked = locked
+            if !locked { self.clearedHandlers.forEach { $0() } }
         }
     }
 

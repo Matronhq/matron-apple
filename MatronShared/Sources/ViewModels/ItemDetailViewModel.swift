@@ -1222,13 +1222,16 @@ public final class ItemDetailViewModel {
         sawEnqueuedRow = false
         // A step-up item's tap is confirmed, signed and posted at once; it
         // never waits in the outbox.
-        if let item, await sendSigned(item: item, comment: nil, label: label) {
+        if let item, let sent = await sendSigned(item: item, comment: nil, label: label) {
             if let fresh = try? store.item(id: itemID) {
                 self.item = fresh
                 subscribeConsentRows()
                 refreshSpawnConsent()
             }
-            if enqueueingAction == label { enqueueingAction = nil }
+            // Sent: the marker stays until the item stream shows the
+            // choice, as for a queued tap (a snapshot from before the tap
+            // can still arrive). Not sent: the button is free again.
+            if !sent, enqueueingAction == label { enqueueingAction = nil }
             return
         }
         await sync.enqueueComment(itemID: itemID, localID: UUID().uuidString, body: label, attachments: [], action: label, replyTo: nil)
@@ -1330,10 +1333,11 @@ public final class ItemDetailViewModel {
               label != selectedCommentActions[commentID] else { return }
         enqueueingCommentActions[commentID] = label
         sawEnqueuedCommentRows.remove(commentID)
-        if await sendSigned(item: item, comment: asking, label: label) {
+        if let sent = await sendSigned(item: item, comment: asking, label: label) {
             if let fresh = try? store.item(id: itemID) { self.item = fresh }
             if let thread = try? store.comments(itemID: itemID) { comments = thread }
-            if enqueueingCommentActions[commentID] == label { clearEnqueueingCommentAction(commentID) }
+            // As above: a sent tap's marker waits for the comments stream.
+            if !sent, enqueueingCommentActions[commentID] == label { clearEnqueueingCommentAction(commentID) }
             return
         }
         await sync.enqueueComment(itemID: itemID, localID: UUID().uuidString, body: label, attachments: [], action: label, replyTo: commentID)
@@ -1359,17 +1363,21 @@ public final class ItemDetailViewModel {
         if !queued, !recorded, enqueueingCommentActions[commentID] == label { clearEnqueueingCommentAction(commentID) }
     }
 
-    /// Sends a tap that needs a signature. True when the tap was dealt
-    /// with here (sent, cancelled or refused, with `error` saying why);
-    /// false when no signature applies and the outbox should take it.
-    private func sendSigned(item: TrackerItem, comment: TrackerComment?, label: String) async -> Bool {
-        switch await StepUpTap.send(item: item, comment: comment, label: label, api: api, sync: sync,
+    /// Sends a tap that needs a signature. `nil` when no signature applies
+    /// and the outbox should take it; otherwise whether it was sent (not
+    /// sent: cancelled, or refused with `error` saying why).
+    private func sendSigned(item: TrackerItem, comment: TrackerComment?, label: String) async -> Bool? {
+        // A spawn ask's task, as its card carries it: the only text a
+        // consent approval for it may be signed over.
+        let task = comment == nil ? spawnConsent?.request?.task : nil
+        switch await StepUpTap.send(item: item, comment: comment, label: label, verifiedText: task, api: api, sync: sync,
                                     signer: approvalSigner) {
-        case .unsigned: return false
-        case .sent, .cancelled: return true
+        case .unsigned: return nil
+        case .sent: return true
+        case .cancelled: return false
         case .failed(let message):
             error = message
-            return true
+            return false
         }
     }
 
