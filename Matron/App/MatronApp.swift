@@ -68,6 +68,7 @@ struct MatronApp: App {
                         .task { await bootstrap() }
                 } else if let session {
                     AppShellView(session: session, deps: dependencies, onSignOut: { signOut() })
+                        .accountLockedBanner(dependencies.accountLock)
                     // Settings (a sheet off the chat list) reads this to
                     // render the Privacy section — sheets inherit the
                     // presenting hierarchy's environment.

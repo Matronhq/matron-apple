@@ -80,6 +80,11 @@ extension AppDependencies {
         let revocation: CredentialRevocationMonitor
         /// This device's id on the journal, revoked on sign-out.
         var deviceID: Int64?
+        /// The account's approval keys and this device's own; set when the
+        /// stack is built (`installApprovals`).
+        var approvals: ApprovalCenter?
+        /// Shows the confirm sheet for `approvals`.
+        var approvalPresenter: ApprovalPromptPresenter?
         /// Handle for the `maintenance.start()` kickoff — awaited before
         /// `stop()` in the sign-out teardown, same rule as `itemsStartTask`.
         var maintenanceStartTask: Task<Void, Never>?
@@ -322,14 +327,14 @@ extension AppDependencies {
     /// the Settings screen listing the parked ones.
     /// Same session-scoped `JournalAPI`; protocol slice for testability.
     func agentChatService(for session: UserSession) -> any AgentChatProviding {
-        core(for: session).api
+        signingConsentService(for: session)
     }
 
     /// Agent-spawn consent surface: answering the cards inline in a chat.
     /// No settings-screen twin — a spawn's resolution is journalled, so
     /// there is no parked-row list to poll.
     func agentSpawnService(for session: UserSession) -> any AgentSpawnAnswering {
-        core(for: session).api
+        signingConsentService(for: session)
     }
 
     /// Answers hand-over cards from the timeline (`POST /grants/:id/answer`).
@@ -380,8 +385,10 @@ extension AppDependencies {
         }
         #endif
         let core = core(for: session)
-        return BoxesViewModel(api: JournalAgentRPCService(api: core.api, engine: core.engine),
-                              capacityCache: boxCapacityCache(for: session))
+        let boxes = BoxesViewModel(api: JournalAgentRPCService(api: core.api, engine: core.engine),
+                                   capacityCache: boxCapacityCache(for: session))
+        boxes.approvalSigner = approvalSigner(for: session)
+        return boxes
     }
 
     func boxCapacityCache(for session: UserSession) -> any BoxCapacityCaching {

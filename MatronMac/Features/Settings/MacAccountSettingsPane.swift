@@ -13,6 +13,8 @@ struct MacAccountSettingsPane: View {
     /// Settings → Security, held here so its sheets present from the
     /// `Form` (see `macSecuritySettingsSheet(_:)`).
     @State private var security: SecuritySettingsModel
+    @State private var approvalKeys: ApprovalKeysScreenModel
+    @State private var showsApprovalKeys = false
 
     init(session: UserSession, deps: AppDependencies, onSignOut: @escaping () -> Void) {
         self.session = session
@@ -22,6 +24,7 @@ struct MacAccountSettingsPane: View {
             twoFactorAPI: deps.twoFactorSettingsService(for: session),
             passwordAPI: deps.passwordService(for: session),
             emailAPI: deps.accountEmailService(for: session)))
+        _approvalKeys = State(initialValue: ApprovalKeysScreenModel(center: deps.approvals(for: session)))
     }
 
     /// Injected by MatronMacApp; nil in previews/tests hides the section.
@@ -38,6 +41,14 @@ struct MacAccountSettingsPane: View {
                 )
             }
             MacTwoFactorSettingsSection(security: security)
+            Section {
+                LabeledContent {
+                    Button("Manage…") { showsApprovalKeys = true }
+                        .accessibilityIdentifier("settings.approvalKeys")
+                } label: {
+                    ApprovalKeysRowLabel(model: approvalKeys)
+                }
+            }
             // Only offered when the device can actually authenticate —
             // a toggle that can never unlock again would lock the user
             // out of their own chats. Mirrors iOS DeviceSettingsView.
@@ -70,9 +81,22 @@ struct MacAccountSettingsPane: View {
         }
         .formStyle(.grouped)
         .macSecuritySettingsSheet(security)
+        .task { await approvalKeys.load() }
+        .sheet(isPresented: $showsApprovalKeys) {
+            VStack(spacing: 0) {
+                ApprovalKeysScreen(model: approvalKeys)
+                Divider()
+                HStack {
+                    Spacer()
+                    Button("Done") { showsApprovalKeys = false }.keyboardShortcut(.defaultAction)
+                }
+                .padding(12)
+            }
+            .frame(width: 560, height: 620)
+        }
         // Tall enough for the Security section with Email address, Change
         // password and its confirmation, and the Privacy section with its
         // Lock picker.
-        .frame(width: MacSettingsLayout.paneWidth, height: 640)
+        .frame(width: MacSettingsLayout.paneWidth, height: 720)
     }
 }

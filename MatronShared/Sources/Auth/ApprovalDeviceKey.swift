@@ -186,7 +186,7 @@ public struct SecureEnclaveKeyProvider: ApprovalKeyProviding {
     static func biometryState() -> Data? {
         let context = LAContext()
         guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil) else { return nil }
-        return context.evaluatedPolicyDomainState
+        return context.domainState.biometry.stateHash
     }
 }
 

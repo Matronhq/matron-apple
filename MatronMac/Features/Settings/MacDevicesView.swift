@@ -54,6 +54,9 @@ struct MacDevicesView: View {
                           onSetLetter: {
                               draftLetter = device.tagChar ?? ""
                               letterEditing = device
+                          },
+                          onToggleProtected: {
+                              Task { await viewModel.setProtected(device, on: !device.isProtected) }
                           })
             }
             .overlay {
@@ -161,6 +164,8 @@ private struct DeviceRow: View {
     /// Opens the tag-character editor — agent boxes only; the tag fronts
     /// chat titles and clients have no box letter.
     let onSetLetter: () -> Void
+    /// Protects the box, or stops protecting it; agent boxes only.
+    let onToggleProtected: () -> Void
 
     /// Mirrors the iOS row's detail line: an agent box with a tag character
     /// shows it, so the current value is visible without opening the editor.
@@ -169,6 +174,7 @@ private struct DeviceRow: View {
         if device.kind == "agent", let letter = device.tagChar {
             caption += " · Tag \(letter)"
         }
+        if device.idleExpired { caption += " · Signed out (unused too long)" }
         return caption
     }
 
@@ -190,6 +196,7 @@ private struct DeviceRow: View {
                             .background(Color.accentColor.opacity(0.15), in: Capsule())
                             .foregroundStyle(Color.accentColor)
                     }
+                    if device.isProtected { ProtectedBoxBadge() }
                 }
                 Text(caption)
                     .font(.caption)
@@ -216,6 +223,9 @@ private struct DeviceRow: View {
                 Button("Tag…", action: onSetLetter)
                     .controlSize(.small)
                     .help("Choose the character shown before this machine's chat titles")
+                Button(device.isProtected ? "Unprotect…" : "Protect…", action: onToggleProtected)
+                    .controlSize(.small)
+                    .help("A protected box only takes work you approve yourself, signed with an approval key")
             }
             Button("Rename…", action: onRename)
                 .controlSize(.small)

@@ -112,6 +112,7 @@ struct MatronMacApp: App {
                         viewModel: ChatListViewModel(chat: dependencies.chatService(for: session), gate: .shared),
                         onSignOut: { signOut(activeSession: session) }
                     )
+                    .accountLockedBanner(dependencies.accountLock)
                     // Answers the window's size probes itself, so they do
                     // not measure the whole split view (WindowRootFrame).
                     .windowRootFrame(minSize: CGSize(width: 800, height: 600),

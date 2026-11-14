@@ -141,8 +141,10 @@ public final class BoxesViewModel {
 
     /// Signs unlocks and lockdown clears. Set by the app.
     public var approvalSigner: ApprovalSigner?
-    /// Why the last unlock, lock or clear failed; shown by the screen.
+    /// Why the last unlock, lock or clear failed, and on which box; shown
+    /// on that box's card.
     public var lockError: String?
+    public private(set) var lockErrorBoxID: Int64?
     /// A box that answered "in lockdown": the screen offers to clear it.
     public private(set) var lockdownBoxes: Set<Int64> = []
     /// Boxes with an unlock, lock or clear in flight.
@@ -177,9 +179,11 @@ public final class BoxesViewModel {
         lockBusy.insert(device.id)
         defer { lockBusy.remove(device.id) }
         lockError = nil
+        lockErrorBoxID = nil
         if let failure = await action() {
             if case .lockdown = failure { lockdownBoxes.insert(device.id) }
             lockError = failure.text
+            lockErrorBoxID = failure.text == nil ? nil : device.id
             return false
         }
         // The box reports its new state to the journal a moment later.

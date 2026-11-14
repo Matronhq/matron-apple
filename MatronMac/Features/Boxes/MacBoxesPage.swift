@@ -15,6 +15,7 @@ struct MacBoxesPage: View {
     @State private var viewModel: BoxesViewModel
     @State private var expanded: Set<Int64> = []
     @State private var startingOn: DeviceDTO?
+    @State private var unlocking: DeviceDTO?
 
     private static let sessionsWidth: CGFloat = 62
     /// Meters narrow first, so the box column keeps room for its login.
@@ -81,6 +82,9 @@ struct MacBoxesPage: View {
                 startingOn = nil
                 onOpenConversation(convoID)
             }
+        }
+        .sheet(item: $unlocking) { device in
+            BoxUnlockSheet(device: device, viewModel: viewModel) { unlocking = nil }
         }
     }
 
@@ -167,6 +171,12 @@ struct MacBoxesPage: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
+            if row.device.locked != nil {
+                BoxLockBar(device: row.device, viewModel: viewModel) { unlocking = $0 }
+                    .frame(maxWidth: 560, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 9)
+            }
             if expanded.contains(row.id) {
                 sessionList(row)
             }
@@ -190,6 +200,7 @@ struct MacBoxesPage: View {
                 } else if row.isMostSpare {
                     BoxBadge("Most spare", color: .green)
                 }
+                if row.device.isProtected { ProtectedBoxBadge() }
             }
             HStack(spacing: 4) {
                 if let caption = row.wake?.caption {

@@ -27,6 +27,7 @@ struct BoxesScreen: View {
     let onOpenChat: (String) -> Void
 
     @State private var startingOn: DeviceDTO?
+    @State private var unlocking: DeviceDTO?
 
     var body: some View {
         let rows = viewModel.rows()
@@ -77,6 +78,9 @@ struct BoxesScreen: View {
                 onOpenChat(convoID)
             }
         }
+        .sheet(item: $unlocking) { device in
+            BoxUnlockSheet(device: device, viewModel: viewModel) { unlocking = nil }
+        }
     }
 
     private func spareCard(_ spare: AllowanceSpare, summary: BoxesSummary) -> some View {
@@ -110,9 +114,11 @@ struct BoxesScreen: View {
                 } else if row.isMostSpare {
                     BoxBadge("Most spare", color: .green)
                 }
+                if row.device.isProtected { ProtectedBoxBadge() }
                 Spacer(minLength: 4)
                 trailingControls(row)
             }
+            BoxLockBar(device: row.device, viewModel: viewModel) { unlocking = $0 }
             HStack(spacing: 4) {
                 if let caption = row.wake?.caption {
                     Text(caption)
