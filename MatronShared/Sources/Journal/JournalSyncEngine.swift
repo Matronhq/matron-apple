@@ -1802,6 +1802,14 @@ public actor JournalSyncEngine {
                     connection.close()
                     continue
                 }
+                // `endSync()` cancelled this loop while the handshake ran (it
+                // cannot observe cancellation): drop the socket instead of
+                // publishing it over the stopped state. Hosts that stop and
+                // restart sync as windows come and go can land here.
+                if Task.isCancelled {
+                    connection.close()
+                    return
+                }
                 liveConnection = connection
                 // Fetched over the last socket; this one starts behind them.
                 caughtUpViewed.removeAll()

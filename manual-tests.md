@@ -402,3 +402,16 @@ back on the test database).
 - [ ] Confirm with Face ID: the locked screen goes, chats and items load again without signing in, and the other devices are signed out. Quit and reopen the app: it is still signed in (the new token was saved).
 - [ ] Lock again, turn off the network after confirming but before the answer arrives, then turn it on: if the account was unlocked, the app goes to the sign-in screen and says the server's answer was lost. Sign in, then remove the old entry for this device in Settings ▸ Devices (Face ID re-attaches the key first).
 - [ ] With the account locked, a key enrolled less than a day ago does not freeze the device: it is signed out like a device with no key.
+
+## Mac: socket closes when nothing is visible, and a drop is still noticed
+
+Needs a signed-in Mac build and a journal you can watch (its log, or any tool listing open connections for the device). "Hidden" means every window hidden (`⌘H`), minimised, or fully covered by other windows.
+
+- [ ] With a window visible, turn Wi-Fi off, wait 30 s, turn it on — the chat list shows connecting/offline, then reconnects within about 30 s of the network returning, and an event sent while it was off appears.
+- [ ] With a window visible and the app idle for 5 minutes, drop the connection without the OS noticing (for example block the journal host in the firewall for 90 s, then unblock) — the app notices and reconnects without a click.
+- [ ] Hide all windows and wait 90 s — the journal shows the device's socket closed (and Activity Monitor's "Preventing App Nap" column for Matron reads Yes while visible, No after the close).
+- [ ] While hidden, send an event from another client, then show a window — the event appears and the socket is open again. No duplicate or missing rows.
+- [ ] Hide, then show again within 30 s — the socket never closed (no new connection in the journal).
+- [ ] Sleep the Mac (Apple menu, Sleep) with a window visible, wake it after a minute — the socket is open again with a window visible, and an event sent during the sleep appears.
+- [ ] Let the Mac sleep with all windows hidden, wake it — no socket opens until a window is shown.
+- [ ] Close the last window with the red button (the app keeps running) and wait 90 s — the socket closes; reopen from the Dock — it reconnects.
