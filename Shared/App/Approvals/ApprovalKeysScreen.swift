@@ -216,8 +216,8 @@ struct ApprovalKeyPasswordForm: View {
 
     private var title: String {
         switch form {
-        case .setUp: return "Set Up an Approval Key"
-        case .remove: return "Remove Approval Key"
+        case .setUp: return "Set Up a Key"
+        case .remove: return "Remove Key"
         }
     }
 

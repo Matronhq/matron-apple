@@ -79,17 +79,21 @@ final class ApprovalPromptPresenter {
             center.cancel()
             return
         }
-        let host = UIHostingController(rootView: ApprovalConfirmHost(center: center))
+        let host = Self.sheetController(ApprovalConfirmHost(center: center))
+        controller = host
+        top.present(host, animated: true)
+    }
+
+    /// The confirm sheet's controller. Full height, so every line of what
+    /// is being signed is on screen above the button, not under a fold.
+    static func sheetController<Content: View>(_ content: Content) -> UIViewController {
+        let host = UIHostingController(rootView: content)
         host.modalPresentationStyle = .pageSheet
         // Only the sheet's own Cancel ends it: a stray swipe must not be
         // read as an answer either way.
         host.isModalInPresentation = true
-        if let sheet = host.sheetPresentationController {
-            sheet.detents = [.medium(), .large()]
-            sheet.prefersGrabberVisible = true
-        }
-        controller = host
-        top.present(host, animated: true)
+        host.sheetPresentationController?.detents = [.large()]
+        return host
     }
 
     private func dismiss() {
@@ -106,7 +110,8 @@ final class ApprovalPromptPresenter {
     }
     #else
     private func present() {
-        let host = NSHostingController(rootView: ApprovalConfirmHost(center: center).frame(width: 460, height: 540))
+        let host = NSHostingController(rootView: ApprovalConfirmHost(center: center)
+            .frame(width: Self.sheetSize.width, height: Self.sheetSize.height))
         let window = NSWindow(contentViewController: host)
         window.styleMask = [.titled]
         window.title = ApprovalConfirmView.title
@@ -121,6 +126,9 @@ final class ApprovalPromptPresenter {
         parent = target
         target.beginSheet(window)
     }
+
+    /// The confirm sheet's size on the Mac.
+    static let sheetSize = CGSize(width: 460, height: 540)
 
     private func dismiss() {
         if let sheet { parent?.endSheet(sheet) }

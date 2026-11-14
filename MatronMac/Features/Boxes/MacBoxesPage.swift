@@ -26,11 +26,13 @@ struct MacBoxesPage: View {
     /// Narrower than this the defaults column folds under the box's name.
     private static let wideLayoutMinWidth: CGFloat = 1_020
 
-    init(deps: AppDependencies, session: UserSession, onOpenConversation: @escaping (String) -> Void) {
+    /// `viewModel` is for tests and render harnesses; the app leaves it out.
+    init(deps: AppDependencies, session: UserSession, viewModel: BoxesViewModel? = nil,
+         onOpenConversation: @escaping (String) -> Void) {
         self.deps = deps
         self.session = session
         self.onOpenConversation = onOpenConversation
-        _viewModel = State(initialValue: deps.makeBoxesViewModel(for: session))
+        _viewModel = State(initialValue: viewModel ?? deps.makeBoxesViewModel(for: session))
     }
 
     var body: some View {

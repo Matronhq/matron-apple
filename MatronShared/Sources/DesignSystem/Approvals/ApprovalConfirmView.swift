@@ -1,4 +1,9 @@
 import SwiftUI
+#if os(iOS)
+import UIKit
+#else
+import AppKit
+#endif
 
 /// The confirm sheet for a signed approval: what is being approved, the
 /// button, and every line of the subject exactly as it will be signed,
@@ -115,10 +120,50 @@ public struct ApprovalConfirmView: View {
         }
     }
 
+    /// `text` with a break allowed after every character of a long unbroken
+    /// run (a hash, an id, a path). Left alone, the text system hyphenates
+    /// such a run where it wraps, and a hyphen that was never signed would
+    /// appear inside the value. The added characters are zero-width: the
+    /// text reads exactly as signed.
+    static func breakable(_ text: String, longerThan limit: Int = 16) -> String {
+        var out = ""
+        var run = ""
+        func flush() {
+            if run.count > limit {
+                out += run.map(String.init).joined(separator: "\u{200B}")
+            } else {
+                out += run
+            }
+            run = ""
+        }
+        for character in text {
+            if character.isWhitespace {
+                flush()
+                out.append(character)
+            } else {
+                run.append(character)
+            }
+        }
+        flush()
+        return out
+    }
+
+    private func copyMenu(_ value: String) -> some View {
+        Button("Copy") {
+            #if os(iOS)
+            UIPasteboard.general.string = value
+            #else
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(value, forType: .string)
+            #endif
+        }
+    }
+
     private func detailBlock(_ detail: String) -> some View {
-        Text(detail)
+        Text(verbatim: Self.breakable(detail))
             .font(.callout)
-            .textSelection(.enabled)
+            .contextMenu { copyMenu(detail) }
+            .accessibilityLabel(Text(verbatim: detail))
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(12)
@@ -139,15 +184,16 @@ public struct ApprovalConfirmView: View {
                     ForEach(Array(model.subject.enumerated()), id: \.element.id) { index, line in
                         if index > 0 { Divider() }
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(verbatim: line.key)
+                            Text(verbatim: Self.breakable(line.key))
                                 .font(.caption.monospaced())
                                 .foregroundStyle(.secondary)
-                            Text(verbatim: line.value.isEmpty ? "(empty)" : line.value)
+                            Text(verbatim: line.value.isEmpty ? "(empty)" : Self.breakable(line.value))
                                 .font(.callout.monospaced())
                                 .foregroundStyle(line.value.isEmpty ? .secondary : .primary)
-                                .textSelection(.enabled)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
+                        .contextMenu { copyMenu(line.value) }
+                        .accessibilityLabel(Text(verbatim: "\(line.key): \(line.value)"))
                         .padding(.vertical, 8)
                         .padding(.horizontal, 12)
                         .frame(maxWidth: .infinity, alignment: .leading)

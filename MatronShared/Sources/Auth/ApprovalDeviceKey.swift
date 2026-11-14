@@ -43,6 +43,11 @@ public struct StoredApprovalKey: Codable, Equatable, Sendable {
     public var biometryState: Data?
     public var createdAt: Date
 
+    public init(kind: Kind, blob: Data, publicKey: Data, biometryState: Data?, createdAt: Date) {
+        self.kind = kind; self.blob = blob; self.publicKey = publicKey
+        self.biometryState = biometryState; self.createdAt = createdAt
+    }
+
     public var keyID: String { ApprovalKeyEncoding.keyID(publicKey: publicKey) }
 }
 
