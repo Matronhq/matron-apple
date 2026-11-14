@@ -137,6 +137,60 @@ public final class BoxesViewModel {
         }
     }
 
+    // MARK: Locked boxes
+
+    /// Signs unlocks and lockdown clears. Set by the app.
+    public var approvalSigner: ApprovalSigner?
+    /// Why the last unlock, lock or clear failed; shown by the screen.
+    public var lockError: String?
+    /// A box that answered "in lockdown": the screen offers to clear it.
+    public private(set) var lockdownBoxes: Set<Int64> = []
+    /// Boxes with an unlock, lock or clear in flight.
+    public private(set) var lockBusy: Set<Int64> = []
+
+    /// Opens an unlock window on a locked box. True when the box took it.
+    @discardableResult
+    public func unlock(_ device: DeviceDTO, minutes: Int) async -> Bool {
+        await lockAction(device) {
+            await BoxLockControl.unlock(box: device, minutes: minutes, api: self.api, signer: self.approvalSigner)
+        }
+    }
+
+    /// Ends an unlock window now.
+    @discardableResult
+    public func lock(_ device: DeviceDTO) async -> Bool {
+        await lockAction(device) { await BoxLockControl.lock(box: device, api: self.api) }
+    }
+
+    /// Ends a box's lockdown.
+    @discardableResult
+    public func clearLockdown(_ device: DeviceDTO) async -> Bool {
+        let cleared = await lockAction(device) {
+            await BoxLockControl.clearLockdown(box: device, api: self.api, signer: self.approvalSigner)
+        }
+        if cleared { lockdownBoxes.remove(device.id) }
+        return cleared
+    }
+
+    private func lockAction(_ device: DeviceDTO, _ action: () async -> BoxLockControl.Failure?) async -> Bool {
+        guard !lockBusy.contains(device.id) else { return false }
+        lockBusy.insert(device.id)
+        defer { lockBusy.remove(device.id) }
+        lockError = nil
+        if let failure = await action() {
+            if case .lockdown = failure { lockdownBoxes.insert(device.id) }
+            lockError = failure.text
+            return false
+        }
+        // The box reports its new state to the journal a moment later.
+        await load()
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            await self?.load()
+        }
+        return true
+    }
+
     public func wake(_ device: DeviceDTO) async {
         await waker.wake(agent: device)
         await load()
