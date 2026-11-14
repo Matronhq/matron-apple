@@ -72,8 +72,7 @@ final class ComposerKeyboardUITests: XCTestCase {
         let selectAll = app.menuItems["Select All"]
         XCTAssertTrue(selectAll.waitForExistence(timeout: 5), "no Select All in the composer's menu")
         selectAll.tap()
-        // Dismiss the edit menu that Select All brings back, without
-        // touching the field.
+        // Let the selection and its handles settle before grabbing one.
         Thread.sleep(forTimeInterval: 0.5)
         attach("selected")
         let handle = field.coordinate(withNormalizedOffset: .zero)
