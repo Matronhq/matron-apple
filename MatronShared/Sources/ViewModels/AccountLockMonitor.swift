@@ -79,7 +79,8 @@ public final class AccountLockMonitor {
     /// locked. Safe to call from any thread.
     public nonisolated func noteSocketAccepted() {
         Task { @MainActor in
-            guard self.lockedBySocket else { return }
+            // The journal says hello to no device of a locked account, so
+            // this ends a lock however it was learned.
             self.lockedBySocket = false
             self.set(false)
         }

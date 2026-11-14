@@ -97,6 +97,9 @@ public actor JournalSyncEngine {
     /// (no `.offline` blip in the UI, no backoff sleep) — the network is
     /// there, we're just rebinding to it.
     private var pathChangeReconnect = false
+    /// Sync stopped because the journal refused this device's token. A new
+    /// token (an unlock) starts it again.
+    private var stoppedByRejection = false
     /// Trailing-edge debounce for path-change rebinds. A flapping network
     /// (Wi-Fi↔cellular handoff, train travel) fires the monitor in bursts;
     /// each burst used to close the socket and start a zero-delay
@@ -343,12 +346,14 @@ public actor JournalSyncEngine {
 
     public func beginSync() {
         guard runTask == nil else { return }
+        stoppedByRejection = false
         attempt = 0
         runTask = Task { await runLoop() }
         startPathMonitor()
     }
 
     public func endSync() async {
+        stoppedByRejection = false
         runTask?.cancel()
         runTask = nil
         pathMonitor?.cancel()
@@ -400,6 +405,12 @@ public actor JournalSyncEngine {
     public func replaceToken(_ newToken: String) {
         token = newToken
         failAllRPC(RPCRequestError.offline)
+        if stoppedByRejection {
+            // The old token was refused while the unlock's answer was on
+            // its way: sync stopped, and starts again with the new one.
+            beginSync()
+            return
+        }
         if let connection = liveConnection {
             pathChangeReconnect = true
             setState(.connecting)
@@ -2138,6 +2149,7 @@ public actor JournalSyncEngine {
                 failReadyWaiters(JournalSyncError.authRevoked)
                 failAllRPC(RPCRequestError.offline)
                 runTask = nil
+                stoppedByRejection = true
                 credentialSignals?(.rejected)
                 return
             } catch JournalConnectionError.accountLocked where helloToken != token {

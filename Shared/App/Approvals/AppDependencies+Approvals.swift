@@ -55,7 +55,10 @@ extension AppDependencies {
             monitor: accountLock, api: core.api,
             sign: { since in try await center.signUnlock(since: since) },
             adoptToken: { [weak self] token in try await self?.adoptToken(token, core: core, session: session) },
-            pending: Self.pendingUnlock(for: session))
+            pending: Self.pendingUnlock(for: session),
+            isCurrent: { [weak self] in self?.isCurrent(core, userID: session.userID) ?? false },
+            attempt: .init(begin: { core.revocation.hold() },
+                           end: { tookNewToken in core.revocation.release(discard: tookNewToken) }))
     }
 
     static func pendingUnlock(for session: UserSession) -> PendingUnlockStore {

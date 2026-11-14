@@ -293,6 +293,24 @@ class JournalSyncEngineTests: XCTestCase {
         await engine.endSync()
     }
 
+    /// The old token was refused (the unlock committed before its answer
+    /// arrived) and sync stopped; the new token starts it again.
+    func testReplaceToken_afterARefusalStoppedSync_startsItAgain() async throws {
+        let first = FakeWebSocketConnection()
+        first.serve(#"{"kind":"control","op":"error","code":"auth"}"#)
+        let second = FakeWebSocketConnection()
+        second.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([first, second]))
+        await engine.beginSync()
+        for _ in 0..<300 where first.sent.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        try await Task.sleep(for: .milliseconds(100))
+        await engine.replaceToken("fresh")
+        try await engine.waitUntilReady()
+        XCTAssertTrue(second.sent.first?.contains(#""token":"fresh""#) ?? false)
+        await engine.endSync()
+    }
+
     /// A `defaults` frame reaches every subscriber as it lands — it is not a
     /// journal event, so nothing is appended to the store for it.
     func testDefaultsFanOut() async throws {

@@ -30,6 +30,20 @@ public final class AccountUnlockModel {
     private let sign: (Int64) async throws -> SignedApproval
     private let adoptToken: (String) async throws -> Void
     private let pending: PendingUnlockStore
+    private let isCurrent: () -> Bool
+    private let attempt: Attempt
+
+    /// Told when the unlock request goes out and how it ended, so a refusal
+    /// of the old token meanwhile is held back (`CredentialRevocationMonitor.hold()`).
+    public struct Attempt {
+        public var begin: () -> Void
+        public var end: (_ tookNewToken: Bool) -> Void
+        public init(begin: @escaping () -> Void, end: @escaping (Bool) -> Void) {
+            self.begin = begin
+            self.end = end
+        }
+        public static let none = Attempt(begin: {}, end: { _ in })
+    }
 
     /// - Parameters:
     ///   - sign: the confirm sheet, then the signature (`ApprovalCenter.signUnlock`).
@@ -38,7 +52,11 @@ public final class AccountUnlockModel {
     public init(monitor: AccountLockMonitor, api: any AccountUnlocking,
                 sign: @escaping (Int64) async throws -> SignedApproval,
                 adoptToken: @escaping (String) async throws -> Void,
-                pending: PendingUnlockStore) {
+                pending: PendingUnlockStore,
+                isCurrent: @escaping () -> Bool = { true },
+                attempt: Attempt = .none) {
+        self.isCurrent = isCurrent
+        self.attempt = attempt
         self.monitor = monitor
         self.api = api
         self.sign = sign
@@ -71,21 +89,33 @@ public final class AccountUnlockModel {
             return
         }
         // From here the journal may unlock without this device hearing it.
+        guard isCurrent() else { phase = .idle; return }
         pending.markStarted()
+        attempt.begin()
+        var tookNewToken = false
+        defer { attempt.end(tookNewToken) }
         let result: AccountUnlockResult
         do {
             result = try await api.unlockAccount(approval: approval)
         } catch AccountUnlockError.notLocked {
+            // An answer for a sign-in that has since gone changes nothing.
+            guard isCurrent() else { phase = .idle; return }
             pending.clear()
             phase = .idle
             monitor.cleared()
             return
         } catch {
+            guard isCurrent() else { phase = .idle; return }
             phase = .failed(Self.text(for: error))
             return
         }
+        // The answer belongs to the sign-in the unlock started from: after
+        // a sign-out or a new sign-in it is thrown away, and the lock or
+        // pending state of what is signed in now is left alone.
+        guard isCurrent() else { phase = .idle; return }
         do {
             try await adoptToken(result.token)
+            tookNewToken = true
         } catch {
             // The new token is in use for this run but could not be saved:
             // the next launch would find the old, dead one. The locked
