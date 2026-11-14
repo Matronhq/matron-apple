@@ -116,7 +116,10 @@ public final class AccountUnlockModel {
         do {
             try await adoptToken(result.token)
             tookNewToken = true
-        } catch {
+        } catch is UnsavedTokenError {
+            // In use, but not saved: refusals of the old token are moot.
+            tookNewToken = true
+            guard isCurrent() else { phase = .idle; return }
             // The new token is in use for this run but could not be saved:
             // the next launch would find the old, dead one. The locked
             // screen goes with the lock, so the warning outlives it.
@@ -125,7 +128,13 @@ public final class AccountUnlockModel {
             monitor.cleared()
             monitor.warn(Self.unsavedTokenWarning)
             return
+        } catch {
+            // Nothing was swapped in (the sign-in had gone).
+            phase = .idle
+            return
         }
+        // The sign-in may have gone while the token was being taken.
+        guard isCurrent() else { phase = .idle; return }
         pending.clear()
         phase = .idle
         monitor.cleared()
@@ -146,6 +155,12 @@ public final class AccountUnlockModel {
             return error.localizedDescription
         }
     }
+}
+
+/// Thrown by `adoptToken` when the new token is in use but could not be
+/// saved for the next launch.
+public struct UnsavedTokenError: Error, Equatable, Sendable {
+    public init() {}
 }
 
 /// Remembers that this device sent an unlock and had no answer yet. Kept

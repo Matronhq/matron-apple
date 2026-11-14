@@ -35,6 +35,9 @@ public final class AccountLockMonitor {
     /// before the lock can arrive after it. Only the socket being accepted
     /// again, a sign-in or an unlock does.
     @ObservationIgnored private var lockedBySocket = false
+    /// When the lock now shown was last reported. An acceptance heard
+    /// before then cannot clear it.
+    @ObservationIgnored private var lockedAt: ContinuousClock.Instant?
 
     /// Shown on the sign-in screen after a lock signed this device out.
     public static let lockedNotice =
@@ -63,24 +66,29 @@ public final class AccountLockMonitor {
     /// A request was refused because the account is locked. Safe to call
     /// from any thread.
     public nonisolated func note(lock: AccountLock) {
-        Task { @MainActor in self.locked(lock) }
+        let at = ContinuousClock.now
+        Task { @MainActor in self.locked(lock, at: at) }
     }
 
     /// The live socket said the account is locked. Safe to call from any
     /// thread.
     public nonisolated func noteLockedBySocket(_ lock: AccountLock) {
+        let at = ContinuousClock.now
         Task { @MainActor in
             self.lockedBySocket = true
-            self.locked(lock)
+            self.locked(lock, at: at)
         }
     }
 
     /// The journal accepted this device's hello: the account is not
     /// locked. Safe to call from any thread.
     public nonisolated func noteSocketAccepted() {
+        let at = ContinuousClock.now
         Task { @MainActor in
             // The journal says hello to no device of a locked account, so
-            // this ends a lock however it was learned.
+            // this ends a lock however it was learned; but not one reported
+            // after the hello was accepted (the lock came later).
+            if let lockedAt = self.lockedAt, lockedAt > at { return }
             self.lockedBySocket = false
             self.set(false)
         }
@@ -96,7 +104,8 @@ public final class AccountLockMonitor {
         set(false)
     }
 
-    private func locked(_ lock: AccountLock) {
+    private func locked(_ lock: AccountLock, at: ContinuousClock.Instant) {
+        if let lockedAt, lockedAt > at {} else { lockedAt = at }
         // A refusal that leaves `since` out keeps the one already known.
         self.lock = AccountLock(since: lock.since ?? self.lock?.since, canUnlock: lock.canUnlock)
         set(true)
@@ -107,6 +116,7 @@ public final class AccountLockMonitor {
         isLocked = locked
         if !locked {
             lock = nil
+            lockedAt = nil
             clearedHandlers.forEach { $0() }
         }
     }

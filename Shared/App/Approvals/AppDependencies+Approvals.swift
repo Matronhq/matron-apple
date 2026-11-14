@@ -84,7 +84,7 @@ extension AppDependencies {
         }
         await core.api.replaceToken(token)
         await core.engine.replaceToken(token)
-        if let saved { throw saved }
+        if saved != nil { throw UnsavedTokenError() }
     }
 
     /// The session's approval centre.

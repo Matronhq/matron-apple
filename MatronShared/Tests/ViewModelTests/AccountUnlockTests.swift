@@ -13,7 +13,18 @@ private actor LockedJournal: ApprovalKeysProviding, AccountUnlocking {
     var unlocks: [SignedApproval] = []
     var unlockResult: Result<AccountUnlockResult, Error> = .success(AccountUnlockResult(token: "new-token", devicesRevoked: 2))
 
+    /// While set, the unlock's answer waits until `openGate()`.
+    var gate: CheckedContinuation<Void, Never>?
+    var gated = false
+    var requested = false
+
     func set(unlockResult: Result<AccountUnlockResult, Error>) { self.unlockResult = unlockResult }
+    func holdAnswers() { gated = true }
+    func openGate() {
+        gated = false
+        gate?.resume()
+        gate = nil
+    }
 
     func approvalKeys() async throws -> ApprovalKeysState { throw JournalAPIError.accountLocked }
     func approvalNonce() async throws -> ApprovalNonce {
@@ -29,6 +40,8 @@ private actor LockedJournal: ApprovalKeysProviding, AccountUnlocking {
 
     func unlockAccount(approval: SignedApproval) async throws -> AccountUnlockResult {
         unlocks.append(approval)
+        requested = true
+        if gated { await withCheckedContinuation { gate = $0 } }
         return try unlockResult.get()
     }
 }
@@ -171,16 +184,25 @@ final class AccountUnlockTests: XCTestCase {
         XCTAssertFalse(pending.isPending)
     }
 
+    /// Starts an unlock, confirms the sheet, and returns once the request
+    /// is out with its answer held.
+    private func unlockWithHeldAnswer(_ model: AccountUnlockModel) async -> Task<Void, Never> {
+        await journal.holdAnswers()
+        let task = Task { await model.unlock() }
+        for _ in 0..<400 where center.prompt == nil { try? await Task.sleep(for: .milliseconds(5)) }
+        center.confirm()
+        for _ in 0..<800 { if await journal.requested { break }; try? await Task.sleep(for: .milliseconds(5)) }
+        return task
+    }
+
     func test_aNotLockedAnswerAfterTheSignInHasGone_leavesTheNewLockAlone() async {
         await frozen()
         await journal.set(unlockResult: .failure(AccountUnlockError.notLocked))
         let model = model()
-        let task = Task { await model.unlock() }
-        for _ in 0..<400 where center.prompt == nil { try? await Task.sleep(for: .milliseconds(5)) }
-        center.confirm()
-        // The request is out; the sign-in goes before the answer is read.
-        for _ in 0..<400 where attempts.isEmpty { try? await Task.sleep(for: .milliseconds(1)) }
+        let task = await unlockWithHeldAnswer(model)
+        // The sign-in goes before the answer arrives.
         current = false
+        await journal.openGate()
         await task.value
         XCTAssertTrue(monitor.isLocked)
         XCTAssertEqual(attempts, ["begin", "kept"])
@@ -217,6 +239,50 @@ final class AccountUnlockTests: XCTestCase {
         XCTAssertTrue(monitor.isLocked)
         // A refusal of the old token held meanwhile now counts.
         XCTAssertEqual(attempts, ["begin", "kept"])
+    }
+
+    func test_aSignInThatGoesWhileTheTokenIsTaken_keepsItsLock() async {
+        await frozen()
+        let tokens = self.tokens!
+        let center = self.center!
+        let gate = AsyncGate()
+        let model = AccountUnlockModel(
+            monitor: monitor, api: journal,
+            sign: { since in try await center.signUnlock(since: since) },
+            adoptToken: { token in
+                await gate.wait()
+                try tokens.add(token)
+            },
+            pending: pending,
+            isCurrent: { [unowned self] in current })
+        let task = Task { await model.unlock() }
+        for _ in 0..<400 where center.prompt == nil { try? await Task.sleep(for: .milliseconds(5)) }
+        center.confirm()
+        for _ in 0..<800 { if await gate.isWaiting { break }; try? await Task.sleep(for: .milliseconds(5)) }
+        current = false
+        await gate.open()
+        await task.value
+        XCTAssertTrue(monitor.isLocked)
+        XCTAssertTrue(pending.isPending)
+    }
+
+    func test_anUnsavedToken_isStillTaken_soAHeldRefusalIsDropped() async {
+        await frozen()
+        tokens.error = UnsavedTokenError()
+        let model = model()
+        await unlock(model)
+        XCTAssertEqual(attempts, ["begin", "took"])
+        XCTAssertFalse(monitor.isLocked)
+        XCTAssertEqual(monitor.warning, AccountUnlockModel.unsavedTokenWarning)
+    }
+
+    func test_anAcceptanceHeardBeforeANewerLock_doesNotClearIt() async {
+        // The hello was accepted, then the account was locked; the
+        // acceptance is applied after the lock.
+        monitor.noteSocketAccepted()
+        monitor.note(lock: AccountLock(since: since, canUnlock: true))
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(monitor.isLocked)
     }
 
     func test_aLockLearnedOverHTTP_isClearedByAnAcceptedSocket() async {
@@ -267,7 +333,7 @@ final class AccountUnlockTests: XCTestCase {
 
     func test_aTokenThatCannotBeSaved_isSaid_butTheLockIsCleared() async {
         await frozen()
-        tokens.error = NSError(domain: "keychain", code: 1)
+        tokens.error = UnsavedTokenError()
         let model = model()
         await unlock(model)
         // The warning outlives the locked screen.
@@ -283,5 +349,21 @@ final class AccountUnlockTests: XCTestCase {
         let vm = SignInViewModel(auth: FakeAuthForVM(), deviceDisplayName: "Matron Tests", signedOutRemotely: session,
                                  accountLocked: true, unlockAnswerLost: true)
         XCTAssertEqual(vm.notice, PendingUnlockStore.lostAnswerNotice)
+    }
+}
+
+/// Holds an async step until the test opens it.
+private actor AsyncGate {
+    private var waiter: CheckedContinuation<Void, Never>?
+    private var opened = false
+    var isWaiting: Bool { waiter != nil }
+    func wait() async {
+        if opened { return }
+        await withCheckedContinuation { waiter = $0 }
+    }
+    func open() {
+        opened = true
+        waiter?.resume()
+        waiter = nil
     }
 }
