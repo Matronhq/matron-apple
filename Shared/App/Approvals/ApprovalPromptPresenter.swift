@@ -128,7 +128,7 @@ final class ApprovalPromptPresenter {
     }
 
     /// The confirm sheet's size on the Mac.
-    static let sheetSize = CGSize(width: 460, height: 540)
+    static let sheetSize = CGSize(width: 460, height: 640)
 
     private func dismiss() {
         if let sheet { parent?.endSheet(sheet) }
