@@ -129,7 +129,10 @@ struct BoxUnlockSheet: View {
                     #endif
                     .accessibilityIdentifier("boxUnlock.minutes")
                 } header: {
+                    // The Mac's picker carries the label itself.
+                    #if os(iOS)
                     Text("Unlock for")
+                    #endif
                 } footer: {
                     Text("While it is unlocked, \(device.name) takes instructions from this device only. It locks again by itself. A step-up question still asks for its own approval.")
                 }

@@ -353,3 +353,40 @@ Needs a real iPhone and a journal that seals notification content. The simulator
 - [ ] Turn on airplane mode, tap a button on a notification: a notification comes back saying the answer was not confirmed; tapping it opens the item.
 - [ ] Sign out and in again, then have an item filed: its notification still shows its text (the new session registered a new key).
 - [ ] Settings ▸ Notifications in the app, Coordinator mode: "Coordinator finished a turn" is off; the Coordinator finishing a turn sends nothing, an item for you still does.
+
+## Approval keys (on a real iPhone and a Mac with Touch ID)
+
+The Secure Enclave and the system's Face ID and Touch ID prompts cannot be
+driven from tests, so these are checked by hand, against a server that has
+approval keys on and an account with two-factor on.
+
+### Setting up and the keys screen
+
+- [ ] Settings ▸ Approval keys on an account with no key says "No approval key yet" and offers "Set Up with Password and Code".
+- [ ] Set up with the password and a code from the authenticator: no system prompt is shown, the screen changes to "This device can approve" and shows a fingerprint, and the key is listed as "Added with password and code".
+- [ ] A recovery code in place of the authenticator code is refused with a sentence saying so. A wrong code says the code is incorrect; three wrong tries say when to try again.
+- [ ] On a second device, "Ask a Device That Has a Key" shows a fingerprint and "Waiting for another device to approve". The first device lists the request with the same fingerprint; Approve… shows the confirm sheet and asks for Face ID or Touch ID; the second device then turns to "This device can approve" by itself.
+- [ ] Remove on another device's key asks to confirm, then for Face ID or Touch ID; the key shows struck through with the date. That device's screen says its key was removed and offers to set up a new one.
+- [ ] A Mac with no Touch ID says it can't hold a key and to use the iPhone.
+
+### Approving
+
+- [ ] A step-up question's button opens the confirm sheet with the item's number and title, the button's label and every subject line. Cancel sends nothing and the button stays unpressed. Confirm shows the system prompt; after it the button shows as chosen.
+- [ ] Cancel at the system prompt returns to the confirm sheet, which can be confirmed again or cancelled.
+- [ ] With the device offline, a step-up button says it can't wait for a connection; an ordinary item's button still queues.
+- [ ] Changing the password, turning two-factor off, changing the Coordinator, linking a device and signing out another device each open the confirm sheet over the sheet they were started from.
+- [ ] On a device with no key, on an account that has one, each of those says this device has no approval key, and nothing is sent.
+- [ ] Approve on a request to start a session on a protected box shows the task in full and the subject, then signs. Decline asks for nothing.
+
+### After signing in again, and biometry changes
+
+- [ ] Sign out and in again: Settings marks Approval keys as needing attention, the screen says the key needs re-attaching, and Re-attach asks for Face ID or Touch ID once. Approving something before re-attaching says Face ID is asked twice, and is.
+- [ ] Add a fingerprint (or reset Face ID) in the system settings: the screen says the key no longer works and offers a new one.
+- [ ] Several failed Face ID tries lock biometry: the confirm sheet says to unlock the device with its passcode, and there is no passcode button on the system prompt.
+
+### Locked boxes and the locked account
+
+- [ ] A locked box shows a lock and "Locked". Unlock… offers 15 minutes, 30 minutes (selected), 1 hour and 2 hours; after Face ID the box shows "Unlocked for N more minutes" and Lock Now.
+- [ ] Lock Now needs no Face ID and returns the box to "Locked".
+- [ ] A box in lockdown answers an unlock with a sentence saying so and offers Clear Lockdown…, which asks for Face ID.
+- [ ] While the server answers 423, "This account is locked" shows across the top of the app, and goes when the lock is cleared.

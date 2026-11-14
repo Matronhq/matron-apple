@@ -35,8 +35,8 @@ final class MacApprovalRenderHarness: XCTestCase {
     }
 
     func test_writeRenders() async throws {
-        let environment = ProcessInfo.processInfo.environment
-        let path = try XCTUnwrap(environment["APPROVAL_SHOTS"], "set APPROVAL_SHOTS to a folder").nonEmpty()
+        let path = ProcessInfo.processInfo.environment["APPROVAL_SHOTS"] ?? ""
+        try XCTSkipIf(path.isEmpty, "set APPROVAL_SHOTS to a folder")
         let directory = URL(fileURLWithPath: path)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let method = "Touch ID"
@@ -82,10 +82,4 @@ final class MacApprovalRenderHarness: XCTestCase {
     }
 }
 
-private extension String {
-    func nonEmpty() throws -> String {
-        try XCTSkipIf(isEmpty)
-        return self
-    }
-}
 #endif

@@ -283,12 +283,16 @@ struct ApprovalKeyPasswordForm: View {
                     SecureField("Password", text: $model.password)
                         .textContentType(.password)
                         .accessibilityIdentifier("approvalKeyForm.password")
-                    TextField("Code from your authenticator app", text: $model.code)
+                    Group {
                         #if os(iOS)
-                        .keyboardType(.numberPad)
+                        TextField("Code from your authenticator app", text: $model.code)
+                            .keyboardType(.numberPad)
+                        #else
+                        TextField("Authenticator code", text: $model.code, prompt: Text("6 digits"))
                         #endif
-                        .textContentType(.oneTimeCode)
-                        .accessibilityIdentifier("approvalKeyForm.code")
+                    }
+                    .textContentType(.oneTimeCode)
+                    .accessibilityIdentifier("approvalKeyForm.code")
                 } footer: {
                     Text(explanation)
                 }
