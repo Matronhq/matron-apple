@@ -142,14 +142,24 @@ extension JournalAPIError {
     }
 }
 
-/// An agent box in locked mode, as `GET /devices` reports it: the bridge
-/// starts a turn from outside only during an unlock window.
+/// What a box that checks approvals reports about its lock, in `GET
+/// /devices` and in live `device_meta` frames: `{on, until,
+/// lockdown_until}`. A box that does not check approvals reports nothing.
 public struct BoxLock: Equatable, Sendable {
-    /// When the open unlock window ends; `nil` while the box is locked
-    /// with no window open.
+    /// Locked: the box starts a turn from outside only once it is unlocked.
+    public let on: Bool
+    /// When the open unlock window ends; `nil` with no window open.
     public let until: Date?
+    /// When the box's lockdown ends, after it refused several approvals;
+    /// `nil` when it is not in lockdown, and from a server that does not
+    /// pass the field on.
+    public let lockdownUntil: Date?
 
-    public init(until: Date?) { self.until = until }
+    public init(on: Bool = true, until: Date? = nil, lockdownUntil: Date? = nil) {
+        self.on = on
+        self.until = until
+        self.lockdownUntil = lockdownUntil
+    }
 
     /// Whether an unlock window is open at `now`.
     public func isUnlocked(at now: Date = Date()) -> Bool {
@@ -157,10 +167,27 @@ public struct BoxLock: Equatable, Sendable {
         return until > now
     }
 
-    static func decode(_ raw: Any?) -> BoxLock? {
-        guard let obj = raw as? [String: Any], obj["on"] as? Bool == true else { return nil }
-        let until = (obj["until"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue / 1000) }
-        return BoxLock(until: until)
+    /// Whether the box is in lockdown at `now`.
+    public func isInLockdown(at now: Date = Date()) -> Bool {
+        guard let lockdownUntil else { return false }
+        return lockdownUntil > now
+    }
+
+    /// Whether there is anything to show: the box is locked, has (or had)
+    /// an unlock window, or is in lockdown. False for a box that checks
+    /// approvals but is in none of those states.
+    public func isShown(at now: Date = Date()) -> Bool {
+        on || until != nil || isInLockdown(at: now)
+    }
+
+    /// `nil` for anything but an object: absent and `null` both mean the
+    /// box reports no lock.
+    public static func decode(_ raw: Any?) -> BoxLock? {
+        guard let obj = raw as? [String: Any] else { return nil }
+        func date(_ key: String) -> Date? {
+            (obj[key] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue / 1000) }
+        }
+        return BoxLock(on: obj["on"] as? Bool ?? false, until: date("until"), lockdownUntil: date("lockdown_until"))
     }
 }
 

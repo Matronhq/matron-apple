@@ -25,11 +25,23 @@ public enum BoxLockControl {
         }
     }
 
+    /// How a request to a box went: the state the box answered with (when
+    /// it sent one), or why it refused.
+    public enum Outcome: Equatable, Sendable {
+        case done(BoxLock?)
+        case failed(Failure)
+
+        public var failure: Failure? {
+            if case .failed(let failure) = self { return failure }
+            return nil
+        }
+    }
+
     /// Opens an unlock window of `minutes` on `box`, signed by this
     /// device's key. During it the box takes instructions from this device
     /// only.
     public static func unlock(box: DeviceDTO, minutes: Int, api: any AgentRPCProviding,
-                              signer: ApprovalSigner?) async -> Failure? {
+                              signer: ApprovalSigner?) async -> Outcome {
         await signed(box: box, method: "unlock", api: api, signer: signer, request: ApprovalRequest(
             kind: .account, subject: ApprovalSubjects.unlockBox(box: box.name, minutes: minutes),
             headline: "Unlock \(box.name) for \(durationText(minutes))",
@@ -38,7 +50,7 @@ public enum BoxLockControl {
     }
 
     /// Ends the lockdown a box put itself into after refused approvals.
-    public static func clearLockdown(box: DeviceDTO, api: any AgentRPCProviding, signer: ApprovalSigner?) async -> Failure? {
+    public static func clearLockdown(box: DeviceDTO, api: any AgentRPCProviding, signer: ApprovalSigner?) async -> Outcome {
         await signed(box: box, method: "clear_lockdown", api: api, signer: signer, request: ApprovalRequest(
             kind: .account, subject: ApprovalSubjects.clearLockdown(box: box.name),
             headline: "Clear the lockdown on \(box.name)",
@@ -47,65 +59,77 @@ public enum BoxLockControl {
     }
 
     /// Ends an unlock window early. Needs no signature.
-    public static func lock(box: DeviceDTO, api: any AgentRPCProviding) async -> Failure? {
+    public static func lock(box: DeviceDTO, api: any AgentRPCProviding) async -> Outcome {
         await send(box: box, method: "lock", params: [:], api: api)
     }
 
     private static func signed(box: DeviceDTO, method: String, api: any AgentRPCProviding, signer: ApprovalSigner?,
-                               request: ApprovalRequest) async -> Failure? {
+                               request: ApprovalRequest) async -> Outcome {
         let approval: SignedApproval?
         do {
             approval = try await signer?(request)
         } catch ApprovalKeyFailure.cancelled {
-            return .cancelled
+            return .failed(.cancelled)
         } catch {
-            return .message(error.localizedDescription)
+            return .failed(.message(error.localizedDescription))
         }
         // A box checks against its own pinned keys, whatever the account
         // has: with no key to sign with there is nothing to send.
         guard let approval else {
-            return .message("This needs an approval key. Set one up in Settings ▸ Approval keys, and have its fingerprint pinned on the box.")
+            return .failed(.message("This needs an approval key. Set one up in Settings ▸ Approval keys, and have its fingerprint pinned on the box."))
         }
         return await send(box: box, method: method, params: ["approval": approval.json], api: api)
     }
 
-    private static func send(box: DeviceDTO, method: String, params: [String: Any], api: any AgentRPCProviding) async -> Failure? {
+    private static func send(box: DeviceDTO, method: String, params: [String: Any], api: any AgentRPCProviding) async -> Outcome {
         let data = (try? JSONSerialization.data(withJSONObject: params)) ?? Data("{}".utf8)
         do {
             switch try await api.agentRequest(agentDeviceID: box.id, method: method, paramsData: data) {
-            case .ok: return nil
-            case .failure(let code, let detail): return failure(box: box.name, code: code, detail: detail)
+            case .ok(let resultData): return .done(reportedLock(resultData))
+            case .failure(let code, let detail): return .failed(failure(box: box.name, code: code, detail: detail))
             }
         } catch {
-            return .message("\(box.name) didn't answer. \(error.localizedDescription)")
+            return .failed(.message("\(box.name) didn't answer. \(error.localizedDescription)"))
         }
     }
 
-    /// The box's refusal, in words. Its codes are the bridge's own; an
-    /// unknown one is shown as it came.
+    /// The box's state after the request: `{"locked": {on, until,
+    /// lockdown_until}}`.
+    static func reportedLock(_ resultData: Data?) -> BoxLock? {
+        guard let resultData,
+              let obj = try? JSONSerialization.jsonObject(with: resultData) as? [String: Any] else { return nil }
+        return BoxLock.decode(obj["locked"])
+    }
+
+    /// The box's refusal, in words. An unknown code is shown as it came.
     static func failure(box: String, code: String, detail: String?) -> Failure {
         let reason = detail ?? ""
         switch code {
-        case "lockdown", "locked_down":
+        case "lockdown":
             return .lockdown("\(box) is in lockdown after refused approvals. Clear the lockdown to use it again.")
         case "approval_invalid":
-            if reason == "unknown_key" {
+            switch reason {
+            case "unknown_key":
                 return .message("\(box) doesn't have this device's approval key pinned. Add the fingerprint to the box's key file.")
+            case "keys_file":
+                return .message("\(box) couldn't read its file of approval keys. Check the file on the box.")
+            case "identity_unknown":
+                return .message("\(box) doesn't know yet which account it belongs to, so it can't check an approval. Try again in a moment.")
+            case "nonce_ledger", "check_failed":
+                return .message("\(box) couldn't check the approval (\(reason)). Try again.")
+            default:
+                return .message(JournalAPIError.approvalInvalidText(reason))
             }
-            if reason == "lockdown" {
-                return .lockdown("\(box) is in lockdown after refused approvals. Clear the lockdown to use it again.")
-            }
-            return .message(JournalAPIError.approvalInvalidText(reason))
         case "approval_required":
             return .message("\(box) needs a signed approval for this.")
-        case "bad_minutes", "minutes_over_cap":
+        case "bad_minutes":
             return .message("\(box) doesn't allow an unlock that long. Pick a shorter time.")
         case "not_locked":
             return .message("\(box) is not in locked mode.")
         case "agent_unreachable":
             return .message("\(box) isn't connected.")
-        case "unknown_method", "bad_method", "not_supported":
-            return .message("\(box) doesn't support locking yet. Update its bridge.")
+        case "unknown_method":
+            return .message("This box does not support locking.")
         case "account_locked":
             return .message("This account is locked.")
         default:
@@ -122,9 +146,10 @@ public enum BoxLockControl {
         return minutes == 1 ? "1 minute" : "\(minutes) minutes"
     }
 
-    /// "Unlocked for 24 more minutes", "Unlocked for under a minute", or
-    /// "Locked".
+    /// "In lockdown", "Unlocked for 24 more minutes", "Unlocked for under
+    /// a minute", or "Locked".
     public static func stateText(_ lock: BoxLock, now: Date = Date()) -> String {
+        if lock.isInLockdown(at: now) { return "In lockdown" }
         guard let until = lock.until, until > now else { return "Locked" }
         let minutes = Int((until.timeIntervalSince(now) / 60).rounded(.up))
         if minutes <= 1 { return "Unlocked for under a minute" }

@@ -180,7 +180,7 @@ enum ApprovalFixtures {
                 Self.box(1, "box-a", live: 2, email: "alice@example.com", percent: 21, protected: true,
                          locked: BoxLock(until: nil)),
                 Self.box(2, "box-b", live: 1, email: "alice@example.com", percent: 21, protected: false,
-                         locked: BoxLock(until: Date().addingTimeInterval(24 * 60 - 20))),
+                         locked: BoxLock(on: false, until: Date().addingTimeInterval(24 * 60 - 20))),
                 Self.box(Self.lockdownBoxID, "box-c", live: 0, email: "bob@example.com", percent: 48, protected: true,
                          locked: BoxLock(until: nil)),
                 Self.box(4, "box-d", live: 3, email: "bob@example.com", percent: 48, protected: false, locked: nil),

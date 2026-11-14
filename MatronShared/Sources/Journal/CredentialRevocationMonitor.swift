@@ -8,6 +8,11 @@ public enum CredentialSignal: Sendable, Equatable {
     /// `auth`): the device was signed out, from another device or by the
     /// server. Definitive.
     case rejected
+    /// The journal said the whole account is locked: a `panic` frame on
+    /// the live socket, or a hello refused with `account_locked`. It says
+    /// nothing about this device's token on its own, though a lock signs
+    /// every device out, so a rejection usually follows.
+    case accountLocked
 }
 
 /// Decides when this device's credentials have been revoked, so the app can
@@ -72,6 +77,8 @@ public final class CredentialRevocationMonitor: @unchecked Sendable {
             lock.unlock()
         case .rejected:
             fireOnce()
+        case .accountLocked:
+            break
         }
     }
 

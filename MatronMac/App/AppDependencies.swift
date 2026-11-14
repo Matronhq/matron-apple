@@ -152,7 +152,10 @@ final class AppDependencies {
             connector: URLSessionWebSocketConnector(),
             token: session.accessToken,
             ownSender: "user:\(session.userID)", search: search,
-            credentialSignals: { [revocation] signal in revocation.handle(signal) }
+            credentialSignals: { [revocation, accountLock] signal in
+                revocation.handle(signal)
+                if signal == .accountLocked { accountLock.noteLockedBySocket() }
+            }
         )
         // Task 9 (items tracker): the marker/reconnect streams come straight
         // off the sync engine (`nonisolated`, so safe to close over here).

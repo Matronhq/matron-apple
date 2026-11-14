@@ -592,6 +592,23 @@ final class WireModelsTests: XCTestCase {
         XCTAssertNil(ServerFrame.decode(#"{"kind":"device_meta","device_id":7}"#))
     }
 
+    func test_deviceMeta_carriesTheBoxLock() {
+        let locked = #"{"kind":"device_meta","device_id":7,"name":"box-a","tag_char":null,"locked":{"on":true,"until":null,"lockdown_until":1790000900000}}"#
+        XCTAssertEqual(ServerFrame.boxLock(inDeviceMeta: locked),
+                       .boxLock(deviceID: 7, lock: BoxLock(on: true, lockdownUntil: Date(timeIntervalSince1970: 1_790_000_900))))
+        let none = #"{"kind":"device_meta","device_id":7,"name":"box-a","locked":null}"#
+        XCTAssertEqual(ServerFrame.boxLock(inDeviceMeta: none), .boxLock(deviceID: 7, lock: nil))
+        // A server that predates box locks says nothing about them.
+        XCTAssertNil(ServerFrame.boxLock(inDeviceMeta: #"{"kind":"device_meta","device_id":7,"name":"box-a"}"#))
+        XCTAssertNil(ServerFrame.boxLock(inDeviceMeta: #"{"kind":"box_status","device_id":7,"locked":null}"#))
+    }
+
+    func test_panicFrame_andLockedHelloError() {
+        XCTAssertEqual(ServerFrame.decode(#"{"kind":"panic","on":true,"since":1790000000000}"#), .accountPanic(on: true))
+        XCTAssertEqual(ServerFrame.decode(#"{"kind":"control","op":"error","code":"account_locked","since":1790000000000}"#),
+                       .error(code: "account_locked", ref: nil, requestID: nil, detail: nil))
+    }
+
     /// The user's new-chat defaults changed (journal `PUT /defaults` fan-out):
     /// the full new state, null meaning Box default.
     func testDecodesDefaultsFrame() {

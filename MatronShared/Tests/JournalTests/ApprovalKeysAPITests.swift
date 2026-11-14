@@ -288,7 +288,7 @@ final class ApprovalKeysAPITests: XCTestCase {
     func test_devices_decodeProtectedLockedAndIdleExpired() async throws {
         let devices = try await api(body: ["devices": [
             ["device_id": 5, "kind": "agent", "name": "box-a", "protected": true,
-             "locked": ["on": true, "until": 1_790_000_600_000], "idle_expired": false],
+             "locked": ["on": false, "until": 1_790_000_600_000, "lockdown_until": NSNull()], "idle_expired": false],
             ["device_id": 6, "kind": "agent", "name": "box-b", "protected": false, "locked": ["on": true, "until": NSNull()]],
             ["device_id": 7, "kind": "client", "name": "old phone", "locked": NSNull(), "idle_expired": true],
         ]]).devices()

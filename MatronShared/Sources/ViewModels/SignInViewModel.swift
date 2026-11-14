@@ -110,10 +110,13 @@ public final class SignInViewModel {
     /// was revoked elsewhere: shows `signedOutRemotelyNotice` and fills in
     /// the server and username the user was signed in with, so getting back
     /// in only takes the password.
-    public init(auth: AuthService, deviceDisplayName: String, signedOutRemotely session: UserSession) {
+    /// `accountLocked`: the sign-out came with the account being locked,
+    /// so the notice says that instead.
+    public init(auth: AuthService, deviceDisplayName: String, signedOutRemotely session: UserSession,
+                accountLocked: Bool = false) {
         self.auth = auth
         self.deviceDisplayName = deviceDisplayName
-        self.notice = Self.signedOutRemotelyNotice
+        self.notice = accountLocked ? AccountLockMonitor.lockedNotice : Self.signedOutRemotelyNotice
         self.serverURL = session.homeserverURL.absoluteString
         self.username = session.userID
     }

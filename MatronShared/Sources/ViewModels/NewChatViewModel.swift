@@ -16,6 +16,16 @@ public protocol AgentRPCProviding: Sendable {
     /// reconnect: a report made while the socket was down is never fanned or
     /// replayed (see `NewChatViewModel.watchBoxStatus()`).
     func connectionStates() -> AsyncStream<SyncConnectionState>
+    /// A box's lock state each time it changes; `nil` when the box reports
+    /// no lock.
+    func boxLockUpdates() -> AsyncStream<(deviceID: Int64, lock: BoxLock?)>
+}
+
+extension AgentRPCProviding {
+    /// Nothing, for a provider with no live feed.
+    public func boxLockUpdates() -> AsyncStream<(deviceID: Int64, lock: BoxLock?)> {
+        AsyncStream { $0.finish() }
+    }
 }
 
 /// Production adapter: the session's `JournalAPI` (roster) + sync engine
@@ -47,6 +57,10 @@ public struct JournalAgentRPCService: AgentRPCProviding, BoxesProviding {
 
     public func connectionStates() -> AsyncStream<SyncConnectionState> {
         engine.stateStream()
+    }
+
+    public func boxLockUpdates() -> AsyncStream<(deviceID: Int64, lock: BoxLock?)> {
+        engine.boxLockUpdates()
     }
 }
 

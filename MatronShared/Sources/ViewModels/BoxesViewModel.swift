@@ -108,9 +108,18 @@ public final class BoxesViewModel {
     /// Runs until the calling task is cancelled.
     public func watch() async {
         let frames = api.boxStatusUpdates()
+        let locks = api.boxLockUpdates()
         let states = api.connectionStates()
         let sleep = pollSleep
         await withTaskGroup(of: Void.self) { group in
+            group.addTask { [weak self] in
+                for await update in locks {
+                    await self?.adopt(lock: update.lock, for: update.deviceID)
+                }
+                // A provider with no live feed ends at once: that must not
+                // end the watch.
+                while !Task.isCancelled { try? await Task.sleep(for: .seconds(3600)) }
+            }
             group.addTask { [weak self] in
                 for await update in frames {
                     await self?.adopt(update.status, for: update.deviceID)
@@ -145,10 +154,22 @@ public final class BoxesViewModel {
     /// on that box's card.
     public var lockError: String?
     public private(set) var lockErrorBoxID: Int64?
-    /// A box that answered "in lockdown": the screen offers to clear it.
+    /// A box that answered "in lockdown" to a request. Kept beside what
+    /// the box reports, for a server that does not pass `lockdown_until`
+    /// on.
     public private(set) var lockdownBoxes: Set<Int64> = []
     /// Boxes with an unlock, lock or clear in flight.
     public private(set) var lockBusy: Set<Int64> = []
+
+    /// Whether `device` is in lockdown: it reports so, or it answered so.
+    public func isInLockdown(_ device: DeviceDTO, now: Date = Date()) -> Bool {
+        device.locked?.isInLockdown(at: now) == true || lockdownBoxes.contains(device.id)
+    }
+
+    /// Whether `device` has a lock line to show.
+    public func showsLock(_ device: DeviceDTO, now: Date = Date()) -> Bool {
+        device.locked?.isShown(at: now) == true || lockdownBoxes.contains(device.id)
+    }
 
     /// Opens an unlock window on a locked box. True when the box took it.
     @discardableResult
@@ -174,25 +195,37 @@ public final class BoxesViewModel {
         return cleared
     }
 
-    private func lockAction(_ device: DeviceDTO, _ action: () async -> BoxLockControl.Failure?) async -> Bool {
+    private func lockAction(_ device: DeviceDTO, _ action: () async -> BoxLockControl.Outcome) async -> Bool {
         guard !lockBusy.contains(device.id) else { return false }
         lockBusy.insert(device.id)
         defer { lockBusy.remove(device.id) }
         lockError = nil
         lockErrorBoxID = nil
-        if let failure = await action() {
+        switch await action() {
+        case .failed(let failure):
             if case .lockdown = failure { lockdownBoxes.insert(device.id) }
             lockError = failure.text
             lockErrorBoxID = failure.text == nil ? nil : device.id
             return false
+        case .done(let reported):
+            // The box answers with its new state. It reports it to the
+            // journal too, a moment later: reading the roster now could
+            // bring the old state back, so only an answer without a state
+            // (an older box) is followed by a read.
+            if let reported {
+                adopt(lock: reported, for: device.id)
+            } else {
+                await load()
+            }
+            return true
         }
-        // The box reports its new state to the journal a moment later.
-        await load()
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(2))
-            await self?.load()
-        }
-        return true
+    }
+
+    /// A box's lock state as a live frame or its own answer gave it.
+    private func adopt(lock: BoxLock?, for boxID: Int64) {
+        guard let index = devices.firstIndex(where: { $0.id == boxID }) else { return }
+        devices[index].locked = lock
+        if lock?.isInLockdown() != true { lockdownBoxes.remove(boxID) }
     }
 
     public func wake(_ device: DeviceDTO) async {

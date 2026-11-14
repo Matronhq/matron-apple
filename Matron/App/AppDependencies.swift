@@ -291,7 +291,10 @@ final class AppDependencies {
             token: session.accessToken,
             ownSender: "user:\(session.userID)", search: search,
             databasesSuspended: { DatabaseSuspensionController.shared.isSuspended },
-            credentialSignals: { [revocation] signal in revocation.handle(signal) },
+            credentialSignals: { [revocation, accountLock] signal in
+                revocation.handle(signal)
+                if signal == .accountLocked { accountLock.noteLockedBySocket() }
+            },
             // Settings → Sync on this device. Per device, so it lives in
             // this phone's defaults, not on the journal.
             syncScope: SyncScope.stored(),

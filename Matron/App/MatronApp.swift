@@ -175,7 +175,8 @@ struct MatronApp: App {
                     let linkViewModel = LinkSignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron iOS")
                     SignInView(
                         viewModel: revokedSession.map {
-                            SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron iOS", signedOutRemotely: $0)
+                            SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron iOS", signedOutRemotely: $0,
+                                            accountLocked: dependencies.accountLock.isLocked)
                         } ?? SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron iOS"),
                         linkViewModel: linkViewModel,
                         rendezvousViewModel: RendezvousSignInViewModel(relay: RelayClient(), link: linkViewModel),
@@ -195,6 +196,7 @@ struct MatronApp: App {
                                 await dependencies.awaitPendingTeardown()
                                 await dependencies.wipeLocalDataForFreshLogin()
                                 self.revokedSession = nil
+                                dependencies.accountLock.signedIn()
                                 self.session = session
                                 CarPlayLink.shared.publish(session: session)
                             }

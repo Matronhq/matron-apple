@@ -13,16 +13,16 @@ struct BoxLockBar: View {
     let onUnlock: (DeviceDTO) -> Void
 
     var body: some View {
-        if let lock = device.locked {
-            TimelineView(.periodic(from: .now, by: 20)) { context in
-                content(lock, now: context.date)
+        TimelineView(.periodic(from: .now, by: 20)) { context in
+            if viewModel.showsLock(device, now: context.date) {
+                content(device.locked ?? BoxLock(), now: context.date)
             }
         }
     }
 
     @ViewBuilder private func content(_ lock: BoxLock, now: Date) -> some View {
         let unlocked = lock.isUnlocked(at: now)
-        let inLockdown = viewModel.lockdownBoxes.contains(device.id)
+        let inLockdown = viewModel.isInLockdown(device, now: now)
         let busy = viewModel.lockBusy.contains(device.id)
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
@@ -142,7 +142,7 @@ struct BoxUnlockSheet: View {
                             let unlocked = await viewModel.unlock(device, minutes: minutes)
                             // In lockdown, the way forward is Clear
                             // Lockdown on the box's card, behind this sheet.
-                            if unlocked || viewModel.lockdownBoxes.contains(device.id) { close() }
+                            if unlocked || viewModel.isInLockdown(device) { close() }
                         }
                     } label: {
                         HStack {

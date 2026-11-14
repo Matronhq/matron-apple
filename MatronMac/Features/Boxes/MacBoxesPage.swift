@@ -173,7 +173,7 @@ struct MacBoxesPage: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
-            if row.device.locked != nil {
+            if viewModel.showsLock(row.device) {
                 BoxLockBar(device: row.device, viewModel: viewModel) { unlocking = $0 }
                     .frame(maxWidth: 560, alignment: .leading)
                     .padding(.horizontal, 12)
