@@ -40,11 +40,17 @@ struct ApprovalConfirmHost: View {
 final class ApprovalPromptPresenter {
     private let center: ApprovalCenter
     private var shownID: UUID?
+    /// A sheet is going up or coming down. Changes wait for it: UIKit and
+    /// AppKit both refuse, or lose, a presentation made during another.
+    private var transitioning = false
+    /// The request changed during a transition; look again once it ends.
+    private var changedMeanwhile = false
     #if os(iOS)
     private weak var controller: UIViewController?
     #else
     private var sheet: NSWindow?
     private weak var parent: NSWindow?
+    private var afterSheetEnds: (() -> Void)?
     #endif
 
     init(center: ApprovalCenter) {
@@ -63,31 +69,49 @@ final class ApprovalPromptPresenter {
         }
     }
 
+    /// Brings what is on screen in line with the request that is waiting:
+    /// the sheet for another request goes first, then this one's comes up.
+    /// One transition at a time.
     private func sync() {
-        let prompt = center.prompt
-        guard prompt?.id != shownID else { return }
-        // The sheet on screen goes first, and the next request is shown
-        // only once it has gone: presenting during a dismissal is refused.
-        dismiss { [weak self] in
+        guard !transitioning else {
+            changedMeanwhile = true
+            return
+        }
+        guard center.prompt?.id != shownID else { return }
+        transitioning = true
+        dismissShown { [weak self] in
             guard let self else { return }
-            // Read again: the request may have changed meanwhile.
+            // Read again: the request may have changed while the last
+            // sheet was going.
             let current = self.center.prompt
             self.shownID = current?.id
-            if current != nil { self.present() }
+            if current != nil {
+                self.present { [weak self] in self?.transitionEnded() }
+            } else {
+                self.transitionEnded()
+            }
+        }
+    }
+
+    private func transitionEnded() {
+        transitioning = false
+        if changedMeanwhile {
+            changedMeanwhile = false
+            sync()
         }
     }
 
     #if os(iOS)
-    private func present() {
+    private func present(then done: @escaping () -> Void) {
         guard let top = Self.topController() else {
             // Nothing to present on (no scene yet): the request cannot be
             // shown, so it is not signed.
             center.cancel()
-            return
+            return done()
         }
         let host = Self.sheetController(ApprovalConfirmHost(center: center))
         controller = host
-        top.present(host, animated: true)
+        top.present(host, animated: true, completion: done)
     }
 
     /// The confirm sheet's controller. Full height, so every line of what
@@ -102,7 +126,7 @@ final class ApprovalPromptPresenter {
         return host
     }
 
-    private func dismiss(then next: @escaping () -> Void) {
+    private func dismissShown(then next: @escaping () -> Void) {
         guard let shown = controller, shown.presentingViewController != nil else {
             controller = nil
             return next()
@@ -119,7 +143,10 @@ final class ApprovalPromptPresenter {
         return top
     }
     #else
-    private func present() {
+    /// The confirm sheet's size on the Mac.
+    static let sheetSize = CGSize(width: 460, height: 640)
+
+    private func present(then done: @escaping () -> Void) {
         let host = NSHostingController(rootView: ApprovalConfirmHost(center: center)
             .frame(width: Self.sheetSize.width, height: Self.sheetSize.height))
         let window = NSWindow(contentViewController: host)
@@ -127,24 +154,33 @@ final class ApprovalPromptPresenter {
         window.title = ApprovalConfirmView.title
         guard let key = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first(where: \.isVisible) else {
             center.cancel()
-            return
+            return done()
         }
         // A window that already shows a sheet takes the next one only
         // after the first closes: present on the sheet itself.
         let target = key.attachedSheet ?? key
         sheet = window
         parent = target
-        target.beginSheet(window)
+        target.beginSheet(window) { [weak self] _ in
+            // The sheet has fully gone: what waited for that may go on.
+            guard let self else { return }
+            let next = self.afterSheetEnds
+            self.afterSheetEnds = nil
+            next?()
+        }
+        done()
     }
 
-    /// The confirm sheet's size on the Mac.
-    static let sheetSize = CGSize(width: 460, height: 640)
-
-    private func dismiss(then next: @escaping () -> Void) {
-        if let sheet { parent?.endSheet(sheet) }
-        sheet = nil
-        parent = nil
-        next()
+    private func dismissShown(then next: @escaping () -> Void) {
+        guard let sheet, let parent else {
+            self.sheet = nil
+            self.parent = nil
+            return next()
+        }
+        self.sheet = nil
+        self.parent = nil
+        afterSheetEnds = next
+        parent.endSheet(sheet)
     }
     #endif
 }
