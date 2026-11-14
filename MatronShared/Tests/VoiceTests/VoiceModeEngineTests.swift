@@ -20,11 +20,11 @@ final class VoiceModeEngineTests: XCTestCase {
     static let plainReply = VoiceEntry.reply(SpokenReply(convoID: "c1", seq: 11, short: "Done."),
                                              convoTitle: "Auth refactor", boxName: "aspen")
     static let item = VoiceEntry.item(
-        VoiceItem(id: "it_1", kind: .decision, convoID: "c2", title: "Ship the promo page", labels: ["Go", "Wait"],
+        VoiceItem(id: "it_1", kind: .decision, convoID: "c2", title: "Ship the docs page", labels: ["Go", "Wait"],
                   sections: ["The page is ready."]),
-        convoTitle: "Promo", boxName: "pat")
+        convoTitle: "Docs", boxName: "box-a")
     static let secret = VoiceEntry.item(
-        VoiceItem(id: "it_2", kind: .question, convoID: "c2", title: "AWS key", needsScreen: true), convoTitle: "Promo")
+        VoiceItem(id: "it_2", kind: .question, convoID: "c2", title: "AWS key", needsScreen: true), convoTitle: "Docs")
     static let ask = VoiceEntry.prompt(
         VoicePrompt(convoID: "c3", seq: 30, question: "Which database?",
                     options: [.init(label: "Postgres", value: "pg"), .init(label: "SQLite", value: "lite")],
@@ -314,7 +314,7 @@ final class VoiceModeEngineTests: XCTestCase {
 
     static func labelled(_ labels: [String]) -> VoiceEntry {
         VoiceEntry.item(VoiceItem(id: "it_9", kind: .decision, convoID: "c2", title: "The deploy", labels: labels),
-                        convoTitle: "Promo", boxName: "pat")
+                        convoTitle: "Docs", boxName: "box-a")
     }
 
     /// `VoiceCommand.parse` strips filler, so "skip please" is the skip

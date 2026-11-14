@@ -7,42 +7,42 @@ final class ProjectDetailSnapshotTests: XCTestCase {
     typealias F = ProjectsSnapshotTests
 
     static var page: ProjectPageModel {
-        let branch = F.row(4791, "Promo branch: /proto design at the base URLs", activity: .waiting,
-                           status: "R2 redirect test done on 328 addresses; infra PR 605 needs the blog nginx line.",
+        let branch = F.row(2171, "Search on the docs site: the index and the results page", activity: .waiting,
+                           status: "Search works on staging; the changelog is not in the index yet.",
                            needsYou: 2, age: 660)
-        let launch = F.row(4907, "Launch day: Wed 7 Oct 07:00", activity: .running,
-                           status: "Branch green at b6794bffa8; S7 confirmed.", age: 660)
-        var promo = F.promo
-        promo = Project(id: promo.id, num: promo.num, title: promo.title,
-                        body: "New promo site, blog, pricing page and sales chat, launched from one branch.",
-                        status: promo.status, statusBy: promo.statusBy, statusUpdatedAt: promo.statusUpdatedAt,
-                        missions: promo.missions, needsYou: promo.needsYou, lastActivityAt: promo.lastActivityAt)
-        let asked = [TrackerItem(id: "it_1", num: 8666, kind: .question, awaiting: .user,
-                                 title: "Pricing page PR 8666 — ship with launch?", originConvoID: "c1",
-                                 createdAt: F.ago(2 * 3_600), updatedAt: F.ago(2 * 3_600), missionID: "ms_4791", missionNum: 4791),
-                     TrackerItem(id: "it_2", num: 8667, kind: .question, awaiting: .user, title: "Cloudflare API token scope",
+        let launch = F.row(2173, "Launch day: rehearsal, then the switch-over", activity: .running,
+                           status: "Staging is green; the rehearsal is booked.", age: 660)
+        var docs = F.docs
+        docs = Project(id: docs.id, num: docs.num, title: docs.title,
+                       body: "A new docs site with search, a getting-started guide and faster pages.",
+                       status: docs.status, statusBy: docs.statusBy, statusUpdatedAt: docs.statusUpdatedAt,
+                       missions: docs.missions, needsYou: docs.needsYou, lastActivityAt: docs.lastActivityAt)
+        let asked = [TrackerItem(id: "it_1", num: 2301, kind: .question, awaiting: .user,
+                                 title: "Getting-started copy: ship it with the launch?", originConvoID: "c1",
+                                 createdAt: F.ago(2 * 3_600), updatedAt: F.ago(2 * 3_600), missionID: "ms_2171", missionNum: 2171),
+                     TrackerItem(id: "it_2", num: 2302, kind: .question, awaiting: .user, title: "Which pages does search leave out?",
                                  originConvoID: "c1", createdAt: F.ago(26 * 3_600), updatedAt: F.ago(26 * 3_600),
-                                 missionID: "ms_4907", missionNum: 4907)]
+                                 missionID: "ms_2173", missionNum: 2173)]
         return ProjectPageModel(
-            project: promo,
+            project: docs,
             missions: [branch, launch],
-            closedMissions: [Mission(id: "ms_c", num: 4000, state: .closed, title: "Old promo", originConvoID: "c1")],
+            closedMissions: [Mission(id: "ms_c", num: 2150, state: .closed, title: "Old docs site", originConvoID: "c1")],
             needsYou: asked,
-            openItems: asked + [TrackerItem(id: "it_3", num: 8670, kind: .task, awaiting: .agent, title: "Infra PR 605: blog nginx line",
+            openItems: asked + [TrackerItem(id: "it_3", num: 2311, kind: .task, awaiting: .agent, title: "Add the changelog to the search index",
                                             originConvoID: "c1", createdAt: F.ago(3_000), updatedAt: F.ago(3_000),
-                                            missionID: "ms_4791", missionNum: 4791)],
-            recentMilestones: [Milestone(id: "ml_1", missionID: "ms_4907", num: 9001, kind: .progress,
-                                         title: "S7 confirmed: no Cloudflare rule caches HTML", convoID: "c1", seq: 1,
+                                            missionID: "ms_2171", missionNum: 2171)],
+            recentMilestones: [Milestone(id: "ml_1", missionID: "ms_2173", num: 2401, kind: .progress,
+                                         title: "Every page loads in under a second on staging", convoID: "c1", seq: 1,
                                          createdAt: F.ago(660)),
-                               Milestone(id: "ml_2", missionID: "ms_4907", num: 9002, kind: .userInput,
-                                         title: "Alice chose Wed 7 Oct, 07:00, fallback 13 Oct", convoID: "c1", seq: 2,
+                               Milestone(id: "ml_2", missionID: "ms_2173", num: 2402, kind: .userInput,
+                                         title: "Alice chose a Wednesday morning launch", convoID: "c1", seq: 2,
                                          createdAt: F.ago(13 * 3_600))],
-            missionNums: ["ms_4791": 4791, "ms_4907": 4907],
-            sessionsByBox: ["slate": 2, "pat": 1, "lab-mac": 1],
-            sessionsByMission: ["ms_4791": [
-                DashboardSession(id: "c-p", title: "promo/integration owner", state: .waiting,
-                                 tag: SessionTagInputs(boxLetter: "P", boxName: "pat", sessionShort: "ad")),
-                DashboardSession(id: "c-g", title: "sales-chat", state: .running,
+            missionNums: ["ms_2171": 2171, "ms_2173": 2173],
+            sessionsByBox: ["slate": 2, "box-a": 1, "lab-mac": 1],
+            sessionsByMission: ["ms_2171": [
+                DashboardSession(id: "c-p", title: "docs-site owner", state: .waiting,
+                                 tag: SessionTagInputs(boxLetter: "B", boxName: "box-a", sessionShort: "ad")),
+                DashboardSession(id: "c-g", title: "search page", state: .running,
                                  tag: SessionTagInputs(boxLetter: "S", boxName: "slate", sessionShort: "13"),
                                  model: "opus", context: SessionStatus.Context(tokens: 265_000, window: 1_000_000, pct: 27)),
                 DashboardSession(id: "c-d", title: "done one", state: .done, boxName: "aspen"),
@@ -54,32 +54,32 @@ final class ProjectDetailSnapshotTests: XCTestCase {
     static var pageWithFeed: ProjectPageModel {
         var page = Self.page
         page.decisions = ProjectFeedPage(total: 9, rows: [
-            ProjectDecision(id: "it_d1", num: 8690, kind: .question, state: .closed, resolution: .answered,
-                            title: "Approve the sales chat for launch?", createdAt: F.ago(30 * 3_600),
-                            closedAt: F.ago(20 * 3_600), missionNum: 4791, answer: "Yes, ship it with the chat on."),
-            ProjectDecision(id: "it_d2", num: 8691, kind: .decision, title: "Home shows the Blue cover as the app renders it",
-                            createdAt: F.ago(3 * 86_400), missionNum: 4791),
-            ProjectDecision(id: "it_d3", num: 8692, kind: .decision, state: .closed, resolution: .reversed,
-                            title: "/contacts redirects to /book-design", createdAt: F.ago(4 * 86_400), missionNum: 4907),
+            ProjectDecision(id: "it_d1", num: 2331, kind: .question, state: .closed, resolution: .answered,
+                            title: "Approve the search results page for launch?", createdAt: F.ago(30 * 3_600),
+                            closedAt: F.ago(20 * 3_600), missionNum: 2171, answer: "Yes, ship it."),
+            ProjectDecision(id: "it_d2", num: 2332, kind: .decision, title: "Home shows the light theme as the app renders it",
+                            createdAt: F.ago(3 * 86_400), missionNum: 2171),
+            ProjectDecision(id: "it_d3", num: 2333, kind: .decision, state: .closed, resolution: .reversed,
+                            title: "/help redirects to /start", createdAt: F.ago(4 * 86_400), missionNum: 2173),
         ], nextBefore: "cursor")
         page.files = ProjectFeedPage(total: 3, rows: [
-            ProjectFile(blobID: "b1", name: "Pricing page desktop.png", contentType: "image/png", missionNum: 4791,
-                        source: .item(num: 8666), postedAt: F.ago(86_400)),
-            ProjectFile(blobID: "b2", name: "Claims list for sign-off.pdf", contentType: "application/pdf",
-                        missionNum: 4791, source: .item(num: 8667), postedAt: F.ago(2 * 86_400)),
-            ProjectFile(blobID: "b3", name: "Hero flat-lay.jpg", contentType: "image/jpeg", missionNum: 4907,
+            ProjectFile(blobID: "b1", name: "Search results desktop.png", contentType: "image/png", missionNum: 2171,
+                        source: .item(num: 2301), postedAt: F.ago(86_400)),
+            ProjectFile(blobID: "b2", name: "Home page wording for sign-off.pdf", contentType: "application/pdf",
+                        missionNum: 2171, source: .item(num: 2302), postedAt: F.ago(2 * 86_400)),
+            ProjectFile(blobID: "b3", name: "Hero guide on a desk.jpg", contentType: "image/jpeg", missionNum: 2173,
                         source: .chat(convoID: "c1", seq: 40), postedAt: F.ago(6 * 86_400)),
         ])
         page.milestonesPage = ProjectFeedPage(total: 3, rows: [
-            ProjectMilestone(milestone: Milestone(id: "ml_1", missionID: "ms_4907", num: 9001, kind: .progress,
-                                                  title: "S7 confirmed: no Cloudflare rule caches HTML", convoID: "c1",
-                                                  seq: 1, createdAt: F.ago(660)), missionNum: 4907),
-            ProjectMilestone(milestone: Milestone(id: "ml_2", missionID: "ms_4907", num: 9002, kind: .userInput,
-                                                  title: "Alice chose Wed 7 Oct, 07:00, fallback 13 Oct", convoID: "c1",
-                                                  seq: 2, createdAt: F.ago(13 * 3_600)), missionNum: 4907),
-            ProjectMilestone(milestone: Milestone(id: "ml_3", missionID: "ms_4791", num: 9003, kind: .progress,
-                                                  title: "Batch 4 pushed: the sales chat is on promo/integration",
-                                                  convoID: "c1", seq: 3, createdAt: F.ago(14 * 3_600)), missionNum: 4791),
+            ProjectMilestone(milestone: Milestone(id: "ml_1", missionID: "ms_2173", num: 2401, kind: .progress,
+                                                  title: "Every page loads in under a second on staging", convoID: "c1",
+                                                  seq: 1, createdAt: F.ago(660)), missionNum: 2173),
+            ProjectMilestone(milestone: Milestone(id: "ml_2", missionID: "ms_2173", num: 2402, kind: .userInput,
+                                                  title: "Alice chose a Wednesday morning launch", convoID: "c1",
+                                                  seq: 2, createdAt: F.ago(13 * 3_600)), missionNum: 2173),
+            ProjectMilestone(milestone: Milestone(id: "ml_3", missionID: "ms_2171", num: 2403, kind: .progress,
+                                                  title: "The results page shows the section each page is in",
+                                                  convoID: "c1", seq: 3, createdAt: F.ago(14 * 3_600)), missionNum: 2171),
         ])
         page.hasFeed = true
         return page
@@ -117,7 +117,7 @@ final class ProjectDetailSnapshotTests: XCTestCase {
     /// No status: the description takes the headline and there is no About fold.
     func testHeadlineFallsBackToTheDescription() {
         var page = Self.page
-        page.project = Project(id: "pj_1", num: 4000, title: "Promo launch", body: "The goal.")
+        page.project = Project(id: "pj_1", num: 2100, title: "Docs site launch", body: "The goal.")
         XCTAssertEqual(ProjectActivityFormat.headlineCaption(page.project, now: F.now), "ABOUT")
         XCTAssertEqual(ProjectActivityFormat.headlineText(page.project), "The goal.")
         XCTAssertFalse(ProjectReferenceSection.about.isShown(page))
@@ -131,13 +131,13 @@ final class ProjectDetailSnapshotTests: XCTestCase {
     }
 
     func testSessionRowMetaLine() {
-        let m1 = Mission(id: "ms_1", num: 4791, title: "Promo branch", originConvoID: "c1")
-        let m2 = Mission(id: "ms_2", num: 4907, title: "Launch day", originConvoID: "c1")
+        let m1 = Mission(id: "ms_1", num: 2171, title: "Docs search", originConvoID: "c1")
+        let m2 = Mission(id: "ms_2", num: 2173, title: "Launch day", originConvoID: "c1")
         let stalled = DashboardSession(id: "c", title: "t", state: .waiting, model: "opus", isStalled: true)
         XCTAssertEqual(ProjectSessionRowView.metaLine(ProjectSessionRow(session: stalled, missions: [m1])),
-                       "opus · stalled · #4791 Promo branch")
+                       "opus · stalled · #2171 Docs search")
         XCTAssertEqual(ProjectSessionRowView.metaLine(ProjectSessionRow(session: stalled, missions: [m1, m2])),
-                       "opus · stalled · #4791, #4907")
+                       "opus · stalled · #2171, #2173")
         XCTAssertNil(ProjectSessionRowView.metaLine(ProjectSessionRow(
             session: DashboardSession(id: "c", title: "t", state: .done), missions: [])))
     }

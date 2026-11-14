@@ -44,8 +44,8 @@ final class MacMissionPageTests: XCTestCase {
 
     func testNeedsYouAndOtherOpenItemsSplitTheOpenItems() {
         let model = F.model()
-        XCTAssertEqual(model.needsYouItems.map(\.num), [3801, 3802, 3803])
-        XCTAssertEqual(model.otherOpenItems.map(\.num), [3804, 3805, 3806, 3807])
+        XCTAssertEqual(model.needsYouItems.map(\.num), [2251, 2252, 2253])
+        XCTAssertEqual(model.otherOpenItems.map(\.num), [2254, 2255, 2256, 2257])
         XCTAssertEqual(model.needsYouCount, 3)
     }
 
@@ -64,10 +64,10 @@ final class MacMissionPageTests: XCTestCase {
     func testMilestoneAccessibilityLabelCarriesBodyAndAge() {
         let milestone = F.milestones[0]
         XCTAssertEqual(MacMilestoneRow.accessibilityLabel(for: milestone, now: F.now),
-                       "Your input 9, Alice: tracker threads need parity with chat, "
-                       + "Decided items, tables, queued drops, image paste, Shift+Return., 16m ago")
+                       "Your input 9, Alice: search should cover the guides too, "
+                       + "Guides, reference pages, the changelog and the page titles., 16m ago")
         XCTAssertEqual(MacMilestoneRow.accessibilityLabel(for: F.milestones[4], now: F.now),
-                       "Your input 5, Alice: remove the ⌘0 side panel; redesign Missions as a live dashboard, 16h ago",
+                       "Your input 5, Alice: drop the side panel; show results on a page of their own, 16h ago",
                        "no body, no empty part")
     }
 
@@ -79,7 +79,7 @@ final class MacMissionPageTests: XCTestCase {
         XCTAssertEqual(first.count, 4, "the body-less milestone has no entry")
         XCTAssertEqual(cache.bodies(for: F.milestones), first)
         var edited = F.milestones
-        edited[0] = F.milestone(9, .userInput, "Alice: tracker threads need parity with chat", "Now **bold**.", 16 * F.minute)
+        edited[0] = F.milestone(9, .userInput, "Alice: search should cover the guides too", "Now **bold**.", 16 * F.minute)
         XCTAssertEqual(String(cache.bodies(for: edited)["ml_9"]!.characters), "Now bold.")
     }
 
@@ -95,10 +95,10 @@ final class MacMissionPageTests: XCTestCase {
     }
 
     func testBreadcrumbNamesProjectsTheProjectAndTheMission() {
-        let mission = Mission(id: "ms_1", num: 4907, title: "Launch", originConvoID: "c1", projectID: "pj_1")
-        XCTAssertEqual(MacMissionPageTopBar.crumbs(mission: mission, project: Project(id: "pj_1", num: 1, title: "Promo launch")),
-                       ["Projects", "Promo launch", "#4907"])
-        XCTAssertEqual(MacMissionPageTopBar.crumbs(mission: mission, project: nil), ["Projects", "#4907"],
+        let mission = Mission(id: "ms_1", num: 2173, title: "Launch", originConvoID: "c1", projectID: "pj_1")
+        XCTAssertEqual(MacMissionPageTopBar.crumbs(mission: mission, project: Project(id: "pj_1", num: 1, title: "Docs site launch")),
+                       ["Projects", "Docs site launch", "#2173"])
+        XCTAssertEqual(MacMissionPageTopBar.crumbs(mission: mission, project: nil), ["Projects", "#2173"],
                        "an unfiled (or uncached) project drops its crumb")
         XCTAssertEqual(MacMissionPageTopBar.crumbs(mission: nil, project: nil), ["Projects"])
     }
@@ -114,7 +114,7 @@ final class MacMissionPageTests: XCTestCase {
         let groups = MacMissionPageFixtures.model().conversationGroups
         XCTAssertEqual(groups.onItNow.first { $0.id == "c-nav" }?.linkedMission, .alsoOn(MacMissionPageFixtures.conversations[0].otherMissions[0]))
         XCTAssertEqual(groups.earlier.first { $0.id == "c-mem" }?.linkedMission?.label, "moved to")
-        XCTAssertEqual(groups.earlier.first { $0.id == "c-mem" }?.linkedMission?.link.id, "ms_4905")
+        XCTAssertEqual(groups.earlier.first { $0.id == "c-mem" }?.linkedMission?.link.id, "ms_2174")
         XCTAssertNil(groups.onItNow.first { $0.id == "c-verify" }?.linkedMission, "no other link, no chip")
     }
 
@@ -195,9 +195,9 @@ final class MacMissionPageTests: XCTestCase {
         defer { host.close() }
         // Inside the card: 14pt column padding, the header, then the card.
         host.click(atTopLeftOffset: CGPoint(x: 120, y: 90))
-        XCTAssertEqual(opened, ["it_3804"])
+        XCTAssertEqual(opened, ["it_2254"])
         host.click(atTopLeftOffset: CGPoint(x: 120, y: 20))
-        XCTAssertEqual(opened, ["it_3804"], "the column header is not a card")
+        XCTAssertEqual(opened, ["it_2254"], "the column header is not a card")
     }
 }
 

@@ -339,7 +339,7 @@ final class NewChatViewModelBoxStatusTests: XCTestCase {
         fake.devicesResult = .success([agent(1, connected: true, status: report(percent: 10, ago: 600)),
                                        agent(2, connected: false)])
         fake.repliesByDevice[1] = .ok(resultData: Data(#"""
-        {"folders":[{"path":"/home/pat/app","last_used":1754899200000}],
+        {"folders":[{"path":"/home/alice/app","last_used":1754899200000}],
          "limits":{"lines":[{"id":"session","label":"Current session","percent":25}]}}
         """#.utf8))
         let gate = Gate(), arrival = Gate()
@@ -364,7 +364,7 @@ final class NewChatViewModelBoxStatusTests: XCTestCase {
         XCTAssertEqual(vm.capacities[1]?.limitLines.first?.percent, 90, "the frame is the newer word")
         XCTAssertEqual(vm.capacityFreshness(for: 1), .live)
         XCTAssertNil(cache.loadAll()[1], "the reply's numbers are not cached over the frame either")
-        XCTAssertEqual(vm.cachedFoldersForTesting(1)?.map(\.path), ["/home/pat/app"],
+        XCTAssertEqual(vm.cachedFoldersForTesting(1)?.map(\.path), ["/home/alice/app"],
                        "the reply still warms the folder cache")
     }
 

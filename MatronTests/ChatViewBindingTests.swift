@@ -156,10 +156,10 @@ final class ChatViewBindingTests: XCTestCase {
     func testTheHeaderSubtitleKeepsTheWorkdirBesideTheChip() {
         let link = ConversationMissionLink(mission: Mission(id: "ms_1", num: 61, title: "M", originConvoID: "c1"),
                                            isCurrent: true)
-        XCTAssertEqual(ChatView.headerSubtitleLayout(context: "pat · ~/yearly-app",
+        XCTAssertEqual(ChatView.headerSubtitleLayout(context: "box-a · ~/acme-app",
                                                      missions: ConversationMissions(links: [link])),
                        .contextAndChip, "the workdir line never leaves the header")
-        XCTAssertEqual(ChatView.headerSubtitleLayout(context: "pat · ~/yearly-app", missions: ConversationMissions()),
+        XCTAssertEqual(ChatView.headerSubtitleLayout(context: "box-a · ~/acme-app", missions: ConversationMissions()),
                        .contextOnly)
     }
 

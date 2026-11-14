@@ -57,7 +57,7 @@ final class BoxCapacityCacheTests: XCTestCase {
     }
 
     @MainActor
-    private func makeCache(userID: String = "@pat:matron.chat") -> UserDefaultsBoxCapacityCache {
+    private func makeCache(userID: String = "@dana:matron.chat") -> UserDefaultsBoxCapacityCache {
         UserDefaultsBoxCapacityCache(userID: userID, defaults: defaults)
     }
 
@@ -125,7 +125,7 @@ final class BoxCapacityCacheTests: XCTestCase {
     func test_persistsAcrossCacheInstances_viaSharedDefaults() {
         makeCache().save(fullCapacity(), for: 7, at: capturedAt)
         // A fresh cache over the same suite — the app-relaunch case.
-        let reopened = UserDefaultsBoxCapacityCache(userID: "@pat:matron.chat", defaults: defaults)
+        let reopened = UserDefaultsBoxCapacityCache(userID: "@dana:matron.chat", defaults: defaults)
         XCTAssertEqual(reopened.loadAll()[7]?.capacity, fullCapacity())
     }
 
@@ -138,15 +138,15 @@ final class BoxCapacityCacheTests: XCTestCase {
     /// index has to hold here too.
     @MainActor
     func test_entriesAreScopedToTheirUser() {
-        let pat = makeCache(userID: "@pat:matron.chat")
+        let dana = makeCache(userID: "@dana:matron.chat")
         let sam = makeCache(userID: "@sam:matron.chat")
 
-        pat.save(fullCapacity(), for: 1, at: capturedAt)
+        dana.save(fullCapacity(), for: 1, at: capturedAt)
 
         XCTAssertNil(sam.loadAll()[1], "another account's box 1 is not this account's box 1")
         sam.save(BoxCapacity(liveSessions: 0, limitLines: [], accountEmail: "carol@example.com"),
                  for: 1, at: capturedAt)
-        XCTAssertEqual(pat.loadAll()[1]?.capacity.accountEmail, "bob@example.com",
+        XCTAssertEqual(dana.loadAll()[1]?.capacity.accountEmail, "bob@example.com",
                        "and writing one must not clobber the other")
         XCTAssertEqual(sam.loadAll()[1]?.capacity.accountEmail, "carol@example.com")
     }
@@ -155,14 +155,14 @@ final class BoxCapacityCacheTests: XCTestCase {
     /// nothing, matching the store/outbox/search wipes it already performs.
     @MainActor
     func test_removeAll_dropsOnlyThatUsersEntries() {
-        let pat = makeCache(userID: "@pat:matron.chat")
+        let dana = makeCache(userID: "@dana:matron.chat")
         let sam = makeCache(userID: "@sam:matron.chat")
-        pat.save(fullCapacity(), for: 1, at: capturedAt)
+        dana.save(fullCapacity(), for: 1, at: capturedAt)
         sam.save(fullCapacity(), for: 1, at: capturedAt)
 
-        UserDefaultsBoxCapacityCache.removeAll(for: "@pat:matron.chat", defaults: defaults)
+        UserDefaultsBoxCapacityCache.removeAll(for: "@dana:matron.chat", defaults: defaults)
 
-        XCTAssertTrue(pat.loadAll().isEmpty)
+        XCTAssertTrue(dana.loadAll().isEmpty)
         XCTAssertNotNil(sam.loadAll()[1], "signing one account out leaves the other's cache alone")
     }
 
@@ -174,7 +174,7 @@ final class BoxCapacityCacheTests: XCTestCase {
         // display-only, so an unreadable cache costs a quieter row — never a
         // crash or a failed load.
         defaults.set(Data("not json".utf8),
-                     forKey: UserDefaultsBoxCapacityCache.defaultsKey(for: "@pat:matron.chat"))
+                     forKey: UserDefaultsBoxCapacityCache.defaultsKey(for: "@dana:matron.chat"))
 
         XCTAssertTrue(cache.loadAll().isEmpty)
         // And it recovers: the next save rewrites the whole payload.

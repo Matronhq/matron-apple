@@ -15,10 +15,10 @@ import UIKit
 @MainActor
 final class ItemTableLayoutTests: XCTestCase {
     private static let wideTable = """
-    | Batch | Dry run | Real run | Re-check |
+    | Folder | Dry run | Real run | Re-check |
     |---|---|---|---|
-    | 31205 Harlaw | would backfill 72 | backfilled 72, cost re-snapshotted as v3 | nothing to backfill |
-    | 31240 Freemen's | would backfill 96 | backfilled 96, cost re-snapshotted as v3 | nothing to backfill |
+    | 101 Guides | would resize 72 | resized 72, thumbnails rebuilt as v3 | nothing to resize |
+    | 102 Reference | would resize 96 | resized 96, thumbnails rebuilt as v3 | nothing to resize |
     """
 
     private static let narrowTable = """

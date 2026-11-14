@@ -35,7 +35,7 @@ final class ProjectPageSectionsTests: XCTestCase {
             missions: [Self.row(2), Self.row(1)],
             sessionsByMission: [
                 "ms_1": [Self.session("a", .running, box: "slate", age: 60), Self.session("shared", .waiting, box: "aspen")],
-                "ms_2": [Self.session("shared", .waiting, box: "aspen"), Self.session("d", .done, box: "pat", age: 5)],
+                "ms_2": [Self.session("shared", .waiting, box: "aspen"), Self.session("d", .done, box: "box-a", age: 5)],
                 // A closed mission's sessions are not the project's now.
                 "ms_9": [Self.session("gone", .running, box: "slate")],
             ])
@@ -46,15 +46,15 @@ final class ProjectPageSectionsTests: XCTestCase {
 
     func testBoxCountsComeFromTheRowsMostFirstThenByName() {
         let rows = [Self.session("a", .running, box: "slate"), Self.session("b", .running, box: "aspen"),
-                    Self.session("c", .waiting, box: "slate"), Self.session("d", .waiting, box: "pat", tagged: false),
+                    Self.session("c", .waiting, box: "slate"), Self.session("d", .waiting, box: "box-a", tagged: false),
                     Self.session("e", .waiting, box: nil)]
             .map { ProjectSessionRow(session: $0, missions: []) }
-        XCTAssertEqual(ProjectPageSections.boxCounts(rows, fallback: ["ship-box": 8]),
+        XCTAssertEqual(ProjectPageSections.boxCounts(rows, fallback: ["box-c": 8]),
                        [ProjectBoxCount(box: "slate", count: 2), ProjectBoxCount(box: "aspen", count: 1),
-                        ProjectBoxCount(box: "pat", count: 1)],
+                        ProjectBoxCount(box: "box-a", count: 1)],
                        "an untagged session's bare box counts; a session with no box does not")
-        XCTAssertEqual(ProjectPageSections.boxCounts([], fallback: ["pat": 1, "ship-box": 8]),
-                       [ProjectBoxCount(box: "ship-box", count: 8), ProjectBoxCount(box: "pat", count: 1)],
+        XCTAssertEqual(ProjectPageSections.boxCounts([], fallback: ["box-a": 1, "box-c": 8]),
+                       [ProjectBoxCount(box: "box-c", count: 8), ProjectBoxCount(box: "box-a", count: 1)],
                        "the journal's counts until the sessions load")
     }
 
@@ -70,7 +70,7 @@ final class ProjectPageSectionsTests: XCTestCase {
         XCTAssertNil(selected, "clicking the selected box again clears")
         XCTAssertEqual(ProjectPageSections.rows(rows, onBox: selected).map(\.id), ["a", "b"])
         XCTAssertEqual(ProjectPageSections.toggled("aspen", box: "slate"), "slate", "another box switches")
-        XCTAssertNil(ProjectPageSections.activeBox("pat", in: counts), "a box with no sessions left filters nothing")
+        XCTAssertNil(ProjectPageSections.activeBox("box-a", in: counts), "a box with no sessions left filters nothing")
     }
 
     func testSessionsCardShowsWithRowsEvenWhenNoBoxIsNamed() {
@@ -93,7 +93,7 @@ final class ProjectPageSectionsTests: XCTestCase {
     }
 
     func testSessionsCardShowsOnFallbackCountsBeforeRowsLoad() {
-        let counts = ProjectPageSections.boxCounts([], fallback: ["ship-box": 3])
+        let counts = ProjectPageSections.boxCounts([], fallback: ["box-c": 3])
         XCTAssertTrue(ProjectPageSections.showsSessionsCard(rows: [], counts: counts),
                       "the journal's fallback counts show the card before sessions load")
     }

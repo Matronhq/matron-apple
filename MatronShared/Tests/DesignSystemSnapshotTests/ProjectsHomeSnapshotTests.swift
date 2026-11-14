@@ -7,8 +7,8 @@ final class ProjectsHomeSnapshotTests: XCTestCase {
     typealias F = ProjectsSnapshotTests
 
     static var home: ProjectsHomeSnapshot {
-        let apps = Project(id: "pj_3", num: 4002, title: "Matron apps",
-                           status: "AppKit timeline waits on your manual pass. Projects redesign plan is ready for review.",
+        let apps = Project(id: "pj_3", num: 2102, title: "Matron apps",
+                           status: "The new timeline waits on your manual pass. The projects redesign plan is ready for review.",
                            statusBy: .agent, statusUpdatedAt: F.ago(240),
                            missions: ProjectMissionCounts(running: 3, waiting: 4, quiet: 4), needsYou: 3,
                            lastActivityAt: F.ago(120))
@@ -17,7 +17,7 @@ final class ProjectsHomeSnapshotTests: XCTestCase {
                   status: "Status line for mission \(i + 1).", needsYou: i == 1 ? 1 : 0, age: TimeInterval(60 * (i + 4)))
         }
         return ProjectsHomeSnapshot(
-            cards: [ProjectCard(project: F.promo, needsYouCount: 6), ProjectCard(project: apps, needsYouCount: 3),
+            cards: [ProjectCard(project: F.docs, needsYouCount: 6), ProjectCard(project: apps, needsYouCount: 3),
                     ProjectCard(project: F.silent, needsYouCount: 0)],
             unfiled: unfiled,
             quiet: [F.row(2000, "Old thing", activity: .quiet, status: nil, age: 20 * 86_400)],
@@ -43,31 +43,31 @@ final class ProjectsHomeSnapshotTests: XCTestCase {
             ProjectCard(project: project(4100, "Offline mode for the mobile apps", status:
                 "Read-only offline browsing is live in beta build 1.0.18. The sync-queue redesign and the conflict resolver are built but wait on four answers from you: retry limits for uploads, cache size caps, the eviction order, and the attachment policy.",
                 missions: ProjectMissionCounts(running: 1, waiting: 1)), needsYouCount: 4,
-                waiting: [waiting(3432, "Pick the retry limit and backoff for failed uploads on slow networks"),
-                          waiting(3440, "Cache size caps for the three device classes"),
-                          waiting(3441, "Which eviction order for attachments?")], waitingMore: 1,
+                waiting: [waiting(2341, "Pick the retry limit and backoff for failed uploads on slow networks"),
+                          waiting(2342, "Cache size caps for the three device classes"),
+                          waiting(2343, "Which eviction order for attachments?")], waitingMore: 1,
                 sessionsNow: 14),
-            ProjectCard(project: project(4000, "Docs site launch on 7 Oct", status:
-                "On track for Wed 7 Oct, 07:00 (fallback Tue 13 Oct). The branch is complete and green with the search page merged; the CDN and ship-box are briefed for Monday's rehearsal. Two approvals from you gate Sunday's checkpoint.",
+            ProjectCard(project: project(2100, "Docs site launch on Wednesday", status:
+                "On track for Wednesday at 07:00. Search works on staging and pages load in under a second. Two approvals from you come before Monday's rehearsal.",
                 missions: ProjectMissionCounts(running: 2, waiting: 2, idle: 1)), needsYouCount: 2,
-                waiting: [waiting(5008, "Approve the getting-started page (copy and pictures)"),
-                          waiting(5011, "Go for Monday's rehearsal at 07:00?")], sessionsNow: 9),
+                waiting: [waiting(2301, "Approve the getting-started page (copy and pictures)"),
+                          waiting(2304, "Go for Monday's rehearsal at 07:00?")], sessionsNow: 9),
             ProjectCard(project: project(4200, "Themes ready for release", status:
-                "Light, dark, high-contrast and sepia variants are shipped for all 15 themes. Icon sets (phase 2C) are in the render queue now: Outline, then Filled, then accent colours. Fonts and spacing (2D) start once the build box is free.",
+                "Light, dark, high-contrast and sepia variants are shipped for all 15 themes. Icon sets are rendering now: Outline, then Filled, then accent colours. Fonts and spacing come next.",
                 missions: ProjectMissionCounts(running: 3, waiting: 1, idle: 2)), needsYouCount: 2,
-                waitingOn: waiting(5969, "Merge approval for two theme fixes in the release queue", more: 1), sessionsNow: 7),
+                waitingOn: waiting(2361, "Approve two theme fixes for the next release", more: 1), sessionsNow: 7),
             ProjectCard(project: project(4300, "Push notifications pilot", status:
-                "The push provider is set up and every secret is sealed. The first TestFlight build is ready; the server PRs deploy in tonight's batch. The wider rollout waits on the privacy-policy rewrite.",
+                "The push provider is set up. The first TestFlight build is ready, and the server changes ship this week. The wider rollout waits on the privacy-policy rewrite.",
                 missions: ProjectMissionCounts(running: 2, waiting: 1)), needsYouCount: 2,
-                waitingOn: waiting(5752, "Apple ID emails for Alice, Bob and Carol (TestFlight)", more: 1), sessionsNow: 4),
+                waitingOn: waiting(2371, "Apple ID emails for Alice, Bob and Carol (TestFlight)", more: 1), sessionsNow: 4),
             ProjectCard(project: project(4400, "Image cropper good enough to approve", status:
-                "Sample set 1311 passes acceptance on the production build (QA 0.72, no errors), so Approve is your click. Separately, the edge detection is being refined: rounded corners and thin borders are next.",
+                "The cropper passes the full sample set on the release build, so Approve is your click. Separately, the edge detection is being refined: rounded corners and thin borders are next.",
                 missions: ProjectMissionCounts(running: 1, waiting: 1)), needsYouCount: 1,
-                waitingOn: waiting(5882, "Smart crop on by default, or per image?", more: 0), sessionsNow: 2),
-            ProjectCard(project: project(4500, "File storage on object storage", status: nil,
-                body: "The per-workspace storage cutover is live: 125 workspaces moved to object storage with none failed, and backups are current. Now building the read-only reporting replica on host-b, after you approved all five design calls.",
+                waitingOn: waiting(2381, "Smart crop on by default, or per image?", more: 0), sessionsNow: 2),
+            ProjectCard(project: project(4500, "Billing export", status: nil,
+                body: "Invoices and payments export as CSV. The first account type works and its totals match the dashboard; the other two account types are next, after you approved all five column choices.",
                 missions: ProjectMissionCounts(running: 2, idle: 2)),
-                latest: ProjectLatest(title: "PR opened with the cookbook, role, environment and replica firewall rule",
+                latest: ProjectLatest(title: "The export now covers the second account type, with a check against the totals",
                                       kind: .progress, at: F.ago(45 * 60)),
                 sessionsNow: 5),
         ]

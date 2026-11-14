@@ -344,12 +344,12 @@ final class ProjectsHomeAssemblyTests: XCTestCase {
     /// one first (journal order), never an ended one.
     func testAlsoOnNamesTheOtherActiveLinkCurrentFirst() {
         let own = MissionConversation(id: "c1", title: "t", box: nil, state: "running", joinedAt: Self.ago(900),
-                                      otherMissions: [other(4791, current: true), other(4905), other(4083, ended: 100)])
-        XCTAssertEqual(linked(own).alsoOn?.num, 4791)
+                                      otherMissions: [other(2171, current: true), other(2174), other(2172, ended: 100)])
+        XCTAssertEqual(linked(own).alsoOn?.num, 2171)
         XCTAssertNil(linked(own).movedTo, "an active row never moved")
-        XCTAssertEqual(linked(own).linkedMission, .alsoOn(other(4791, current: true)))
+        XCTAssertEqual(linked(own).linkedMission, .alsoOn(other(2171, current: true)))
         let onlyEnded = MissionConversation(id: "c2", title: "t", box: nil, state: "running",
-                                            otherMissions: [other(4083, ended: 100)])
+                                            otherMissions: [other(2172, ended: 100)])
         XCTAssertNil(linked(onlyEnded).alsoOn)
     }
 
@@ -360,12 +360,12 @@ final class ProjectsHomeAssemblyTests: XCTestCase {
     func testMovedToNamesTheLinkThatWasCurrentWhenThisOneEnded() {
         let own = MissionConversation(id: "c1", title: "t", box: nil, state: "done",
                                       joinedAt: Self.ago(9_000), endedAt: Self.ago(3_000),
-                                      otherMissions: [other(4905, joined: 3_000),          // joined as this ended
+                                      otherMissions: [other(2174, joined: 3_000),          // joined as this ended
                                                       other(5000, joined: 1_000),          // joined after: not "then"
                                                       other(4001, joined: 8_000, ended: 5_000)]) // ended before: not "then"
-        XCTAssertEqual(linked(own).movedTo?.num, 4905)
+        XCTAssertEqual(linked(own).movedTo?.num, 2174)
         XCTAssertNil(linked(own).alsoOn, "an ended row is never 'also on'")
-        XCTAssertEqual(linked(own).linkedMission?.link.id, "ms_4905", "the chip opens that mission")
+        XCTAssertEqual(linked(own).linkedMission?.link.id, "ms_2174", "the chip opens that mission")
         XCTAssertEqual(linked(own).linkedMission?.label, "moved to")
         let two = MissionConversation(id: "c2", title: "t", box: nil, state: "done", endedAt: Self.ago(3_000),
                                       otherMissions: [other(10, joined: 5_000), other(11, current: true, joined: 6_000)])

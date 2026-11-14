@@ -146,7 +146,7 @@ final class GoToNumberTests: XCTestCase {
 
     func test_remoteProject_refreshesProjectsAndOpens() async {
         let fake = Fake()
-        fake.journal[12] = NumberLookup(kind: .project, id: "pj_1", num: 12, title: "Promo")
+        fake.journal[12] = NumberLookup(kind: .project, id: "pj_1", num: 12, title: "Docs")
         fake.onRefresh = { fake.pages[.project(12)] = .project(id: "pj_1") }
 
         guard case .open(let target, _) = await fake.resolver.resolve(num: 12) else { return XCTFail("expected .open") }

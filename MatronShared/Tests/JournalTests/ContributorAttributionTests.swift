@@ -77,7 +77,7 @@ final class ContributorAttributionTests: XCTestCase {
 
     func testMissionAndMilestoneContributors() throws {
         let mission = try XCTUnwrap(Mission(json: [
-            "id": "ms_1", "num": 3, "state": "open", "title": "Cover editor", "origin_convo_id": "c1",
+            "id": "ms_1", "num": 3, "state": "open", "title": "Theme editor", "origin_convo_id": "c1",
             "created_at": 1_700_000_000_000, "updated_at": 1_700_000_000_000,
             "status": "Proofs are in.", "status_by": "agent", "status_contributor": "bob",
             "status_updated_at": 1_700_000_000_000,
@@ -107,7 +107,7 @@ final class ContributorAttributionTests: XCTestCase {
         XCTAssertEqual(comments.map(\.authorName), ["bob's agent", "You"])
         XCTAssertEqual(comments.first?.contributor, Contributor(name: "bob", via: .agent))
 
-        let mission = Mission(id: "ms_1", num: 3, title: "Cover editor", originConvoID: "c1",
+        let mission = Mission(id: "ms_1", num: 3, title: "Theme editor", originConvoID: "c1",
                               status: "Proofs are in.", statusContributor: "bob")
         try store.upsertMissions([mission])
         XCTAssertEqual(try store.mission(id: "ms_1")?.statusContributor, "bob")

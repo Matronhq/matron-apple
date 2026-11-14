@@ -16,12 +16,12 @@ private final class FakeChatForChip: ChatService, @unchecked Sendable {
 /// Spec §6 "header chip baselines on Mac" (PR4 review M7), pinning I2: a
 /// long mission title truncates inside a capped chip instead of running
 /// over the model cluster — and the chat title has the
-/// room first, the chip narrowing to "#4791 +2" before the title truncates.
+/// room first, the chip narrowing to "#2171 +2" before the title truncates.
 @MainActor
 final class MacChatHeaderChipSnapshotTests: XCTestCase {
     private static let longTitle =
         "mac: a mission switch never mixes missions; Done loads instead of showing Show more over nothing"
-    private static let longChatTitle = "Missions Navigation Refinement and the Coordinator check-ins"
+    private static let longChatTitle = "Docs search and the getting-started guide for the new site"
 
     private func missions(title: String) -> ConversationMissions {
         func link(_ num: Int, _ title: String, current: Bool) -> ConversationMissionLink {
@@ -29,9 +29,9 @@ final class MacChatHeaderChipSnapshotTests: XCTestCase {
                                                      projectID: "pj_1"),
                                     isCurrent: current)
         }
-        return ConversationMissions(links: [link(4791, title, current: true),
-                                            link(4907, "Launch day", current: false),
-                                            link(4083, "Combined promo branch", current: false)])
+        return ConversationMissions(links: [link(2171, title, current: true),
+                                            link(2173, "Launch day", current: false),
+                                            link(2172, "Move the old pages", current: false)])
     }
 
     private func header(missions: ConversationMissions, width: CGFloat,
@@ -44,7 +44,7 @@ final class MacChatHeaderChipSnapshotTests: XCTestCase {
                                   context: SessionStatus.Context(tokens: 265_000, window: 1_000_000, pct: 27),
                                   limits: [SessionStatus.Limit(label: "Session", percent: 39, resets: nil, resetsAt: nil)]),
             stripViewModel: SubChatStripViewModel(chat: FakeChatForChip(), parentConvoID: "c1"),
-            missions: missions, projectTitles: ["pj_1": "Promo launch"], needsYouCount: 0, itemsAvailable: true,
+            missions: missions, projectTitles: ["pj_1": "Docs site launch"], needsYouCount: 0, itemsAvailable: true,
             actions: .init(onOpenSubChat: { _ in }, onCompact: {}, onOpenMission: { _ in }, onOpenProject: { _ in },
                            showMediaBrowser: .constant(false), showItemsPane: .constant(false)))
         return MacChatHeaderBar(model: model, hitRegions: MacChatHeaderHitRegions())
@@ -91,11 +91,11 @@ final class MacChatHeaderChipSnapshotTests: XCTestCase {
         XCTAssertLessThanOrEqual(chrome, 60, "an uncapped chip measured \(widest) pt")
         let numberOnly = width(of: MissionChipLabel(missions: missions(title: Self.longTitle), numberOnly: true),
                                proposed: nil)
-        XCTAssertEqual(narrowest, numberOnly + chrome, accuracy: 1, "the floor is \"#4791 +2\", nothing more")
+        XCTAssertEqual(narrowest, numberOnly + chrome, accuracy: 1, "the floor is \"#2171 +2\", nothing more")
     }
 
     func testHeaderChipShort() {
-        assertVariants(of: header(missions: missions(title: "Promo branch"), width: 800), named: "header-chip-short-800")
+        assertVariants(of: header(missions: missions(title: "Docs search"), width: 800), named: "header-chip-short-800")
     }
 
     /// The title's ideal is wider than the chip leaves at its fullest:

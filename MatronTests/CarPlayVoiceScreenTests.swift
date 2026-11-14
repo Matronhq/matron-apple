@@ -18,8 +18,8 @@ final class CarPlayVoiceScreenTests: XCTestCase {
     }
 
     private static let item = VoiceEntry.item(
-        VoiceItem(id: "it_1", kind: .decision, convoID: "c2", title: "Ship the promo page", labels: ["Go", "Wait"]),
-        convoTitle: "Promo", boxName: "box-b")
+        VoiceItem(id: "it_1", kind: .decision, convoID: "c2", title: "Ship the docs page", labels: ["Go", "Wait"]),
+        convoTitle: "Docs", boxName: "box-b")
     private static let reply = VoiceEntry.reply(
         SpokenReply(convoID: "c1", seq: 10, short: "The deploy finished. Shall I merge?"),
         convoTitle: "Auth refactor", boxName: "box-a")
@@ -71,7 +71,7 @@ final class CarPlayVoiceScreenTests: XCTestCase {
         speaking.current = Self.item
         let model = Screen.model(speaking)
         let titles = model.layout.titles.values.flatMap { $0 }
-        XCTAssertFalse(titles.contains { $0.contains("Ship the promo page") })
+        XCTAssertFalse(titles.contains { $0.contains("Ship the docs page") })
         XCTAssertEqual(model.layout.titles[.speaking], ["Speaking", "box-b is speaking"], "the thing being read names its own box")
     }
 
@@ -90,7 +90,7 @@ final class CarPlayVoiceScreenTests: XCTestCase {
         for labels in [[], ["Go"], ["A", "B", "C"], ["A", "B", "C", "D"]] {
             var listening = state(.listening)
             listening.current = .item(VoiceItem(id: "it_2", kind: .question, convoID: "c2", title: "T", labels: labels),
-                                      convoTitle: "Promo")
+                                      convoTitle: "Docs")
             XCTAssertEqual(Screen.model(listening).layout.buttons[.listening], [.skip, .stop], "\(labels)")
         }
     }
@@ -160,10 +160,10 @@ final class CarPlayVoiceScreenTests: XCTestCase {
     func test_aRowShowsTheTitleWithoutItsSessionTag_theBox_andWhetherItIsWorking() {
         let rows = CarPlayChats.rows([
             QueueConversation(id: "c1", title: "[ab] Auth refactor", boxName: "box-a", unreadCount: 0, sessionState: "running"),
-            QueueConversation(id: "c2", title: "Promo", boxName: nil, unreadCount: 3, sessionState: "waiting"),
+            QueueConversation(id: "c2", title: "Docs", boxName: nil, unreadCount: 3, sessionState: "waiting"),
             QueueConversation(id: "c3", title: "", boxName: "box-b", unreadCount: 0, sessionState: "done"),
         ])
-        XCTAssertEqual(rows.map(\.title), ["Auth refactor", "Promo", "Conversation"])
+        XCTAssertEqual(rows.map(\.title), ["Auth refactor", "Docs", "Conversation"])
         XCTAssertEqual(rows.map(\.detail), ["box-a · Working", nil, "box-b"])
     }
 }

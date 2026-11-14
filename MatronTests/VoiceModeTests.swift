@@ -60,11 +60,11 @@ final class VoiceModeTests: XCTestCase {
         state.phase = .speaking
         state.caption = "Sending: Go."
         state.current = .item(VoiceItem(id: "it_1", kind: .decision, convoID: "c2", title: "Ship it", labels: ["Go", "Wait"]),
-                              convoTitle: "Promo", boxName: "pat")
+                              convoTitle: "Docs", boxName: "box-a")
         let model = VoiceModeScreenMapping.model(state, unsentCount: 0)
         XCTAssertEqual(model.phase, .speaking)
-        XCTAssertEqual(model.title, "Promo", "the thing being read names its own conversation")
-        XCTAssertEqual(model.boxName, "pat")
+        XCTAssertEqual(model.title, "Docs", "the thing being read names its own conversation")
+        XCTAssertEqual(model.boxName, "box-a")
         XCTAssertEqual(model.labels, ["Go", "Wait"])
         XCTAssertEqual(model.caption, "Sending: Go.")
         for (phase, expected) in [(VoiceModeEngine.Phase.listening, VoiceModeScreen.Model.Phase.listening),
@@ -93,7 +93,7 @@ final class VoiceModeTests: XCTestCase {
     /// caption when the clip ends; what is about to go stays on screen.
     func test_aSendWaitingForCancel_keepsWhatItIsSendingOnScreen() {
         let item = VoiceEntry.item(VoiceItem(id: "it_1", kind: .decision, convoID: "c2", title: "Ship it", labels: ["Go", "Wait"]),
-                                   convoTitle: "Promo", boxName: "pat")
+                                   convoTitle: "Docs", boxName: "box-a")
         let state = confirmingState(entry: item, said: "go")
         XCTAssertEqual(state.phase, .confirming)
         XCTAssertNil(state.caption)

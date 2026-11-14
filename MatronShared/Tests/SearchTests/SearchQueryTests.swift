@@ -63,8 +63,8 @@ final class SearchQueryTests: XCTestCase {
     func test_snippet_highlightsTheTypedWords() throws {
         let query = try XCTUnwrap(SearchQuery("time crisis"))
         XCTAssertEqual(
-            SearchSnippet.make(body: "Can you buy guns like Time Crisis guns", query: query),
-            "Can you buy guns like <mark>Time Crisis</mark> guns")
+            SearchSnippet.make(body: "We played Time Crisis at the arcade", query: query),
+            "We played <mark>Time Crisis</mark> at the arcade")
     }
 
     /// The index matches words and word prefixes, so that is all the
