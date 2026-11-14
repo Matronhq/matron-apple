@@ -112,6 +112,20 @@ final class AccountUnlockTests: XCTestCase {
         XCTAssertEqual(monitor.lock?.since, since)
     }
 
+    func test_aNonceAnswer_doesNotClearALockLearnedOverHTTP() async {
+        monitor.note(lock: AccountLock(since: since, canUnlock: true))
+        for _ in 0..<100 where !monitor.canUnlock { try? await Task.sleep(for: .milliseconds(5)) }
+        monitor.note(status: 200)
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(monitor.canUnlock)
+        // A device that was signed out, not frozen: a 200 does clear it.
+        monitor.note(lock: AccountLock(since: since, canUnlock: false))
+        try? await Task.sleep(for: .milliseconds(50))
+        monitor.note(status: 200)
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertFalse(monitor.isLocked)
+    }
+
     func test_unlock_signsClearPanicOverTheLocksStart_withoutReadingTheKeys() async throws {
         await frozen()
         let model = model()
@@ -206,8 +220,11 @@ final class AccountUnlockTests: XCTestCase {
         tokens.error = NSError(domain: "keychain", code: 1)
         let model = model()
         await unlock(model)
-        XCTAssertTrue(model.errorText?.contains("couldn't save") ?? false)
+        // The warning outlives the locked screen.
         XCTAssertFalse(monitor.isLocked)
+        XCTAssertEqual(monitor.warning, AccountUnlockModel.unsavedTokenWarning)
+        monitor.dismissWarning()
+        XCTAssertNil(monitor.warning)
     }
 
     func test_signInNotice_afterALostAnswer() {

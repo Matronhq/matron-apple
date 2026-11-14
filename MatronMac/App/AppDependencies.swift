@@ -39,6 +39,12 @@ final class AppDependencies {
     private let journalDirectory: URL
 
     private var cores: [String: JournalCore] = [:]
+
+    /// Whether `core` is still the signed-in account's: a sign-out removes
+    /// it, and a new sign-in replaces it. Never creates one.
+    func isCurrent(_ core: JournalCore, userID: String) -> Bool {
+        cores[userID] === core
+    }
     /// Read-state reporter per session (`SeenTracker`), created on first use
     /// and dropped with the cores on sign-out.
     private var seenTrackers: [String: SeenTracker] = [:]

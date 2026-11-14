@@ -132,7 +132,7 @@ final class ApprovalRenderHarness: XCTestCase {
         func lockedScreen(error: String? = nil) -> some View {
             boxesScreen.overlay {
                 AccountLockedScreen(since: ApprovalFixtures.lockedSince, method: method, isUnlocking: false,
-                                    error: error, onUnlock: {})
+                                    error: error, onUnlock: {}, onSignOut: {})
             }
         }
         try write(lockedScreen(), "account-locked-unlock", to: directory)

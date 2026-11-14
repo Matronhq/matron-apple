@@ -269,6 +269,30 @@ class JournalSyncEngineTests: XCTestCase {
         await engine.endSync()
     }
 
+    /// A hello that went out with the old token and is refused after an
+    /// unlock replaced it is not a sign-out: the engine says hello again
+    /// with the new token.
+    func testAnOldTokensRefusedHello_afterReplaceToken_isNotASignOut() async throws {
+        let signals = SignalLog()
+        let first = FakeWebSocketConnection()
+        let second = FakeWebSocketConnection()
+        second.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = JournalSyncEngine(api: JournalAPI(serverURL: URL(string: "https://x")!), store: store,
+                                       connector: FakeConnector([first, second]), token: "old", ownSender: "user:alice",
+                                       search: nil, backoffBaseSeconds: 0.01,
+                                       credentialSignals: { signals.add($0) })
+        await engine.beginSync()
+        for _ in 0..<300 where first.sent.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        await engine.replaceToken("fresh")
+        first.serve(#"{"kind":"control","op":"error","code":"auth"}"#)
+        try await engine.waitUntilReady()
+        XCTAssertTrue(second.sent.first?.contains(#""token":"fresh""#) ?? false)
+        XCTAssertFalse(signals.all.contains(.rejected))
+        XCTAssertEqual(signals.all, [.accepted])
+        await engine.endSync()
+    }
+
     /// A `defaults` frame reaches every subscriber as it lands — it is not a
     /// journal event, so nothing is appended to the store for it.
     func testDefaultsFanOut() async throws {

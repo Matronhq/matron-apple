@@ -88,15 +88,21 @@ public final class AccountUnlockModel {
             try await adoptToken(result.token)
         } catch {
             // The new token is in use for this run but could not be saved:
-            // the next launch would find the old, dead one.
-            phase = .failed("The account is unlocked, but this device couldn't save its new sign-in. If the app asks you to sign in again, do so.")
+            // the next launch would find the old, dead one. The locked
+            // screen goes with the lock, so the warning outlives it.
+            phase = .idle
+            pending.clear()
             monitor.cleared()
+            monitor.warn(Self.unsavedTokenWarning)
             return
         }
         pending.clear()
         phase = .idle
         monitor.cleared()
     }
+
+    public static let unsavedTokenWarning =
+        "The account is unlocked, but this device couldn't save its new sign-in. The next time the app opens it may ask you to sign in again: do so."
 
     static func text(for error: Error) -> String {
         switch error {

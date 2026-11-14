@@ -205,6 +205,9 @@ struct AccountLockedScreen: View {
     let isUnlocking: Bool
     let error: String?
     let onUnlock: () -> Void
+    /// For a device that cannot unlock (its key no longer works).
+    var onSignOut: (() -> Void)? = nil
+    @State private var confirmingSignOut = false
 
     var body: some View {
         ScrollView {
@@ -262,6 +265,18 @@ struct AccountLockedScreen: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityIdentifier("accountLocked.error")
                 }
+                if let onSignOut {
+                    Button("Can't unlock? Sign Out of This Device") { confirmingSignOut = true }
+                        .buttonStyle(.borderless)
+                        .font(.footnote)
+                        .padding(.top, 4)
+                        .accessibilityIdentifier("accountLocked.signOut")
+                        .confirmationDialog("Sign out of this device?", isPresented: $confirmingSignOut, titleVisibility: .visible) {
+                            Button("Sign Out", role: .destructive, action: onSignOut)
+                        } message: {
+                            Text("While the account is locked you can't sign in again. Once the lock is cleared, sign in and re-attach this device's key.")
+                        }
+                }
             }
             .padding(24)
             .frame(maxWidth: 480)
@@ -276,5 +291,31 @@ struct AccountLockedScreen: View {
         guard let since else { return nil }
         let date = Date(timeIntervalSince1970: TimeInterval(since) / 1000)
         return "Locked since " + date.formatted(date: .abbreviated, time: .shortened)
+    }
+}
+
+/// Something the user must read after the lock has gone, with a button to
+/// put it away.
+struct AccountWarningBanner: View {
+    let text: String
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+            Text(text)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 4)
+            Button("OK", action: onDismiss)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .accessibilityIdentifier("accountWarning.dismiss")
+        }
+        .font(.footnote)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity)
+        .background(Color.orange.opacity(0.25))
+        .accessibilityIdentifier("accountWarning.banner")
     }
 }

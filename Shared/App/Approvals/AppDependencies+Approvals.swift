@@ -54,7 +54,7 @@ extension AppDependencies {
         return AccountUnlockModel(
             monitor: accountLock, api: core.api,
             sign: { since in try await center.signUnlock(since: since) },
-            adoptToken: { [weak self] token in try await self?.adoptToken(token, for: session) },
+            adoptToken: { [weak self] token in try await self?.adoptToken(token, core: core, session: session) },
             pending: Self.pendingUnlock(for: session))
     }
 
@@ -65,8 +65,12 @@ extension AppDependencies {
     /// The journal gave this device a new token (it unlocked the account):
     /// saved first, then every client of this session uses it. The old
     /// socket and requests still out with the old token are dropped.
-    func adoptToken(_ token: String, for session: UserSession) async throws {
-        let core = core(for: session)
+    ///
+    /// Only for the sign-in the unlock started from: an answer that comes
+    /// back after a sign-out (or a new sign-in) is thrown away, so it can
+    /// never sign the device back in.
+    func adoptToken(_ token: String, core: JournalCore, session: UserSession) async throws {
+        guard isCurrent(core, userID: session.userID) else { return }
         let saved: Error?
         do {
             try auth.persist(UserSession(userID: session.userID, deviceID: session.deviceID,
@@ -142,18 +146,26 @@ struct AccountLockedBannerModifier: ViewModifier {
     let monitor: AccountLockMonitor
     let makeUnlock: (() -> AccountUnlockModel)?
     let method: String
+    /// Signs this device out, for when it cannot unlock (its key no longer
+    /// works). It can sign in again once the lock is cleared.
+    var onSignOut: (() -> Void)?
 
     func body(content: Content) -> some View {
         content
             .safeAreaInset(edge: .top, spacing: 0) {
-                if monitor.isLocked && !(monitor.canUnlock && makeUnlock != nil) {
-                    AccountLockedBanner()
-                        .transition(.move(edge: .top).combined(with: .opacity))
+                VStack(spacing: 0) {
+                    if monitor.isLocked && !(monitor.canUnlock && makeUnlock != nil) {
+                        AccountLockedBanner()
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+                    if let warning = monitor.warning {
+                        AccountWarningBanner(text: warning) { monitor.dismissWarning() }
+                    }
                 }
             }
             .overlay {
                 if monitor.canUnlock, let makeUnlock {
-                    AccountLockedScreenHost(monitor: monitor, makeUnlock: makeUnlock, method: method)
+                    AccountLockedScreenHost(monitor: monitor, makeUnlock: makeUnlock, method: method, onSignOut: onSignOut)
                         .transition(.opacity)
                 }
             }
@@ -167,17 +179,18 @@ private struct AccountLockedScreenHost: View {
     let monitor: AccountLockMonitor
     let makeUnlock: () -> AccountUnlockModel
     let method: String
+    let onSignOut: (() -> Void)?
     @State private var model: AccountUnlockModel?
 
     var body: some View {
         Group {
             if let model {
                 AccountLockedScreen(since: monitor.lock?.since, method: method,
-                                    isUnlocking: model.isUnlocking, error: model.errorText) {
-                    Task { await model.unlock() }
-                }
+                                    isUnlocking: model.isUnlocking, error: model.errorText,
+                                    onUnlock: { Task { await model.unlock() } }, onSignOut: onSignOut)
             } else {
-                AccountLockedScreen(since: monitor.lock?.since, method: method, isUnlocking: false, error: nil) {}
+                AccountLockedScreen(since: monitor.lock?.since, method: method, isUnlocking: false, error: nil,
+                                    onUnlock: {}, onSignOut: onSignOut)
             }
         }
         .onAppear { if model == nil { model = makeUnlock() } }
@@ -190,12 +203,13 @@ extension View {
     }
 
     /// The banner, and the locked screen with Unlock for a frozen device.
-    func accountLocked(_ dependencies: AppDependencies, session: UserSession) -> some View {
+    func accountLocked(_ dependencies: AppDependencies, session: UserSession, onSignOut: @escaping () -> Void) -> some View {
         let center = dependencies.approvals(for: session)
         return modifier(AccountLockedBannerModifier(
             monitor: dependencies.accountLock,
             makeUnlock: { dependencies.accountUnlock(for: session) },
-            method: center.method ?? AppDependencies.defaultApprovalMethod))
+            method: center.method ?? AppDependencies.defaultApprovalMethod,
+            onSignOut: onSignOut))
     }
 }
 

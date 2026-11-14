@@ -1755,6 +1755,10 @@ public actor JournalSyncEngine {
             // the same head-of-backlog forever without ever advancing the
             // cursor (livelock).
             var replayBuffer: [JournalEvent] = []
+            // The token this pass says hello with. A refusal of it means
+            // nothing once it has been replaced (an unlock gave this device
+            // a new one while the hello was out): the next pass uses the new.
+            var helloToken = token
             await parkWhileDatabasesSuspended()
             if Task.isCancelled { break }
             do {
@@ -1777,9 +1781,16 @@ public actor JournalSyncEngine {
                 // also covers a scope that came from settings at launch.
                 if syncScope == .forYou { try? store.markForYouStart() }
                 let cursor = store.cursor
+                helloToken = token
                 let (connection, headSeq) = try await JournalConnection.establish(
-                    connector: connector, wsURL: api.wsURL, token: token, cursor: cursor,
+                    connector: connector, wsURL: api.wsURL, token: helloToken, cursor: cursor,
                     archiveSince: archive.helloArchiveSince(), sync: syncScope)
+                guard helloToken == token else {
+                    // Accepted with a token that has since been replaced:
+                    // start again with the new one.
+                    connection.close()
+                    continue
+                }
                 liveConnection = connection
                 // Fetched over the last socket; this one starts behind them.
                 caughtUpViewed.removeAll()
@@ -2113,6 +2124,12 @@ public actor JournalSyncEngine {
                 // replay buffered before the cut. The next connect's hello
                 // acks the advanced cursor, so the server resumes past it.
                 flushReplayBufferOnTeardown(&replayBuffer)
+            } catch JournalConnectionError.authRejected where helloToken != token {
+                // The old token was refused after it was replaced: say
+                // hello again at once with the new one.
+                flushReplayBufferOnTeardown(&replayBuffer)
+                liveConnection = nil
+                continue
             } catch JournalConnectionError.authRejected {
                 flushReplayBufferOnTeardown(&replayBuffer)
                 Self.logger.warning("server rejected auth — stopping sync (signed out by server)")
@@ -2123,6 +2140,10 @@ public actor JournalSyncEngine {
                 runTask = nil
                 credentialSignals?(.rejected)
                 return
+            } catch JournalConnectionError.accountLocked where helloToken != token {
+                flushReplayBufferOnTeardown(&replayBuffer)
+                liveConnection = nil
+                continue
             } catch JournalConnectionError.accountLocked(let lock) {
                 flushReplayBufferOnTeardown(&replayBuffer)
                 // The token still exists but the account is locked. The

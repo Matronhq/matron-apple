@@ -27,6 +27,9 @@ public final class AccountLockMonitor {
     public private(set) var lock: AccountLock?
     /// The journal froze this device: it can unlock the account.
     public var canUnlock: Bool { isLocked && lock?.canUnlock == true }
+    /// Something the user must read once the lock has gone (the new
+    /// sign-in an unlock gave could not be saved). Shown until dismissed.
+    public private(set) var warning: String?
     @ObservationIgnored private var clearedHandlers: [() -> Void] = []
     /// The live socket said so. An HTTP answer cannot undo that: one sent
     /// before the lock can arrive after it. Only the socket being accepted
@@ -50,7 +53,9 @@ public final class AccountLockMonitor {
     public nonisolated func note(status: Int) {
         guard let locked = Self.verdict(status), !locked else { return }
         Task { @MainActor in
-            if self.lockedBySocket { return }
+            // A frozen device's token can still fetch a nonce: that answer
+            // says nothing about the lock.
+            if self.lockedBySocket || self.lock?.canUnlock == true { return }
             self.set(false)
         }
     }
@@ -79,6 +84,10 @@ public final class AccountLockMonitor {
             self.set(false)
         }
     }
+
+    /// Keeps `text` on screen after the lock goes, until dismissed.
+    public func warn(_ text: String) { warning = text }
+    public func dismissWarning() { warning = nil }
 
     /// A sign-in went through, or this device unlocked the account.
     public func cleared() {
