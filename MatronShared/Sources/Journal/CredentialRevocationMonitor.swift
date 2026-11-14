@@ -12,7 +12,7 @@ public enum CredentialSignal: Sendable, Equatable {
     /// the live socket, or a hello refused with `account_locked`. It says
     /// nothing about this device's token on its own, though a lock signs
     /// every device out, so a rejection usually follows.
-    case accountLocked
+    case accountLocked(AccountLock)
 }
 
 /// Decides when this device's credentials have been revoked, so the app can

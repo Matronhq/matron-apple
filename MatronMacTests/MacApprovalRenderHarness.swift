@@ -77,8 +77,20 @@ final class MacApprovalRenderHarness: XCTestCase {
         let locked = try XCTUnwrap(boxes.rows().first { $0.device.name == "box-a" })
         try write(BoxUnlockSheet(device: locked.device, viewModel: boxes, close: {}), "box-unlock", to: directory)
 
-        // The locked-account banner.
+        // The locked-account banner: all a locked device showed before it
+        // could unlock.
         try write(AccountLockedBanner().frame(width: 900), "account-locked", to: directory)
+
+        // A device the lock froze: the locked screen, the confirm sheet,
+        // and a refused try.
+        try write(AccountLockedScreen(since: ApprovalFixtures.lockedSince, method: method, isUnlocking: false,
+                                      error: nil, onUnlock: {})
+            .frame(width: 900, height: 620), "account-locked-unlock", to: directory, dark: true)
+        try write(ApprovalConfirmView(model: ApprovalFixtures.clearPanicModel(method: method), onConfirm: {}, onCancel: {})
+            .frame(width: size.width, height: size.height), "confirm-clear-panic", to: directory)
+        try write(AccountLockedScreen(since: ApprovalFixtures.lockedSince, method: method, isUnlocking: false,
+                                      error: JournalAPIError.approvalInvalidText("mismatch"), onUnlock: {})
+            .frame(width: 900, height: 620), "account-locked-unlock-error", to: directory)
     }
 }
 

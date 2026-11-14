@@ -256,7 +256,8 @@ final class AppDependencies {
                              authResponses: { [revocation, accountLock] status in
                                  revocation.noteResponse(status: status)
                                  accountLock.note(status: status)
-                             })
+                             },
+                             accountLocks: { [accountLock] lock in accountLock.note(lock: lock) })
         let dbURL = journalDirectory.appendingPathComponent("\(session.userID).sqlite")
         LaunchTimeline.shared.beginStoreOpen()
         // `store.changeFeed` (on unless switched off in Settings → Storage;
@@ -293,8 +294,11 @@ final class AppDependencies {
             databasesSuspended: { DatabaseSuspensionController.shared.isSuspended },
             credentialSignals: { [revocation, accountLock] signal in
                 revocation.handle(signal)
-                if signal == .accountLocked { accountLock.noteLockedBySocket() }
-                if signal == .accepted { accountLock.noteSocketAccepted() }
+                switch signal {
+                case .accountLocked(let lock): accountLock.noteLockedBySocket(lock)
+                case .accepted: accountLock.noteSocketAccepted()
+                case .rejected: break
+                }
             },
             // Settings → Sync on this device. Per device, so it lives in
             // this phone's defaults, not on the journal.

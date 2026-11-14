@@ -75,6 +75,10 @@ public final class ApprovalCenter {
     private let user: String
     private let deviceID: Int64?
     private let deviceName: String
+    /// The journal as statements name it, from the server address, for
+    /// when the keys cannot be read (a locked account answers every read
+    /// with 423). The journal's own answer wins whenever there is one.
+    private let journalHost: String?
     private let now: @Sendable () -> Date
 
     private var decision: CheckedContinuation<Bool, Never>?
@@ -86,7 +90,9 @@ public final class ApprovalCenter {
     ///   - deviceID: this sign-in's device id.
     ///   - deviceName: what this device's key is called on the account.
     public init(api: any ApprovalKeysProviding, keys: any ApprovalKeyProviding, store: ApprovalKeyStore,
-                user: String, deviceID: Int64?, deviceName: String, now: @escaping @Sendable () -> Date = { Date() }) {
+                user: String, deviceID: Int64?, deviceName: String, journalHost: String? = nil,
+                now: @escaping @Sendable () -> Date = { Date() }) {
+        self.journalHost = journalHost
         self.api = api
         self.keys = keys
         self.store = store
@@ -187,10 +193,41 @@ public final class ApprovalCenter {
         guard listed.isLive else { throw ApprovalError.keyRevoked }
         let key = try keys.signingKey(for: stored)
 
+        return try await confirmAndSign(request, stored: stored, key: key, journal: journal,
+                                        attached: listed.deviceID == deviceID && deviceID != nil)
+    }
+
+    /// Signs a statement that unlocks the account, from a device the lock
+    /// froze. The account's keys cannot be read while it is locked, so this
+    /// signs with the key this device holds, without reading them, and
+    /// never re-attaches first (the journal only lets a device unlock with
+    /// a key already attached to it).
+    public func signUnlock(since: Int64) async throws -> SignedApproval {
+        guard let stored = store.load() else { throw ApprovalError.noKeyOnThisDevice }
+        guard let journal = state?.journal ?? journalHost else { throw ApprovalError.disabled }
+        let key = try keys.signingKey(for: stored)
+        let request = ApprovalRequest(
+            kind: .account, subject: ApprovalSubjects.clearPanic(since: since),
+            headline: "Unlock this account",
+            detail: Self.unlockDetail(since: since))
+        return try await confirmAndSign(request, stored: stored, key: key, journal: journal, attached: true)
+    }
+
+    /// The confirm sheet's words for an unlock: which lock, and what
+    /// unlocking does.
+    public nonisolated static func unlockDetail(since: Int64) -> String {
+        let date = Date(timeIntervalSince1970: TimeInterval(since) / 1000)
+        return "The lock that began \(date.formatted(date: .abbreviated, time: .shortened)) ends, and every other device signed in to this account is signed out. Sign them in again afterwards."
+    }
+
+    /// Shows `request` on the confirm sheet and signs it once the user
+    /// confirms, re-attaching the key first when it is not attached.
+    private func confirmAndSign(_ request: ApprovalRequest, stored: StoredApprovalKey, key: any ApprovalSigningKey,
+                                journal: String, attached: Bool) async throws -> SignedApproval {
         await takeTurn()
         defer { endTurn() }
 
-        var attached = listed.deviceID == deviceID && deviceID != nil
+        var attached = attached
         promptError = nil
         prompt = Prompt(id: UUID(), request: request, method: method ?? "Face ID",
                         fingerprint: ApprovalKeyEncoding.fingerprint(keyID: stored.keyID), attachesFirst: !attached)

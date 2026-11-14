@@ -254,7 +254,7 @@ final class BoxLockControlTests: XCTestCase {
         let monitor = AccountLockMonitor()
         var cleared = 0
         monitor.whenCleared { cleared += 1 }
-        monitor.noteLockedBySocket()
+        monitor.noteLockedBySocket(AccountLock(since: 1_790_000_000_000, canUnlock: false))
         await Task.yield()
         try? await Task.sleep(for: .milliseconds(50))
         XCTAssertTrue(monitor.isLocked)
@@ -265,7 +265,7 @@ final class BoxLockControlTests: XCTestCase {
         monitor.note(status: 200)
         try? await Task.sleep(for: .milliseconds(50))
         XCTAssertTrue(monitor.isLocked)
-        monitor.signedIn()
+        monitor.cleared()
         XCTAssertFalse(monitor.isLocked)
         XCTAssertEqual(cleared, 1)
     }

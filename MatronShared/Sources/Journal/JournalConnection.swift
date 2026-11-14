@@ -59,7 +59,9 @@ public struct JournalConnection: Sendable {
                 case .error(let code, _, _, _):
                     switch code {
                     case "auth": throw JournalConnectionError.authRejected
-                    case "account_locked": throw JournalConnectionError.accountLocked
+                    case "account_locked":
+                        let obj = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any]
+                        throw JournalConnectionError.accountLocked(AccountLock.decode(obj ?? [:]))
                     default: throw JournalConnectionError.badHandshake
                     }
                 default:

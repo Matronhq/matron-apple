@@ -1,30 +1,41 @@
 import Foundation
 import Observation
+import MatronJournal
 
-/// Whether the journal says the whole account is locked.
+/// Whether the journal says the whole account is locked, and whether this
+/// device can unlock it.
 ///
 /// A lock shows up three ways: a `panic` frame on the live socket just
 /// before the journal closes it, a hello refused with `account_locked`,
-/// and HTTP 423 on a request. A lock also signs every device out, so the
-/// token usually stops working (401) straight after: that says nothing
-/// about the lock, and the sign-in screen then says the account is locked
-/// (`lockedNotice`) instead of "signed out from another device".
+/// and HTTP 423 on a request. Each says when the lock began and, with
+/// `unlock: true`, that the journal froze this device instead of signing
+/// it out, because it holds an approval key old enough: it keeps its token
+/// and can unlock the account with Face ID or Touch ID.
 ///
-/// The journal does not announce that a lock was cleared. An answer the
-/// server could only give a signed-in device (anything but 401, 423, a
-/// throttle or a server error) shows it has been, and so does signing in.
+/// A device without that is signed out by the lock: its token stops
+/// working (401), which says nothing about the lock, and the sign-in
+/// screen then says the account is locked (`lockedNotice`).
+///
+/// The journal does not announce that a lock was cleared from its host.
+/// An answer the server could only give a signed-in device (anything but
+/// 401, 423, a throttle or a server error) shows it has been, and so do
+/// signing in and this device's own unlock.
 @Observable @MainActor
 public final class AccountLockMonitor {
     public private(set) var isLocked = false
+    /// What the journal last said about the lock.
+    public private(set) var lock: AccountLock?
+    /// The journal froze this device: it can unlock the account.
+    public var canUnlock: Bool { isLocked && lock?.canUnlock == true }
+    @ObservationIgnored private var clearedHandlers: [() -> Void] = []
     /// The live socket said so. An HTTP answer cannot undo that: one sent
     /// before the lock can arrive after it. Only the socket being accepted
-    /// again, or a sign-in, does.
+    /// again, a sign-in or an unlock does.
     @ObservationIgnored private var lockedBySocket = false
-    @ObservationIgnored private var clearedHandlers: [() -> Void] = []
 
     /// Shown on the sign-in screen after a lock signed this device out.
     public static let lockedNotice =
-        "This account is locked. You can sign in again once the lock has been cleared."
+        "This device was signed out because the account was locked. Sign in again once the lock has been cleared."
 
     public init() {}
 
@@ -37,19 +48,25 @@ public final class AccountLockMonitor {
     /// The status of an answered request that carried this device's token.
     /// Safe to call from any thread.
     public nonisolated func note(status: Int) {
-        guard let locked = Self.verdict(status) else { return }
+        guard let locked = Self.verdict(status), !locked else { return }
         Task { @MainActor in
-            if !locked, self.lockedBySocket { return }
-            self.set(locked)
+            if self.lockedBySocket { return }
+            self.set(false)
         }
+    }
+
+    /// A request was refused because the account is locked. Safe to call
+    /// from any thread.
+    public nonisolated func note(lock: AccountLock) {
+        Task { @MainActor in self.locked(lock) }
     }
 
     /// The live socket said the account is locked. Safe to call from any
     /// thread.
-    public nonisolated func noteLockedBySocket() {
+    public nonisolated func noteLockedBySocket(_ lock: AccountLock) {
         Task { @MainActor in
             self.lockedBySocket = true
-            self.set(true)
+            self.locked(lock)
         }
     }
 
@@ -63,21 +80,30 @@ public final class AccountLockMonitor {
         }
     }
 
-    /// A sign-in went through: the account is not locked.
-    public func signedIn() {
+    /// A sign-in went through, or this device unlocked the account.
+    public func cleared() {
         lockedBySocket = false
         set(false)
+    }
+
+    private func locked(_ lock: AccountLock) {
+        // A refusal that leaves `since` out keeps the one already known.
+        self.lock = AccountLock(since: lock.since ?? self.lock?.since, canUnlock: lock.canUnlock)
+        set(true)
     }
 
     private func set(_ locked: Bool) {
         guard isLocked != locked else { return }
         isLocked = locked
-        if !locked { clearedHandlers.forEach { $0() } }
+        if !locked {
+            lock = nil
+            clearedHandlers.forEach { $0() }
+        }
     }
 
     /// What a status says about the lock: locked, not locked, or nothing.
-    /// A 401 says nothing: a lock removes this device's sign-in, so the
-    /// token is refused while the account is still locked.
+    /// A 401 says nothing: a lock removes a device's sign-in, so the token
+    /// is refused while the account is still locked.
     nonisolated static func verdict(_ status: Int) -> Bool? {
         switch status {
         case 423: return true

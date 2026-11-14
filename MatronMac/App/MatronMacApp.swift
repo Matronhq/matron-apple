@@ -112,7 +112,7 @@ struct MatronMacApp: App {
                         viewModel: ChatListViewModel(chat: dependencies.chatService(for: session), gate: .shared),
                         onSignOut: { signOut(activeSession: session) }
                     )
-                    .accountLockedBanner(dependencies.accountLock)
+                    .accountLocked(dependencies, session: session)
                     // Answers the window's size probes itself, so they do
                     // not measure the whole split view (WindowRootFrame).
                     .windowRootFrame(minSize: CGSize(width: 800, height: 600),
@@ -223,7 +223,8 @@ struct MatronMacApp: App {
                     MacSignInView(
                         viewModel: revokedSession.map {
                             SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron Mac", signedOutRemotely: $0,
-                                            accountLocked: dependencies.accountLock.isLocked)
+                                            accountLocked: dependencies.accountLock.isLocked,
+                                            unlockAnswerLost: AppDependencies.pendingUnlock(for: $0).isPending)
                         } ?? SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron Mac"),
                         linkViewModel: linkViewModel,
                         rendezvousViewModel: RendezvousSignInViewModel(relay: RelayClient(), link: linkViewModel),
@@ -242,7 +243,8 @@ struct MatronMacApp: App {
                                 await dependencies.awaitPendingTeardown()
                                 await dependencies.wipeLocalDataForFreshLogin()
                                 self.revokedSession = nil
-                                dependencies.accountLock.signedIn()
+                                dependencies.accountLock.cleared()
+                                AppDependencies.pendingUnlock(for: session).clear()
                                 self.session = session
                             }
                         }

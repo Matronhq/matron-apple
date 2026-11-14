@@ -71,7 +71,7 @@ public actor JournalSyncEngine {
     public nonisolated let archive: ArchiveSync
     private let store: JournalStore
     private let connector: any WebSocketConnecting
-    private let token: String
+    private var token: String
     private let ownSender: String
     /// `var`, not `let`, purely so `attachSearch(_:)` can fill it in later —
     /// see there. Only ever goes nil → non-nil.
@@ -392,6 +392,20 @@ public actor JournalSyncEngine {
         try await withCheckedThrowingContinuation { continuation in
             readyWaiters.append(continuation)
         }
+    }
+
+    /// Replaces this device's token (an unlock of a locked account gave it
+    /// a new one) and starts over on a new socket with it: the old socket,
+    /// and every request waiting on it, belong to the old token.
+    public func replaceToken(_ newToken: String) {
+        token = newToken
+        failAllRPC(RPCRequestError.offline)
+        if let connection = liveConnection {
+            pathChangeReconnect = true
+            setState(.connecting)
+            connection.close()
+        }
+        nudge()
     }
 
     public func nudge() {
@@ -2051,11 +2065,13 @@ public actor JournalSyncEngine {
                         for c in boxStatusContinuations.values { c.yield((deviceID: deviceID, status: status)) }
                     case .boxLock(let deviceID, let lock):
                         for c in boxLockContinuations.values { c.yield((deviceID: deviceID, lock: lock)) }
-                    case .accountPanic(let on):
-                        // The journal closes the socket next, with a
-                        // "revoked" error: the app must say the account is
-                        // locked, not that this device was signed out.
-                        if on { credentialSignals?(.accountLocked) }
+                    case .accountPanic(let on, let lock):
+                        // The journal closes the socket next: with a
+                        // "revoked" error when it signed this device out
+                        // (the app must say the account is locked, not
+                        // that the device was signed out elsewhere), an
+                        // ordinary close when it froze it.
+                        if on { credentialSignals?(.accountLocked(lock)) }
                     case .notify(let settings):
                         for c in notifyContinuations.values { c.yield(settings) }
                     case .defaults(let defaults):
@@ -2107,13 +2123,13 @@ public actor JournalSyncEngine {
                 runTask = nil
                 credentialSignals?(.rejected)
                 return
-            } catch JournalConnectionError.accountLocked {
+            } catch JournalConnectionError.accountLocked(let lock) {
                 flushReplayBufferOnTeardown(&replayBuffer)
                 // The token still exists but the account is locked. The
                 // journal does not say when the lock is cleared, so keep
                 // trying at the backoff's pace.
                 Self.logger.warning("server refused the hello: account locked")
-                credentialSignals?(.accountLocked)
+                credentialSignals?(.accountLocked(lock))
             } catch {
                 flushReplayBufferOnTeardown(&replayBuffer)
                 // Fall through to backoff — but never silently: the

@@ -36,6 +36,7 @@ final class ApprovalKeysServerTests: XCTestCase {
         let api: JournalAPI
         let center: ApprovalCenter
         let deviceID: Int64
+        let token: String
     }
 
     /// A code generator for the account's authenticator. The journal takes
@@ -87,11 +88,13 @@ final class ApprovalKeysServerTests: XCTestCase {
         }
     }
 
+    private let panicToken = String(repeating: "p", count: 40)
+
     private func startHarness() async throws -> JournalServerHarness {
         let harness = try await JournalServerHarness.start(
             users: [.init("alice", password: password)],
             agents: [.init(user: "alice", name: "box-a")],
-            publicURL: true)
+            publicURL: true, panic: (token: panicToken, account: "alice"))
         // A journal from before approval keys answers 404 here.
         var request = URLRequest(url: harness.baseURL.appendingPathComponent("approval-keys"))
         request.setValue("Bearer \(harness.agentTokens["box-a"] ?? "")", forHTTPHeaderField: "Authorization")
@@ -126,7 +129,7 @@ final class ApprovalKeysServerTests: XCTestCase {
         let center = ApprovalCenter(api: api, keys: SoftwareKeyProvider(), store: store, user: "alice",
                                     deviceID: deviceID, deviceName: name)
         await api.setApprovalSigner(center.signer)
-        return Device(api: api, center: center, deviceID: deviceID)
+        return Device(api: api, center: center, deviceID: deviceID, token: session.accessToken)
     }
 
     private func keyStore(_ harness: JournalServerHarness) -> ApprovalKeyStore {
@@ -200,7 +203,96 @@ final class ApprovalKeysServerTests: XCTestCase {
         func supportedStream() async -> AsyncStream<Bool> { AsyncStream { $0.yield(true) } }
     }
 
+    private func status(_ harness: JournalServerHarness, _ path: String, token: String) async throws -> (Int, [String: Any]) {
+        var request = URLRequest(url: harness.baseURL.appendingPathComponent(path))
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        return ((response as? HTTPURLResponse)?.statusCode ?? 0,
+                (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:])
+    }
+
     // MARK: Tests
+
+    /// A watcher locks the account. The phone, whose key is more than a day
+    /// old, is frozen rather than signed out; the laptop, with no key, is
+    /// signed out. The phone unlocks the account through the app's own
+    /// code: the statement passes the journal, the phone takes the new
+    /// token and goes on working, and the old token is dead.
+    func testAFrozenDeviceUnlocksTheAccount_andTakesItsNewToken() async throws {
+        let harness = try await startHarness()
+        defer { harness.stop() }
+        let tokenStore = InMemorySessionStore()
+        let phone = try await signIn(harness, name: "alice's iPhone", store: keyStore(harness), authenticator: nil)
+        let authenticator = try await turnOnTwoFactor(phone.api)
+        try await phone.center.enrol(password: password, code: try await authenticator.nextCode())
+        let laptop = try await signIn(harness, name: "alice's laptop", store: keyStore(harness), authenticator: authenticator)
+        let oldToken = phone.token
+
+        // Only a key enrolled a day before the lock freezes a device.
+        try harness.sql("UPDATE approval_keys SET created_at = created_at - 2 * 86400000")
+
+        var lockRequest = URLRequest(url: harness.baseURL.appendingPathComponent("panic"))
+        lockRequest.httpMethod = "POST"
+        lockRequest.setValue("Bearer \(panicToken)", forHTTPHeaderField: "Authorization")
+        lockRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        lockRequest.httpBody = Data(#"{"source":"test"}"#.utf8)
+        let (lockData, _) = try await URLSession.shared.data(for: lockRequest)
+        let locked = try XCTUnwrap(JSONSerialization.jsonObject(with: lockData) as? [String: Any])
+        XCTAssertEqual(locked["devices_frozen"] as? Int, 1)
+        XCTAssertEqual(locked["devices_revoked"] as? Int, 1)
+
+        // The phone hears it is frozen, with the lock's start.
+        let monitor = await AccountLockMonitor()
+        let heard = try await status(harness, "devices", token: oldToken)
+        XCTAssertEqual(heard.0, 423)
+        XCTAssertEqual(heard.1["unlock"] as? Bool, true)
+        await monitor.note(lock: AccountLock.decode(heard.1))
+        for _ in 0..<100 { if await monitor.canUnlock { break }; try await Task.sleep(for: .milliseconds(5)) }
+        let canUnlock = await monitor.canUnlock
+        XCTAssertTrue(canUnlock)
+        do {
+            _ = try await laptop.api.devices()
+            XCTFail("the laptop should have been signed out")
+        } catch {
+            XCTAssertEqual(error as? JournalAPIError, .unauthenticated)
+        }
+
+        // Unlock through the app's model and the confirm sheet.
+        let adopted = AdoptedToken()
+        let model = await AccountUnlockModel(
+            monitor: monitor, api: phone.api,
+            sign: { since in try await phone.center.signUnlock(since: since) },
+            adoptToken: { token in
+                try tokenStore.set(token, forKey: "token")
+                await phone.api.replaceToken(token)
+                await adopted.set(token)
+            },
+            pending: PendingUnlockStore(user: "alice", host: "unlock-test-\(UUID().uuidString)"))
+        let (_, seen) = await confirming([phone.center]) { await model.unlock() }
+        let phase = await model.phase
+        XCTAssertEqual(phase, .idle)
+        let since = try XCTUnwrap((heard.1["since"] as? NSNumber)?.int64Value)
+        XCTAssertEqual(seen.map(\.subject), [ApprovalSubjects.clearPanic(since: since)])
+        let stillLocked = await monitor.isLocked
+        XCTAssertFalse(stillLocked)
+
+        // The new token works, through the same client; the old one is dead.
+        let adoptedToken = await adopted.token
+        let newToken = try XCTUnwrap(adoptedToken)
+        XCTAssertNotEqual(newToken, oldToken)
+        XCTAssertEqual(try tokenStore.get(key: "token"), newToken)
+        let devices = try await phone.api.devices()
+        XCTAssertTrue(devices.contains { $0.isSelf })
+        let old = try await status(harness, "devices", token: oldToken)
+        XCTAssertEqual(old.0, 401)
+        let panic = try await status(harness, "panic", token: panicToken)
+        XCTAssertEqual(panic.1["locked"] as? Bool, false)
+    }
+
+    private actor AdoptedToken {
+        var token: String?
+        func set(_ token: String) { self.token = token }
+    }
 
     func testEnrolThenASignedTapPassesTheJournalAndTheReferenceVerifier() async throws {
         let harness = try await startHarness()

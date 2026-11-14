@@ -318,6 +318,10 @@ public enum ApprovalSubjects {
     public static func revokeKey(keyID: String) -> ApprovalSubject { ["op": "revoke_key", "key_id": keyID] }
     public static func attachKey(keyID: String) -> ApprovalSubject { ["op": "attach_key", "key_id": keyID] }
 
+    /// Unlocks the account, from a device the lock froze. `since` (the
+    /// lock's start, epoch ms, in decimal) ties the statement to this lock.
+    public static func clearPanic(since: Int64) -> ApprovalSubject { ["op": "clear_panic", "since": String(since)] }
+
     // MARK: Requests to a box (checked by the box, not the journal)
 
     public static func unlockBox(box: String, minutes: Int) -> ApprovalSubject {
