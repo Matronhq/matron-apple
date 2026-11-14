@@ -9,6 +9,17 @@ public protocol AgentChatAnswering: Sendable {
     func answerAgentChat(
         roomID: String, targetDeviceID: Int64, decision: AgentChatDecision
     ) async throws -> Bool
+    /// The same answer, with what the card showed, for an invite aimed at
+    /// a protected box (`SigningConsentService`).
+    @discardableResult
+    func answerAgentChat(_ ask: ChatAsk, decision: AgentChatDecision) async throws -> Bool
+}
+
+public extension AgentChatAnswering {
+    @discardableResult
+    func answerAgentChat(_ ask: ChatAsk, decision: AgentChatDecision) async throws -> Bool {
+        try await answerAgentChat(roomID: ask.roomID, targetDeviceID: ask.targetDeviceID, decision: decision)
+    }
 }
 
 /// The agent-chat slice of `JournalAPI`, extracted so the settings screen can
@@ -92,6 +103,8 @@ public final class AgentChatViewModel {
             }
             errorMessage = nil
             await refresh()
+        } catch ApprovalKeyFailure.cancelled {
+            // Backed out of the approval: the request still waits.
         } catch {
             errorMessage = "Couldn't answer that request — \(Self.describe(error))"
         }

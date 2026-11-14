@@ -289,6 +289,8 @@ public final class ItemsPanelViewModel {
 
     private let store: any ItemsStoreReading
     private let api: any ItemsProviding
+    /// Signs the taps that need an approval key. Set by the app.
+    public var approvalSigner: ApprovalSigner?
     private let sync: any ItemsSyncing
     private var itemsTask: Task<Void, Never>?
     private var pendingCreatesTask: Task<Void, Never>?
@@ -579,6 +581,21 @@ public final class ItemsPanelViewModel {
         guard tapsInFlight[item.id] == nil else { return }
         let localID = UUID().uuidString
         tapsInFlight[item.id] = localID
+        // A tap that needs a signature (Approve on an ask aimed at a
+        // protected box) is confirmed and sent at once; the row stays on
+        // screen behind the confirm sheet until the journal has taken it.
+        switch await StepUpTap.send(item: item, comment: nil, label: label, api: api, sync: sync, signer: approvalSigner) {
+        case .unsigned: break
+        case .sent, .cancelled:
+            endTap(item.id)
+            publishAwaitingYou()
+            return
+        case .failed(let message):
+            endTap(item.id)
+            publishAwaitingYou()
+            error = message
+            return
+        }
         publishAwaitingYou()
         await sync.enqueueComment(itemID: item.id, localID: localID, body: label, attachments: [], action: label, replyTo: nil)
         // Answered or refused already (the drain usually posts it before
