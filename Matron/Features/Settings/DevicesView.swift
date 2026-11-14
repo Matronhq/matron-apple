@@ -156,6 +156,9 @@ struct DevicesView: View {
                     draftLetter = device.tagChar ?? ""
                     letterEditing = device
                 }
+                Button(device.isProtected ? "Stop Protecting This Box" : "Protect This Box") {
+                    Task { await viewModel.setProtected(device, on: !device.isProtected) }
+                }
             }
             Button(device.isSelf ? "Sign Out This Device" : "Revoke “\(device.name)”",
                    role: .destructive) {
@@ -182,6 +185,7 @@ struct DevicesView: View {
                             .background(Color.accentColor.opacity(0.15), in: Capsule())
                             .foregroundStyle(Color.accentColor)
                     }
+                    if device.isProtected { ProtectedBoxBadge() }
                 }
                 Text(caption(for: device))
                     .font(.caption)
@@ -209,6 +213,7 @@ struct DevicesView: View {
         if device.kind == "agent", let letter = device.tagChar {
             caption += " · Tag \(letter)"
         }
+        if device.idleExpired { caption += " · Signed out (unused too long)" }
         return caption
     }
 }

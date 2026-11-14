@@ -310,9 +310,24 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
         /// contributor's, another person's, and from a journal that predates
         /// the field.
         let deviceName: String?
+        /// A tap on this item's buttons, or on any button in its thread,
+        /// needs a signature from one of the user's approval keys (once the
+        /// account has one). False from a journal that predates step-up.
+        let stepUp: Bool
+        /// What the action is about, shown with the question and signed
+        /// over; `nil` when none was given (the subject signed is then `{}`).
+        let subject: [String: String]?
+        /// What kind of consent ask the journal says this item stands for
+        /// ("spawn", "chat", "transfer", …); `nil` for every other item.
+        /// Set by the journal alone (an agent cannot), and read only from
+        /// a fresh fetch: the local store does not keep it.
+        let consentKind: String?
     }
 
     public var id: String { storage.fields.id }
+    public var consentKind: String? { storage.fields.consentKind }
+    public var stepUp: Bool { storage.fields.stepUp }
+    public var subject: [String: String]? { storage.fields.subject }
     public var num: Int { storage.fields.num }
     public var kind: ItemKind { storage.fields.kind }
     public var state: ItemState { storage.fields.state }
@@ -353,7 +368,8 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
                 missionID: String? = nil, missionNum: Int? = nil, actions: [String] = [], chosenAction: String? = nil,
                 originConvoTitle: String? = nil, lastUserInputAt: Date? = nil,
                 working: ItemWorking? = nil, handover: ItemHandover? = nil, contributor: Contributor? = nil,
-                deviceName: String? = nil) {
+                deviceName: String? = nil, stepUp: Bool = false, subject: [String: String]? = nil,
+                consentKind: String? = nil) {
         storage = Storage(Fields(
             id: id, num: num, kind: kind, state: state, resolution: resolution, awaiting: awaiting, rank: rank,
             title: title, body: body, labels: labels, links: links, attachments: attachments,
@@ -365,7 +381,8 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
             deviceName: deviceName.flatMap {
                 let t = $0.trimmingCharacters(in: .whitespacesAndNewlines)
                 return t.isEmpty ? nil : t
-            }))
+            },
+            stepUp: stepUp, subject: subject, consentKind: consentKind))
     }
 
     public static func == (lhs: TrackerItem, rhs: TrackerItem) -> Bool {
@@ -405,7 +422,10 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
             working: ItemWorking(json: json["working"] as? [String: Any]),
             handover: ItemHandover(json: json["handover"] as? [String: Any]),
             contributor: Contributor(json: json["contributor"]),
-            deviceName: json["device_name"] as? String)
+            deviceName: json["device_name"] as? String,
+            stepUp: json["step_up"] as? Bool ?? false,
+            subject: json["subject"] as? [String: String],
+            consentKind: json["consent"] as? String)
     }
 
     /// Where a closed item sorts in the For you list's Closed tab, and the
@@ -547,14 +567,27 @@ public struct TrackerComment: Identifiable, Equatable, Hashable, Sendable {
     /// place. The thread shows this reply alone. `nil` on every other
     /// comment.
     public let replaces: String?
+    /// A tap on this comment's buttons needs a signature (a follow-up
+    /// question an agent marked step-up). False on every other comment.
+    public let stepUp: Bool
+    /// The subject signed with a tap on this comment's buttons, when it is
+    /// step-up and carries one of its own.
+    public let subject: [String: String]?
+    /// Whether this tap was accepted with a signed approval, and the key
+    /// that signed it (from the stored statement).
+    public let signedKeyID: String?
 
     public init(id: String, itemID: String, author: ItemAuthor, deviceID: Int64 = 0, kind: Kind = .comment,
                 body: String, attachments: [TrackerAttachment] = [], statusFrom: TrackerItem.StatusSnapshot? = nil,
                 statusTo: TrackerItem.StatusSnapshot? = nil, createdAt: Date = Date(), action: String? = nil,
                 actions: [String] = [], chosenAction: String? = nil, replyTo: String? = nil,
                 deviceName: String? = nil, convoID: String? = nil, convoTitle: String? = nil,
-                contributor: Contributor? = nil, attribution: String? = nil, replaces: String? = nil) {
+                contributor: Contributor? = nil, attribution: String? = nil, replaces: String? = nil,
+                stepUp: Bool = false, subject: [String: String]? = nil, signedKeyID: String? = nil) {
         self.replaces = replaces
+        self.stepUp = stepUp
+        self.subject = subject
+        self.signedKeyID = signedKeyID
         self.id = id; self.itemID = itemID; self.author = author; self.deviceID = deviceID; self.kind = kind
         self.body = body; self.attachments = attachments; self.statusFrom = statusFrom; self.statusTo = statusTo
         self.createdAt = createdAt; self.action = action
@@ -615,7 +648,18 @@ public struct TrackerComment: Identifiable, Equatable, Hashable, Sendable {
                   convoTitle: json["convo_title"] as? String,
                   contributor: Contributor(json: json["contributor"]),
                   attribution: json["attribution"] as? String,
-                  replaces: json["replaces"] as? String ?? meta?["replaces"] as? String)
+                  replaces: json["replaces"] as? String ?? meta?["replaces"] as? String,
+                  stepUp: json["step_up"] as? Bool ?? false,
+                  subject: json["subject"] as? [String: String],
+                  signedKeyID: Self.signingKeyID(json["approval"]))
+    }
+
+    /// The `key_id` inside a stored approval's statement.
+    private static func signingKeyID(_ raw: Any?) -> String? {
+        guard let approval = raw as? [String: Any], let statement = approval["statement"] as? String,
+              let obj = (try? JSONSerialization.jsonObject(with: Data(statement.utf8))) as? [String: Any]
+        else { return nil }
+        return obj["key_id"] as? String
     }
 
     /// The action buttons the thread offers under this comment: its
@@ -630,6 +674,7 @@ public struct TrackerComment: Identifiable, Equatable, Hashable, Sendable {
                        attachments: attachments, statusFrom: statusFrom, statusTo: statusTo, createdAt: createdAt,
                        action: action, actions: actions, chosenAction: label, replyTo: replyTo,
                        deviceName: deviceName, convoID: convoID, convoTitle: convoTitle,
-                       contributor: contributor, attribution: attribution, replaces: replaces)
+                       contributor: contributor, attribution: attribution, replaces: replaces,
+                       stepUp: stepUp, subject: subject, signedKeyID: signedKeyID)
     }
 }

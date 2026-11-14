@@ -510,6 +510,8 @@ targets:
         product: MatronStorage
       - package: MatronShared
         product: MatronJournal
+      - package: MatronShared
+        product: MatronViewModels
 
   MatronNSE:
     type: app-extension

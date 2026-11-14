@@ -334,6 +334,13 @@ public enum ServerFrame: Equatable, Sendable {
     /// letter on a plain rename. Mirrors `AgentDTO.tagCharKnown` on the
     /// snapshot path.
     case deviceMeta(id: Int64, name: String, tagChar: String?, tagCharKnown: Bool)
+    /// A box's lock state changed (the `locked` key of a `device_meta`
+    /// frame, which is sent whenever it changes). `lock` nil: the box
+    /// reports no lock. Transient, like `boxStatus`.
+    case boxLock(deviceID: Int64, lock: BoxLock?)
+    /// The whole account was locked (`on`) from another device. The
+    /// socket is closed straight after.
+    case accountPanic(on: Bool)
     /// A box's own capacity report, fanned live to client sockets (journal
     /// PR #82) — the same shape `GET /devices` serves as `status`. Transient
     /// like `deviceMeta`: no seq, never replayed; a client that misses one
@@ -563,6 +570,9 @@ public enum ServerFrame: Equatable, Sendable {
             // "explicit null" together, and only the latter clears a tag.
             return .deviceMeta(id: id, name: name, tagChar: obj["tag_char"] as? String,
                                tagCharKnown: obj["tag_char"] != nil)
+        case "panic":
+            guard let on = obj["on"] as? Bool else { return nil }
+            return .accountPanic(on: on)
         case "box_status":
             guard let id = (obj["device_id"] as? NSNumber)?.int64Value,
                   let status = BoxStatus.parse(obj) else { return nil }
@@ -723,5 +733,18 @@ public enum ClientOp: Equatable, Sendable {
         // Dictionaries above are always valid JSON objects.
         let data = (try? JSONSerialization.data(withJSONObject: obj)) ?? Data("{}".utf8)
         return String(decoding: data, as: UTF8.self)
+    }
+}
+
+extension ServerFrame {
+    /// The lock state a `device_meta` frame carries beside the name and
+    /// tag, when it has a `locked` key at all (a server that predates box
+    /// locks sends none, which says nothing).
+    public static func boxLock(inDeviceMeta text: String) -> ServerFrame? {
+        guard let data = text.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              obj["kind"] as? String == "device_meta", obj.keys.contains("locked"),
+              let id = (obj["device_id"] as? NSNumber)?.int64Value else { return nil }
+        return .boxLock(deviceID: id, lock: BoxLock.decode(obj["locked"]))
     }
 }

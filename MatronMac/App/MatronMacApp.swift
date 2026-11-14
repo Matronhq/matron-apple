@@ -112,6 +112,7 @@ struct MatronMacApp: App {
                         viewModel: ChatListViewModel(chat: dependencies.chatService(for: session), gate: .shared),
                         onSignOut: { signOut(activeSession: session) }
                     )
+                    .accountLockedBanner(dependencies.accountLock)
                     // Answers the window's size probes itself, so they do
                     // not measure the whole split view (WindowRootFrame).
                     .windowRootFrame(minSize: CGSize(width: 800, height: 600),
@@ -221,7 +222,8 @@ struct MatronMacApp: App {
                     let linkViewModel = LinkSignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron Mac")
                     MacSignInView(
                         viewModel: revokedSession.map {
-                            SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron Mac", signedOutRemotely: $0)
+                            SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron Mac", signedOutRemotely: $0,
+                                            accountLocked: dependencies.accountLock.isLocked)
                         } ?? SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron Mac"),
                         linkViewModel: linkViewModel,
                         rendezvousViewModel: RendezvousSignInViewModel(relay: RelayClient(), link: linkViewModel),
@@ -240,6 +242,7 @@ struct MatronMacApp: App {
                                 await dependencies.awaitPendingTeardown()
                                 await dependencies.wipeLocalDataForFreshLogin()
                                 self.revokedSession = nil
+                                dependencies.accountLock.signedIn()
                                 self.session = session
                             }
                         }

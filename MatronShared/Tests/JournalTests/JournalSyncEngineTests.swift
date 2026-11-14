@@ -198,6 +198,56 @@ class JournalSyncEngineTests: XCTestCase {
         await engine.endSync()
     }
 
+    /// A `device_meta` frame carries the box's lock state: it reaches
+    /// every subscriber, and the name still lands in the store.
+    func testBoxLockFanOut_fromDeviceMeta() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        var iterator = engine.boxLockUpdates().makeAsyncIterator()
+        try await Task.sleep(for: .milliseconds(50))
+        socket.serve(#"{"kind":"device_meta","device_id":9,"name":"box-a","tag_char":null,"locked":{"on":false,"until":1790000600000,"lockdown_until":null}}"#)
+        let update = await iterator.next()
+        XCTAssertEqual(update?.deviceID, 9)
+        XCTAssertEqual(update?.lock, BoxLock(on: false, until: Date(timeIntervalSince1970: 1_790_000_600)))
+        XCTAssertEqual(try store.agentNames()[9], "box-a")
+        await engine.endSync()
+    }
+
+    /// The journal says the account is locked two ways on the socket: a
+    /// `panic` frame before it closes a live one, and a hello refused with
+    /// `account_locked`. Neither is a sign-out.
+    func testAccountLock_isSignalledFromThePanicFrameAndTheHello() async throws {
+        let signals = SignalLog()
+        let live = FakeWebSocketConnection()
+        live.serve(helloOK(0))
+        let refused = FakeWebSocketConnection()
+        refused.serve(#"{"kind":"control","op":"error","code":"account_locked","since":1790000000000}"#)
+        let store = try seededStore()
+        let engine = JournalSyncEngine(api: JournalAPI(serverURL: URL(string: "https://x")!), store: store,
+                                       connector: FakeConnector([live, refused]), token: "t", ownSender: "user:alice",
+                                       search: nil, backoffBaseSeconds: 0.01,
+                                       credentialSignals: { signals.add($0) })
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        live.serve(#"{"kind":"panic","on":true,"since":1790000000000}"#)
+        for _ in 0..<200 where signals.all.filter({ $0 == .accountLocked }).count < 1 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(signals.all, [.accepted, .accountLocked])
+        live.serve(#"{"kind":"control","op":"error","code":"revoked"}"#)
+        live.close()
+        for _ in 0..<200 where signals.all.filter({ $0 == .accountLocked }).count < 2 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(signals.all.prefix(3), [.accepted, .accountLocked, .accountLocked])
+        XCTAssertFalse(signals.all.contains(.rejected))
+        await engine.endSync()
+    }
+
     /// A `defaults` frame reaches every subscriber as it lands — it is not a
     /// journal event, so nothing is appended to the store for it.
     func testDefaultsFanOut() async throws {
@@ -1924,4 +1974,11 @@ extension JournalSyncEngineTests {
         XCTAssertEqual(viewing["convo_id"] as? String, "coord")
         await engine.endSync()
     }
+}
+
+private final class SignalLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var signals: [CredentialSignal] = []
+    func add(_ signal: CredentialSignal) { lock.withLock { signals.append(signal) } }
+    var all: [CredentialSignal] { lock.withLock { signals } }
 }

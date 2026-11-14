@@ -87,10 +87,18 @@ public final class BoxesViewModel {
     }
 
     public func load() async {
+        let started = Date()
         do {
             let agents = try await api.devices().filter { $0.kind == "agent" }
             let snapshot = try? await api.roster()
             devices = agents
+            // A lock state a box or a live frame gave while this read was
+            // out, or just before it, is newer than what the read holds.
+            let cutoff = started.addingTimeInterval(-Self.lockGrace)
+            lockAdoptions = lockAdoptions.filter { $0.value.at > cutoff }
+            for (boxID, adoption) in lockAdoptions {
+                if let index = devices.firstIndex(where: { $0.id == boxID }) { devices[index].locked = adoption.lock }
+            }
             if let snapshot { roster = snapshot }
             for agent in agents {
                 if let status = agent.status { adopt(status, for: agent.id) }
@@ -108,9 +116,18 @@ public final class BoxesViewModel {
     /// Runs until the calling task is cancelled.
     public func watch() async {
         let frames = api.boxStatusUpdates()
+        let locks = api.boxLockUpdates()
         let states = api.connectionStates()
         let sleep = pollSleep
         await withTaskGroup(of: Void.self) { group in
+            group.addTask { [weak self] in
+                for await update in locks {
+                    await self?.adopt(lock: update.lock, for: update.deviceID)
+                }
+                // A provider with no live feed ends at once: that must not
+                // end the watch.
+                while !Task.isCancelled { try? await Task.sleep(for: .seconds(3600)) }
+            }
             group.addTask { [weak self] in
                 for await update in frames {
                     await self?.adopt(update.status, for: update.deviceID)
@@ -136,6 +153,96 @@ public final class BoxesViewModel {
             group.cancelAll()
         }
     }
+
+    // MARK: Locked boxes
+
+    /// Signs unlocks and lockdown clears. Set by the app.
+    public var approvalSigner: ApprovalSigner?
+    /// Why the last unlock, lock or clear failed, and on which box; shown
+    /// on that box's card.
+    public var lockError: String?
+    public private(set) var lockErrorBoxID: Int64?
+    /// A box that answered "in lockdown" to a request. Kept beside what
+    /// the box reports, for a server that does not pass `lockdown_until`
+    /// on.
+    public private(set) var lockdownBoxes: Set<Int64> = []
+    /// Boxes with an unlock, lock or clear in flight.
+    public private(set) var lockBusy: Set<Int64> = []
+
+    /// Whether `device` is in lockdown: it reports so, or it answered so.
+    public func isInLockdown(_ device: DeviceDTO, now: Date = Date()) -> Bool {
+        device.locked?.isInLockdown(at: now) == true || lockdownBoxes.contains(device.id)
+    }
+
+    /// Whether `device` has a lock line to show.
+    public func showsLock(_ device: DeviceDTO, now: Date = Date()) -> Bool {
+        device.locked?.isShown(at: now) == true || lockdownBoxes.contains(device.id)
+    }
+
+    /// Opens an unlock window on a locked box. True when the box took it.
+    @discardableResult
+    public func unlock(_ device: DeviceDTO, minutes: Int) async -> Bool {
+        await lockAction(device) {
+            await BoxLockControl.unlock(box: device, minutes: minutes, api: self.api, signer: self.approvalSigner)
+        }
+    }
+
+    /// Ends an unlock window now.
+    @discardableResult
+    public func lock(_ device: DeviceDTO) async -> Bool {
+        await lockAction(device) { await BoxLockControl.lock(box: device, api: self.api) }
+    }
+
+    /// Ends a box's lockdown.
+    @discardableResult
+    public func clearLockdown(_ device: DeviceDTO) async -> Bool {
+        let cleared = await lockAction(device) {
+            await BoxLockControl.clearLockdown(box: device, api: self.api, signer: self.approvalSigner)
+        }
+        if cleared { lockdownBoxes.remove(device.id) }
+        return cleared
+    }
+
+    private func lockAction(_ device: DeviceDTO, _ action: () async -> BoxLockControl.Outcome) async -> Bool {
+        guard !lockBusy.contains(device.id) else { return false }
+        lockBusy.insert(device.id)
+        defer { lockBusy.remove(device.id) }
+        lockError = nil
+        lockErrorBoxID = nil
+        switch await action() {
+        case .failed(let failure):
+            if case .lockdown = failure { lockdownBoxes.insert(device.id) }
+            lockError = failure.text
+            lockErrorBoxID = failure.text == nil ? nil : device.id
+            return false
+        case .done(let reported):
+            // The box answers with its new state. It reports it to the
+            // journal too, a moment later: reading the roster now could
+            // bring the old state back, so only an answer without a state
+            // (an older box) is followed by a read.
+            // A box in lockdown would have refused.
+            lockdownBoxes.remove(device.id)
+            if let reported {
+                adopt(lock: reported, for: device.id)
+            } else {
+                await load()
+            }
+            return true
+        }
+    }
+
+    /// A box's lock state as a live frame or its own answer gave it.
+    private func adopt(lock: BoxLock?, for boxID: Int64) {
+        guard let index = devices.firstIndex(where: { $0.id == boxID }) else { return }
+        devices[index].locked = lock
+        lockAdoptions[boxID] = (lock: lock, at: Date())
+    }
+
+    /// Lock states taken from a box's answer or a live frame, and when. A
+    /// box reports to the journal a moment after it answers, so a roster
+    /// read for a few seconds either side can still hold the old state.
+    private var lockAdoptions: [Int64: (lock: BoxLock?, at: Date)] = [:]
+    private static let lockGrace: TimeInterval = 5
 
     public func wake(_ device: DeviceDTO) async {
         await waker.wake(agent: device)

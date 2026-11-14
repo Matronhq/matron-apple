@@ -35,6 +35,8 @@ struct DeviceSettingsView: View {
     /// Settings → Security, held here so its sheets present from the
     /// `Form` (see `securitySettingsSheet(_:)`); nil without `deps`.
     @State private var security: SecuritySettingsModel?
+    /// Settings → Approval keys; nil without `deps`.
+    @State private var approvalKeys: ApprovalKeysScreenModel?
 
     init(session: UserSession, devicesAPI: (any DevicesProviding)? = nil, linkAPI: (any DeviceLinking)? = nil,
          agentChatAPI: (any AgentChatProviding)? = nil, onSignOut: (() -> Void)? = nil,
@@ -50,6 +52,7 @@ struct DeviceSettingsView: View {
                                   passwordAPI: $0.passwordService(for: session),
                                   emailAPI: $0.accountEmailService(for: session))
         })
+        _approvalKeys = State(initialValue: deps.map { ApprovalKeysScreenModel(center: $0.approvals(for: session)) })
     }
 
     var body: some View {
@@ -65,6 +68,16 @@ struct DeviceSettingsView: View {
             }
             if let security {
                 TwoFactorSettingsSection(security: security)
+            }
+            if let approvalKeys {
+                Section {
+                    NavigationLink {
+                        ApprovalKeysScreen(model: approvalKeys)
+                    } label: {
+                        ApprovalKeysRowLabel(model: approvalKeys)
+                    }
+                    .accessibilityIdentifier("settings.approvalKeys")
+                }
             }
             if devicesAPI != nil || linkAPI != nil {
                 Section("Devices") {

@@ -15,6 +15,7 @@ struct MacBoxesPage: View {
     @State private var viewModel: BoxesViewModel
     @State private var expanded: Set<Int64> = []
     @State private var startingOn: DeviceDTO?
+    @State private var unlocking: DeviceDTO?
 
     private static let sessionsWidth: CGFloat = 62
     /// Meters narrow first, so the box column keeps room for its login.
@@ -25,11 +26,13 @@ struct MacBoxesPage: View {
     /// Narrower than this the defaults column folds under the box's name.
     private static let wideLayoutMinWidth: CGFloat = 1_020
 
-    init(deps: AppDependencies, session: UserSession, onOpenConversation: @escaping (String) -> Void) {
+    /// `viewModel` is for tests and render harnesses; the app leaves it out.
+    init(deps: AppDependencies, session: UserSession, viewModel: BoxesViewModel? = nil,
+         onOpenConversation: @escaping (String) -> Void) {
         self.deps = deps
         self.session = session
         self.onOpenConversation = onOpenConversation
-        _viewModel = State(initialValue: deps.makeBoxesViewModel(for: session))
+        _viewModel = State(initialValue: viewModel ?? deps.makeBoxesViewModel(for: session))
     }
 
     var body: some View {
@@ -81,6 +84,9 @@ struct MacBoxesPage: View {
                 startingOn = nil
                 onOpenConversation(convoID)
             }
+        }
+        .sheet(item: $unlocking) { device in
+            BoxUnlockSheet(device: device, viewModel: viewModel) { unlocking = nil }
         }
     }
 
@@ -167,6 +173,12 @@ struct MacBoxesPage: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
+            if viewModel.showsLock(row.device) {
+                BoxLockBar(device: row.device, viewModel: viewModel) { unlocking = $0 }
+                    .frame(maxWidth: 560, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 9)
+            }
             if expanded.contains(row.id) {
                 sessionList(row)
             }
@@ -190,6 +202,7 @@ struct MacBoxesPage: View {
                 } else if row.isMostSpare {
                     BoxBadge("Most spare", color: .green)
                 }
+                if row.device.isProtected { ProtectedBoxBadge() }
             }
             HStack(spacing: 4) {
                 if let caption = row.wake?.caption {

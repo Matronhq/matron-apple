@@ -1612,9 +1612,13 @@ public final class ChatViewModel {
         agentChatTransientStates[eventID] = .sending
         do {
             try await agentChat.answerAgentChat(
-                roomID: request.roomID, targetDeviceID: request.targetDeviceID,
+                ChatAsk(roomID: request.roomID, targetDeviceID: request.targetDeviceID,
+                        justification: request.justification ?? "", headline: request.headline),
                 decision: decision)
             rememberAgentChatAnswer(eventID, decision.rawValue)
+        } catch ApprovalKeyFailure.cancelled {
+            // Backed out of the approval: the card is answerable again.
+            agentChatTransientStates.removeValue(forKey: eventID)
         } catch JournalAPIError.conflict {
             rememberAgentChatAnswer(eventID, "expired")
         } catch {
@@ -1680,7 +1684,13 @@ public final class ChatViewModel {
         if case .sending = agentSpawnState(eventID, request: request) { return }
         agentSpawnTransientStates[eventID] = .sending
         do {
-            try await agentSpawn.answerAgentSpawn(requestID: request.requestID, decision: decision)
+            try await agentSpawn.answerAgentSpawn(
+                SpawnAsk(requestID: request.requestID, targetDeviceID: request.targetDeviceID,
+                         workdir: request.workdir, task: request.task, headline: request.headline),
+                decision: decision)
+        } catch ApprovalKeyFailure.cancelled {
+            // Backed out of the approval: the card is answerable again.
+            agentSpawnTransientStates.removeValue(forKey: eventID)
         } catch is CancellationError {
             agentSpawnTransientStates.removeValue(forKey: eventID)
             throw CancellationError()

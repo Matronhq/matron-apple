@@ -69,6 +69,16 @@ final class SignInViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func test_signedOutByAnAccountLock_saysTheAccountIsLocked() {
+        let revoked = UserSession(userID: "alice", deviceID: "4", homeserverURL: URL(string: "https://journal.example")!,
+                                  accessToken: "t")
+        let vm = SignInViewModel(auth: FakeAuthForVM(), deviceDisplayName: "Matron Tests", signedOutRemotely: revoked,
+                                 accountLocked: true)
+        XCTAssertEqual(vm.notice, AccountLockMonitor.lockedNotice)
+        XCTAssertEqual(vm.username, "alice")
+    }
+
+    @MainActor
     func test_signedOutRemotely_showsTheReason_andPrefillsTheAccount() {
         let revoked = UserSession(userID: "alice", deviceID: "7",
                                   homeserverURL: URL(string: "https://chat.example.com")!, accessToken: "t")

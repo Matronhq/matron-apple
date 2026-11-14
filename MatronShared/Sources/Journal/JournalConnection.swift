@@ -57,9 +57,11 @@ public struct JournalConnection: Sendable {
                     return (JournalConnection(socket: socket, coordinatorHello: coordinator,
                                               archiveHello: archive, syncHello: sync), headSeq)
                 case .error(let code, _, _, _):
-                    throw code == "auth"
-                        ? JournalConnectionError.authRejected
-                        : JournalConnectionError.badHandshake
+                    switch code {
+                    case "auth": throw JournalConnectionError.authRejected
+                    case "account_locked": throw JournalConnectionError.accountLocked
+                    default: throw JournalConnectionError.badHandshake
+                    }
                 default:
                     throw JournalConnectionError.badHandshake
                 }
@@ -89,6 +91,11 @@ public struct JournalConnection: Sendable {
                         let text = try await socket.receiveText()
                         if let frame = ServerFrame.decode(text) {
                             continuation.yield(frame)
+                            // A `device_meta` frame also carries the box's
+                            // lock state.
+                            if case .deviceMeta = frame, let lock = ServerFrame.boxLock(inDeviceMeta: text) {
+                                continuation.yield(lock)
+                            }
                         }
                     }
                     continuation.finish(throwing: CancellationError())

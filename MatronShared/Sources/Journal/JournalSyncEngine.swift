@@ -179,6 +179,7 @@ public actor JournalSyncEngine {
     private var routineMarkerContinuations: [UUID: AsyncStream<RoutineMarkerEvent>.Continuation] = [:]
     private var coordinatorContinuations: [UUID: AsyncStream<CoordinatorUpdate>.Continuation] = [:]
     private var boxStatusContinuations: [UUID: AsyncStream<(deviceID: Int64, status: BoxStatus)>.Continuation] = [:]
+    private var boxLockContinuations: [UUID: AsyncStream<(deviceID: Int64, lock: BoxLock?)>.Continuation] = [:]
     private var notifyContinuations: [UUID: AsyncStream<NotifySettings>.Continuation] = [:]
     private var pinsContinuations: [UUID: AsyncStream<[ConvoPin]>.Continuation] = [:]
     private var defaultsContinuations: [UUID: AsyncStream<NewChatDefaults>.Continuation] = [:]
@@ -1385,6 +1386,21 @@ public actor JournalSyncEngine {
     }
     private func unregisterBoxStatus(id: UUID) { boxStatusContinuations.removeValue(forKey: id) }
 
+    /// A box's lock state each time it changes (the `locked` key of a live
+    /// `device_meta` frame). No replay: a subscriber seeds from `GET
+    /// /devices`. Mirrors `boxStatusUpdates()`.
+    public nonisolated func boxLockUpdates() -> AsyncStream<(deviceID: Int64, lock: BoxLock?)> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerBoxLock(id: id, continuation: continuation) }
+            continuation.onTermination = { _ in Task { await self.unregisterBoxLock(id: id) } }
+        }
+    }
+    private func registerBoxLock(id: UUID, continuation: AsyncStream<(deviceID: Int64, lock: BoxLock?)>.Continuation) {
+        boxLockContinuations[id] = continuation
+    }
+    private func unregisterBoxLock(id: UUID) { boxLockContinuations.removeValue(forKey: id) }
+
     /// Live `notify` frames (journal spec 2026-10-01 notification settings):
     /// another device (or this one) changed what may push.
     /// `NotifySettingsStore` subscribes. No replay: the store reads `GET
@@ -2033,6 +2049,13 @@ public actor JournalSyncEngine {
                                                    tagCharKnown: tagCharKnown)
                     case .boxStatus(let deviceID, let status):
                         for c in boxStatusContinuations.values { c.yield((deviceID: deviceID, status: status)) }
+                    case .boxLock(let deviceID, let lock):
+                        for c in boxLockContinuations.values { c.yield((deviceID: deviceID, lock: lock)) }
+                    case .accountPanic(let on):
+                        // The journal closes the socket next, with a
+                        // "revoked" error: the app must say the account is
+                        // locked, not that this device was signed out.
+                        if on { credentialSignals?(.accountLocked) }
                     case .notify(let settings):
                         for c in notifyContinuations.values { c.yield(settings) }
                     case .defaults(let defaults):
@@ -2084,6 +2107,13 @@ public actor JournalSyncEngine {
                 runTask = nil
                 credentialSignals?(.rejected)
                 return
+            } catch JournalConnectionError.accountLocked {
+                flushReplayBufferOnTeardown(&replayBuffer)
+                // The token still exists but the account is locked. The
+                // journal does not say when the lock is cleared, so keep
+                // trying at the backoff's pace.
+                Self.logger.warning("server refused the hello: account locked")
+                credentialSignals?(.accountLocked)
             } catch {
                 flushReplayBufferOnTeardown(&replayBuffer)
                 // Fall through to backoff — but never silently: the

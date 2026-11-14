@@ -16,6 +16,16 @@ public protocol AgentRPCProviding: Sendable {
     /// reconnect: a report made while the socket was down is never fanned or
     /// replayed (see `NewChatViewModel.watchBoxStatus()`).
     func connectionStates() -> AsyncStream<SyncConnectionState>
+    /// A box's lock state each time it changes; `nil` when the box reports
+    /// no lock.
+    func boxLockUpdates() -> AsyncStream<(deviceID: Int64, lock: BoxLock?)>
+}
+
+extension AgentRPCProviding {
+    /// Nothing, for a provider with no live feed.
+    public func boxLockUpdates() -> AsyncStream<(deviceID: Int64, lock: BoxLock?)> {
+        AsyncStream { $0.finish() }
+    }
 }
 
 /// Production adapter: the session's `JournalAPI` (roster) + sync engine
@@ -47,6 +57,10 @@ public struct JournalAgentRPCService: AgentRPCProviding, BoxesProviding {
 
     public func connectionStates() -> AsyncStream<SyncConnectionState> {
         engine.stateStream()
+    }
+
+    public func boxLockUpdates() -> AsyncStream<(deviceID: Int64, lock: BoxLock?)> {
+        engine.boxLockUpdates()
     }
 }
 
@@ -273,6 +287,8 @@ public final class NewChatViewModel {
     private static let logger = Logger(subsystem: "chat.matron", category: "new-chat")
 
     private let api: any AgentRPCProviding
+    /// Signs a start on a protected box. Set by the app.
+    public var approvalSigner: ApprovalSigner?
     private let capacityCache: any BoxCapacityCaching
     /// Injected clock, so tests can pin capture times.
     private let now: @Sendable () -> Date
@@ -712,6 +728,26 @@ public final class NewChatViewModel {
         // picker, and is sent even when this box's `model_options` don't
         // list it — the bridge accepts `opus[1m]` regardless.
         if selectedAgent == AgentOption.claude, let model = pinnedModel ?? selectedModel { params["model"] = model }
+        // Starting a session on a protected box is an account action once
+        // the account has an approval key: the box (and the journal) check
+        // a signature over the box, the folder and the prompt's hash.
+        if agent.isProtected, let approvalSigner {
+            do {
+                let request = ApprovalRequest(
+                    kind: .account,
+                    subject: ApprovalSubjects.start(box: agent.name, workdir: trimmed.isEmpty ? nil : trimmed, prompt: nil),
+                    headline: "Start a session on \(agent.name)", box: agent.name)
+                if let approval = try await approvalSigner(request) { params["approval"] = approval.json }
+                // The sheet may have closed, or another box been picked,
+                // while the approval was on screen: nothing is started.
+                guard !isAbandoned, !Task.isCancelled, Self.sameFolderAgent(phase, agent) else { return }
+            } catch ApprovalKeyFailure.cancelled {
+                return
+            } catch {
+                errorMessage = error.localizedDescription
+                return
+            }
+        }
         // A [String: Any] of strings/bools always serializes.
         let paramsData = (try? JSONSerialization.data(withJSONObject: params)) ?? Data("{}".utf8)
         do {
@@ -746,6 +782,10 @@ public final class NewChatViewModel {
                     return
                 }
                 phase = .done(convoID: convoID)
+            case .failure("approval_required", _):
+                errorMessage = JournalAPIError.approvalRequired.localizedDescription
+            case .failure("approval_invalid", let detail):
+                errorMessage = JournalAPIError.approvalInvalidText(detail ?? "")
             case .failure(let code, let detail):
                 errorMessage = Self.startErrorCopy(code: code, detail: detail)
             }

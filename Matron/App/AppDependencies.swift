@@ -251,8 +251,12 @@ final class AppDependencies {
         let revocation = CredentialRevocationMonitor { [weak self] in
             Task { @MainActor in self?.credentialsRevoked(for: session) }
         }
+        let accountLock = self.accountLock
         let api = JournalAPI(serverURL: session.homeserverURL, token: session.accessToken,
-                             authResponses: { [revocation] status in revocation.noteResponse(status: status) })
+                             authResponses: { [revocation, accountLock] status in
+                                 revocation.noteResponse(status: status)
+                                 accountLock.note(status: status)
+                             })
         let dbURL = journalDirectory.appendingPathComponent("\(session.userID).sqlite")
         LaunchTimeline.shared.beginStoreOpen()
         // `store.changeFeed` (on unless switched off in Settings → Storage;
@@ -287,7 +291,11 @@ final class AppDependencies {
             token: session.accessToken,
             ownSender: "user:\(session.userID)", search: search,
             databasesSuspended: { DatabaseSuspensionController.shared.isSuspended },
-            credentialSignals: { [revocation] signal in revocation.handle(signal) },
+            credentialSignals: { [revocation, accountLock] signal in
+                revocation.handle(signal)
+                if signal == .accountLocked { accountLock.noteLockedBySocket() }
+                if signal == .accepted { accountLock.noteSocketAccepted() }
+            },
             // Settings → Sync on this device. Per device, so it lives in
             // this phone's defaults, not on the journal.
             syncScope: SyncScope.stored(),
@@ -322,6 +330,7 @@ final class AppDependencies {
                                 defaults: defaults, userSettings: userSettings, briefing: briefing, pins: pins,
                                 maintenance: maintenance, revocation: revocation)
         core.deviceID = Int64(session.deviceID)
+        installApprovals(on: core, session: session, directory: sessionsDirectory)
         core.itemsStartTask = Task {
             // Spec 2026-09-28 dashboard §3.7: an item change on a mission
             // refetches that mission, so its needs-you count stays current.
@@ -442,7 +451,9 @@ final class AppDependencies {
     /// `convoID: nil` is the app-wide instance — see `makeDecisionsViewModel`.
     @MainActor func makeItemsPanelViewModel(for session: UserSession, convoID: String?) -> ItemsPanelViewModel {
         let c = core(for: session)
-        return ItemsPanelViewModel(convoID: convoID, store: c.store, api: c.api, sync: c.items)
+        let vm = ItemsPanelViewModel(convoID: convoID, store: c.store, api: c.api, sync: c.items)
+        vm.approvalSigner = approvalSigner(for: session)
+        return vm
     }
 
     /// The Missions dashboard's view model — one per signed-in session,
@@ -493,7 +504,7 @@ final class AppDependencies {
         // `events` + `agentSpawn`: the consent card inside
         // item detail reads the origin conversation's card and outcome from
         // the same store the timeline does, and answers on the same API.
-        return ItemDetailViewModel(itemID: itemID, store: c.store, api: c.api, sync: c.items, events: c.store, agentSpawn: c.api,
+        let vm = ItemDetailViewModel(itemID: itemID, store: c.store, api: c.api, sync: c.items, events: c.store, agentSpawn: agentSpawnService(for: session),
                                    seen: seenTracker(for: session),
                                    // Queued replies: the origin conversation's
                                    // queue cards, answered on the same socket a card tap uses.
@@ -503,6 +514,8 @@ final class AppDependencies {
                                    // name it.
                                    contextStore: c.store,
                                    refreshMission: { [missions = c.missions] id in await missions.refreshMission(id: id) })
+        vm.approvalSigner = approvalSigner(for: session)
+        return vm
     }
 
     // MARK: Voice mode (spec 2026-10-03)
