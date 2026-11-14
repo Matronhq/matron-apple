@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import UserNotifications
+import MatronJournal
 import MatronPush
 
 /// Mac-side `UNUserNotificationCenterDelegate`. Two surfaces:
@@ -56,7 +57,12 @@ public final class MacNotificationHandler: NSObject, UNUserNotificationCenterDel
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        completionHandler([.banner, .sound, .list])
+        // An alert shown while the app is frontmost: the badge it carries is
+        // the account's count, so show it on the Dock tile too.
+        if let count = notification.request.content.badge?.intValue {
+            NSApp.dockTile.badgeLabel = PushBadge.label(for: count)
+        }
+        completionHandler([.banner, .sound, .list, .badge])
     }
 
     public func userNotificationCenter(

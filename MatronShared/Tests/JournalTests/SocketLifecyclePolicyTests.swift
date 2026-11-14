@@ -3,8 +3,9 @@ import XCTest
 
 /// The Mac socket lifecycle: open while a window can be seen, closed after a
 /// grace period once none can (or at once on sleep), reopened from the cursor
-/// when one is visible again. The process is kept out of App Nap exactly
-/// while the socket is open, so a dropped socket is still noticed.
+/// when one is visible again. With no window on screen, an open socket holds
+/// an activity assertion so a dropped one is still noticed; a visible window
+/// keeps the app awake on its own.
 final class SocketLifecyclePolicyTests: XCTestCase {
     private func make(visible: Bool = true) -> SocketLifecyclePolicy {
         SocketLifecyclePolicy(grace: 60, windowsVisible: visible, now: 0)
@@ -14,7 +15,7 @@ final class SocketLifecyclePolicyTests: XCTestCase {
         var policy = make()
         XCTAssertEqual(policy.decide(at: 0), .keep)
         XCTAssertEqual(policy.decide(at: 100_000), .keep)
-        XCTAssertTrue(policy.holdsActivity)
+        XCTAssertFalse(policy.holdsActivity, "a window on screen keeps the app out of App Nap itself")
         XCTAssertNil(policy.nextDeadline)
     }
 
@@ -53,7 +54,7 @@ final class SocketLifecyclePolicyTests: XCTestCase {
         policy.setWindowsVisible(true, at: 500)
         XCTAssertEqual(policy.decide(at: 500), .reconnectFromCursor)
         XCTAssertEqual(policy.decide(at: 501), .keep)
-        XCTAssertTrue(policy.holdsActivity)
+        XCTAssertFalse(policy.holdsActivity)
     }
 
     func testSleepClosesAtOnceEvenWithAVisibleWindow() {
@@ -77,7 +78,6 @@ final class SocketLifecyclePolicyTests: XCTestCase {
         XCTAssertEqual(policy.decide(at: 5), .close)
         policy.setAsleep(false, at: 3_600)
         XCTAssertEqual(policy.decide(at: 3_600), .reconnectFromCursor)
-        XCTAssertTrue(policy.holdsActivity)
     }
 
     func testWakeWithNothingVisibleStaysClosed() {
@@ -122,5 +122,154 @@ final class SocketLifecyclePolicyTests: XCTestCase {
         policy.setWindowsVisible(false, at: 0)
         policy.setWindowsVisible(false, at: 50)
         XCTAssertEqual(policy.decide(at: 60), .close)
+    }
+
+    // MARK: Activation
+
+    func testActivationAloneWantsTheSocketBeforeAnyWindowIsDrawn() {
+        var policy = make(visible: false)
+        XCTAssertEqual(policy.decide(at: 60), .close)
+        policy.setAppActive(true, at: 500)
+        XCTAssertEqual(policy.decide(at: 500), .reconnectFromCursor)
+        XCTAssertTrue(policy.holdsActivity, "no window yet: the assertion covers the open socket")
+        policy.setWindowsVisible(true, at: 501)
+        XCTAssertEqual(policy.decide(at: 501), .keep)
+        XCTAssertFalse(policy.holdsActivity)
+    }
+
+    func testResigningActiveStartsTheGraceWhenNothingIsVisible() {
+        var policy = SocketLifecyclePolicy(grace: 60, windowsVisible: false, appActive: true, now: 0)
+        XCTAssertNil(policy.nextDeadline)
+        policy.setAppActive(false, at: 10)
+        XCTAssertEqual(policy.nextDeadline, 70)
+        XCTAssertEqual(policy.decide(at: 70), .close)
+    }
+
+    // MARK: Displays sleeping while the system stays awake
+
+    func testDisplaySleepIsNotSystemSleepSoTheGraceStillApplies() {
+        var policy = make()
+        policy.setDisplaysAsleep(true, at: 10)
+        XCTAssertEqual(policy.decide(at: 10), .keep, "a screen blink must not drop the socket")
+        XCTAssertTrue(policy.holdsActivity, "nothing can be seen, so nothing keeps the app awake")
+        XCTAssertEqual(policy.nextDeadline, 70)
+        XCTAssertEqual(policy.decide(at: 70), .close)
+    }
+
+    func testDisplayWakeWithinGraceKeepsTheSocket() {
+        var policy = make()
+        policy.setDisplaysAsleep(true, at: 10)
+        policy.setDisplaysAsleep(false, at: 40)
+        XCTAssertEqual(policy.decide(at: 40), .keep)
+        XCTAssertNil(policy.nextDeadline)
+        XCTAssertFalse(policy.holdsActivity)
+    }
+
+    func testDisplayWakeAfterTheCloseReconnects() {
+        var policy = make()
+        policy.setDisplaysAsleep(true, at: 0)
+        XCTAssertEqual(policy.decide(at: 60), .close)
+        policy.setDisplaysAsleep(false, at: 3_000)
+        XCTAssertEqual(policy.decide(at: 3_000), .reconnectFromCursor)
+    }
+
+    func testDisplaysAsleepIsIndependentOfSystemSleep() {
+        var policy = make()
+        policy.setDisplaysAsleep(true, at: 0)
+        policy.setAsleep(true, at: 5)
+        XCTAssertEqual(policy.decide(at: 5), .close)
+        policy.setAsleep(false, at: 100)
+        XCTAssertEqual(policy.decide(at: 100), .keep, "the displays are still asleep")
+        policy.setDisplaysAsleep(false, at: 101)
+        XCTAssertEqual(policy.decide(at: 101), .reconnectFromCursor)
+    }
+
+    // MARK: Voice notes, outbox, stay connected
+
+    func testVoiceNoteKeepsAndOpensTheSocketWhileCovered() {
+        var policy = make(visible: false)
+        XCTAssertEqual(policy.decide(at: 60), .close)
+        policy.setVoiceNoteActive(true, at: 100)
+        XCTAssertEqual(policy.decide(at: 100), .reconnectFromCursor)
+        XCTAssertTrue(policy.holdsActivity)
+        XCTAssertNil(policy.nextDeadline)
+        XCTAssertEqual(policy.decide(at: 10_000), .keep, "no grace limit while a note is in flight")
+        policy.setVoiceNoteActive(false, at: 10_001)
+        XCTAssertEqual(policy.decide(at: 10_001), .close, "delivered: the socket closes without another grace")
+    }
+
+    func testVoiceNoteDoesNotOutliveSleep() {
+        var policy = make(visible: false)
+        policy.setVoiceNoteActive(true, at: 0)
+        policy.setAsleep(true, at: 5)
+        XCTAssertEqual(policy.decide(at: 5), .close)
+    }
+
+    func testOutboxPendingHoldsTheSocketUntilItDrains() {
+        var policy = make()
+        policy.setWindowsVisible(false, at: 0)
+        policy.setOutboxPending(true, at: 10)
+        XCTAssertEqual(policy.decide(at: 500), .keep)
+        XCTAssertNil(policy.nextDeadline)
+        policy.setOutboxPending(false, at: 501)
+        XCTAssertEqual(policy.decide(at: 501), .close)
+    }
+
+    func testStayConnectedKeepsTheSocketWhileHidden() {
+        var policy = make()
+        policy.setStayConnected(true, at: 0)
+        policy.setWindowsVisible(false, at: 1)
+        XCTAssertEqual(policy.decide(at: 100_000), .keep)
+        XCTAssertTrue(policy.holdsActivity, "the user opted in to a socket without a window")
+        policy.setStayConnected(false, at: 100_001)
+        XCTAssertEqual(policy.decide(at: 100_001), .close)
+    }
+
+    // MARK: Invariant
+
+    /// A small deterministic generator (SplitMix64), so a failure replays.
+    private struct SeededGenerator: RandomNumberGenerator {
+        var state: UInt64
+        mutating func next() -> UInt64 {
+            state &+= 0x9E37_79B9_7F4A_7C15
+            var z = state
+            z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+            z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+            return z ^ (z >> 31)
+        }
+    }
+
+    /// After any sequence of inputs and a `decide`, a wanted socket is one
+    /// the host has told to open and, unless a window on screen keeps the app
+    /// awake by itself, one the host holds an activity assertion for.
+    func testWantedSocketAlwaysHasActivityOrAVisibleWindow() {
+        var rng = SeededGenerator(state: 0x5EED)
+        for _ in 0..<200 {
+            var policy = SocketLifecyclePolicy(grace: 60, windowsVisible: Bool.random(using: &rng), now: 0)
+            var now: TimeInterval = 0
+            for _ in 0..<60 {
+                now += TimeInterval(Int.random(in: 0...90, using: &rng))
+                let value = Bool.random(using: &rng)
+                switch Int.random(in: 0..<8, using: &rng) {
+                case 0: policy.setWindowsVisible(value, at: now)
+                case 1: policy.setAppActive(value, at: now)
+                case 2: policy.setAsleep(value, at: now)
+                case 3: policy.setDisplaysAsleep(value, at: now)
+                case 4: policy.setVoiceNoteActive(value, at: now)
+                case 5: policy.setOutboxPending(value, at: now)
+                case 6: policy.setStayConnected(value, at: now)
+                default: break // time passing alone (the grace deadline)
+                }
+                _ = policy.decide(at: now)
+                if policy.wantsSocket(at: now) {
+                    XCTAssertFalse(policy.socketClosed, "wanted but closed after decide: \(policy)")
+                    XCTAssertTrue(policy.holdsActivity || policy.windowKeepsAwake,
+                                  "wanted without an assertion or a visible window: \(policy)")
+                } else {
+                    XCTAssertTrue(policy.socketClosed, "unwanted but open after decide: \(policy)")
+                    XCTAssertFalse(policy.holdsActivity, "assertion held with the socket closed: \(policy)")
+                }
+            }
+        }
     }
 }

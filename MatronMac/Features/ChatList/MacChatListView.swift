@@ -213,6 +213,10 @@ struct MacChatListView: View {
     /// this session, so the banner can pick "Connecting…" vs
     /// "Reconnecting…" copy. Sticky once true.
     @State private var hasEverConnected: Bool = false
+    /// Planned stops and reconnects (the socket closes while nothing is
+    /// visible) keep the banner away for a moment: see `QuietReconnect`.
+    private let quietReconnect = QuietReconnect.shared
+    @State private var quietDelayPassed = false
 
     /// Every chat-list summary, the Coordinator's included (it is left out
     /// of the list, not out of search or stale-restore checks). Used to
@@ -1273,6 +1277,16 @@ struct MacChatListView: View {
                     if state == .running || state == .catchingUp { hasEverConnected = true }
                 }
             }
+            // The delay a planned reconnect gets before the banner appears.
+            // Restarts with each planned reconnect (`episode`); episode 0 is
+            // a planned stop, which stays quiet for as long as it lasts.
+            .task(id: quietReconnect.episode) {
+                quietDelayPassed = false
+                guard quietReconnect.episode != 0 else { return }
+                try? await Task.sleep(for: QuietReconnect.delay)
+                guard !Task.isCancelled else { return }
+                quietDelayPassed = true
+            }
             // A conversation born while we're live. Only one this device
             // asked for (the user sent /start here) is selected, through the
             // same `selectedSummaryID` the notification-tap deep link uses.
@@ -1329,6 +1343,13 @@ struct MacChatListView: View {
         return withLifecycle(withCoordinatorWiring(withSharedLinks(withNavigationListeners(withCommandListeners(splitView)))))
     }
 
+    /// What the banner shows. A planned stop or reconnect shows nothing until
+    /// it has taken `QuietReconnect.delay` (or failed by then); a real drop is
+    /// shown at once.
+    private var bannerState: SyncBannerState {
+        quietReconnect.isQuiet && !quietDelayPassed ? .running : connectionState
+    }
+
     /// Sidebar column wrapper: connection banner (when not `.running`)
     /// stacked over the search field stacked over the chat list. The
     /// search field lives at the top of the conversation list — it used
@@ -1336,16 +1357,16 @@ struct MacChatListView: View {
     /// it over the detail column instead of with the list it filters.
     private var sidebarColumn: some View {
         VStack(spacing: 0) {
-            if connectionState != .running {
+            if bannerState != .running {
                 // Connection-state banner sits at the very top so the
                 // user's first read of the sidebar is "what's the
                 // current sync status?" before anything else competes
                 // for attention.
                 ConnectionStatusBanner(
-                    state: connectionState,
+                    state: bannerState,
                     hasEverConnected: hasEverConnected
                 )
-                .animation(.easeInOut(duration: 0.2), value: connectionState)
+                .animation(.easeInOut(duration: 0.2), value: bannerState)
             }
             if let searchModel {
                 // Top padding is tighter than bottom so the field sits a

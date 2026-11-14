@@ -123,7 +123,10 @@ struct MatronMacApp: App {
                                      idealSize: CGSize(width: 1280, height: 860))
                     .environment(\.appDependencies, dependencies)
                     .environment(\.currentSession, session)
-                    .task { await dependencies.syncEngine(for: session).beginSync() }
+                    // No `beginSync()` here: `MacSyncLifecycle` is the only
+                    // thing that starts and stops sync on the Mac, so a
+                    // window mounting cannot start a socket the lifecycle
+                    // does not know about.
                     // Push pipeline: request permission, register for
                     // remote notifications, and wire the delegate's
                     // device-token callback straight to the journal
@@ -204,15 +207,13 @@ struct MatronMacApp: App {
                         dependencies.seenTracker(for: session).setActive(NSApp.isActive && !locked)
                     }
                     .environment(\.appLockController, appLock)
-                    // Socket lifecycle: the journal socket stays open while a
-                    // window can be seen, and for a short grace after. App Nap
-                    // is held off only for that time: it throttles the timers
-                    // behind the engine's ping watchdog and backoff sleeper,
-                    // so a silently dropped socket would go unnoticed and the
-                    // chat list would sit stale. With every window hidden,
-                    // minimised or occluded, or the Mac asleep, the socket is
-                    // closed and the process may nap; coming back reconnects
-                    // from the stored cursor.
+                    // Socket lifecycle: `MacSyncLifecycle` owns sync. The
+                    // socket opens as the app starts to come forward and
+                    // closes shortly after nothing can be seen (or at once on
+                    // sleep); a voice note in flight keeps it open. While it
+                    // is open with no window on screen, a scoped activity
+                    // keeps App Nap off the engine's timers, so a dropped
+                    // socket is still noticed; with it closed the Mac may idle.
                     .task(id: session.userID) {
                         // One per session, whichever window mounts first.
                         guard syncLifecycle?.userID != session.userID else { return }
@@ -221,6 +222,7 @@ struct MatronMacApp: App {
                                                          engine: dependencies.syncEngine(for: session))
                         syncLifecycle = lifecycle
                         lifecycle.start()
+                        lifecycle.setVoiceNoteActive(voiceNotes.isRecording || voiceNotes.isStarting || voiceNotes.isSending)
                     }
                 } else {
                     let linkViewModel = LinkSignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron Mac")
@@ -290,6 +292,11 @@ struct MatronMacApp: App {
                 }
                 voiceHotkey = registrar
                 registrar.register(VoiceNoteHotkeyKey(rawValue: raw) ?? .default)
+            }
+            // A note in flight keeps the sync socket open with no window in
+            // front: it is delivered over the socket once uploaded.
+            .onChange(of: voiceNotes.isRecording || voiceNotes.isStarting || voiceNotes.isSending) { _, busy in
+                syncLifecycle?.setVoiceNoteActive(busy)
             }
             .onChange(of: voiceNotes.recordingStart) { _, start in
                 if let start {

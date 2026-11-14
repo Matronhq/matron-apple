@@ -85,6 +85,19 @@ public actor JournalSyncEngine {
     private let backoffBaseSeconds: Double
 
     private var runTask: Task<Void, Never>?
+    /// Bumped by every `beginSync()` and `endSync()`. A run loop carries the
+    /// value it started under and stops touching shared state (the live
+    /// connection, the connection state, the RPC waiters) once it no longer
+    /// matches: a stopped loop can still be mid-handshake, mid-replay or
+    /// mid-teardown when the next one starts, and must not close the new
+    /// socket or overwrite the new state.
+    private var runGeneration = 0
+    /// Hellos in flight. `JournalConnection.establish` cannot observe
+    /// cancellation (its receive only ends when the socket does, or after the
+    /// handshake timeout), so `endSync()` does not wait for a loop that is
+    /// inside one: that loop notices it is stale when the hello returns and
+    /// drops the socket.
+    private var handshakesInFlight = 0
     private var pathMonitor: NWPathMonitor?
     /// Status + sorted interface names of the last observed network path.
     /// macOS fires a burst of path callbacks at app startup (interface
@@ -348,12 +361,20 @@ public actor JournalSyncEngine {
         guard runTask == nil else { return }
         stoppedByRejection = false
         attempt = 0
-        runTask = Task { await runLoop() }
+        runGeneration &+= 1
+        let generation = runGeneration
+        runTask = Task { await runLoop(generation: generation) }
         startPathMonitor()
     }
 
+    /// Stops sync and returns once the run loop that was running has ended,
+    /// so a `beginSync()` that follows never overlaps the old loop's
+    /// teardown. The generation bump below makes the old loop inert from
+    /// here on even while it unwinds.
     public func endSync() async {
         stoppedByRejection = false
+        let stoppedTask = runTask
+        runGeneration &+= 1
         runTask?.cancel()
         runTask = nil
         pathMonitor?.cancel()
@@ -379,6 +400,16 @@ public actor JournalSyncEngine {
         if case .offline = state {} else {
             setState(.offline(reason: nil))
         }
+        if handshakesInFlight == 0 { await stoppedTask?.value }
+    }
+
+    private func isCurrent(_ generation: Int) -> Bool { generation == runGeneration }
+
+    /// `setState` for the run loop: a stopped loop's late transitions are
+    /// dropped.
+    private func setState(_ new: SyncConnectionState, generation: Int) {
+        guard isCurrent(generation) else { return }
+        setState(new)
     }
 
     public var isRunning: Bool { runTask != nil }
@@ -1754,8 +1785,8 @@ public actor JournalSyncEngine {
 
     // MARK: Run loop
 
-    private func runLoop() async {
-        while !Task.isCancelled {
+    private func runLoop(generation: Int) async {
+        while !Task.isCancelled, isCurrent(generation) {
             // Catch-up replay buffer: while `.catchingUp`, frames accumulate
             // here and land via `applyJournalBatch` — one transaction + one
             // observation fire per batch instead of per frame (see that
@@ -1771,9 +1802,9 @@ public actor JournalSyncEngine {
             // a new one while the hello was out): the next pass uses the new.
             var helloToken = token
             await parkWhileDatabasesSuspended()
-            if Task.isCancelled { break }
+            if Task.isCancelled || !isCurrent(generation) { break }
             do {
-                setState(.connecting)
+                setState(.connecting, generation: generation)
                 // Back on `everything` with a mirror that was `forYou`: it
                 // lacks whatever that socket never carried, so rebuild it.
                 // Read from the store rather than remembered, so a switch
@@ -1793,9 +1824,18 @@ public actor JournalSyncEngine {
                 if syncScope == .forYou { try? store.markForYouStart() }
                 let cursor = store.cursor
                 helloToken = token
-                let (connection, headSeq) = try await JournalConnection.establish(
-                    connector: connector, wsURL: api.wsURL, token: helloToken, cursor: cursor,
-                    archiveSince: archive.helloArchiveSince(), sync: syncScope)
+                handshakesInFlight += 1
+                let established: (connection: JournalConnection, headSeq: Int64)
+                do {
+                    established = try await JournalConnection.establish(
+                        connector: connector, wsURL: api.wsURL, token: helloToken, cursor: cursor,
+                        archiveSince: archive.helloArchiveSince(), sync: syncScope)
+                } catch {
+                    handshakesInFlight -= 1
+                    throw error
+                }
+                handshakesInFlight -= 1
+                let (connection, headSeq) = established
                 guard helloToken == token else {
                     // Accepted with a token that has since been replaced:
                     // start again with the new one.
@@ -1806,7 +1846,7 @@ public actor JournalSyncEngine {
                 // cannot observe cancellation): drop the socket instead of
                 // publishing it over the stopped state. Hosts that stop and
                 // restart sync as windows come and go can land here.
-                if Task.isCancelled {
+                if Task.isCancelled || !isCurrent(generation) {
                     connection.close()
                     return
                 }
@@ -1820,6 +1860,10 @@ public actor JournalSyncEngine {
                 // Before the replay: a message the replay brings back is
                 // then judged against the archive as the journal has it.
                 await archive.applyHello(connection.archiveHello)
+                // Stopped (and maybe restarted) while the hello was applied:
+                // `endSync()` already closed this socket, and the loop that
+                // owns the live one is another.
+                guard isCurrent(generation) else { connection.close(); return }
                 publishCoordinatorHello(connection.coordinatorHello, headSeq: headSeq)
                 attempt = 0
                 // Read state: register this device as a seen-range reporter
@@ -1857,7 +1901,7 @@ public actor JournalSyncEngine {
                 // matters after a long offline stretch, where the replay
                 // can take visible seconds and a "Connecting…" banner
                 // reads as a connection that never completes.
-                setState(store.cursor >= headSeq ? .running : .catchingUp)
+                setState(store.cursor >= headSeq ? .running : .catchingUp, generation: generation)
 
                 lastFrameAt = ContinuousClock.now
                 let watchdog = Task {
@@ -1925,7 +1969,7 @@ public actor JournalSyncEngine {
                                 try? await connection.send(.ack(cursor: store.cursor))
                                 appliedSinceAck = 0
                             }
-                            if store.cursor >= headSeq { setState(.running) }
+                            if store.cursor >= headSeq { setState(.running, generation: generation) }
                             continue
                         }
                         // Propagate a throw (disk full, sqlite I/O error) rather than
@@ -2003,7 +2047,7 @@ public actor JournalSyncEngine {
                                 considerAutoOpen(event, firstFrame: false)
                             }
                         }
-                        if store.cursor >= headSeq { setState(.running) }
+                        if store.cursor >= headSeq { setState(.running, generation: generation) }
                     case .ephemeral(let update):
                         for (_, entry) in ephemeralContinuations where entry.convoID == update.convoID {
                             entry.continuation.yield(update)
@@ -2132,7 +2176,7 @@ public actor JournalSyncEngine {
                         scopedReplayDone = true
                         try? await connection.send(.ack(cursor: store.cursor))
                         appliedSinceAck = 0
-                        if store.cursor >= headSeq { setState(.running) }
+                        if store.cursor >= headSeq { setState(.running, generation: generation) }
                         // The replay never carries the chats on screen.
                         for convoID in Set(viewers.map(\.convoID)) { startConversationCatchUp(convoID) }
                     case .helloOK, .unknownControl:
@@ -2143,14 +2187,17 @@ public actor JournalSyncEngine {
                 // replay buffered before the cut. The next connect's hello
                 // acks the advanced cursor, so the server resumes past it.
                 flushReplayBufferOnTeardown(&replayBuffer)
+                guard isCurrent(generation) else { return }
             } catch JournalConnectionError.authRejected where helloToken != token {
                 // The old token was refused after it was replaced: say
                 // hello again at once with the new one.
                 flushReplayBufferOnTeardown(&replayBuffer)
+                guard isCurrent(generation) else { return }
                 liveConnection = nil
                 continue
             } catch JournalConnectionError.authRejected {
                 flushReplayBufferOnTeardown(&replayBuffer)
+                guard isCurrent(generation) else { return }
                 Self.logger.warning("server rejected auth — stopping sync (signed out by server)")
                 liveConnection = nil
                 setState(.offline(reason: "Signed out by server"))
@@ -2162,10 +2209,12 @@ public actor JournalSyncEngine {
                 return
             } catch JournalConnectionError.accountLocked where helloToken != token {
                 flushReplayBufferOnTeardown(&replayBuffer)
+                guard isCurrent(generation) else { return }
                 liveConnection = nil
                 continue
             } catch JournalConnectionError.accountLocked(let lock) {
                 flushReplayBufferOnTeardown(&replayBuffer)
+                guard isCurrent(generation) else { return }
                 // The token still exists but the account is locked. The
                 // journal does not say when the lock is cleared, so keep
                 // trying at the backoff's pace.
@@ -2173,6 +2222,7 @@ public actor JournalSyncEngine {
                 credentialSignals?(.accountLocked(lock))
             } catch {
                 flushReplayBufferOnTeardown(&replayBuffer)
+                guard isCurrent(generation) else { return }
                 // Fall through to backoff — but never silently: the
                 // 2026-07-13 phone incident sat in this loop for 90
                 // minutes (proxy refusing the ws upgrade) with nothing in
@@ -2180,6 +2230,9 @@ public actor JournalSyncEngine {
                 // line/min at steady state.
                 Self.logger.warning("connect/stream failed (attempt \(self.attempt + 1, privacy: .public)): \(String(describing: error), privacy: .public)")
             }
+            // A stopped loop must not close the connection a newer one now
+            // owns, fail its RPCs or flip its state.
+            guard isCurrent(generation) else { return }
             liveConnection?.close()
             liveConnection = nil
             // The relay is stateless — an in-flight request's answer cannot
@@ -2196,10 +2249,10 @@ public actor JournalSyncEngine {
                 // genuinely fails, the next loop iteration lands in the
                 // normal offline/backoff path (the flag is already cleared).
                 pathChangeReconnect = false
-                setState(.connecting)
+                setState(.connecting, generation: generation)
                 continue
             }
-            setState(.offline(reason: nil))
+            setState(.offline(reason: nil), generation: generation)
             await backoff()
         }
     }

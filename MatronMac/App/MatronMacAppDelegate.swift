@@ -1,4 +1,5 @@
 import AppKit
+import MatronJournal
 import UserNotifications
 
 /// `NSApplicationDelegate` adaptor for the Mac SwiftUI host. SwiftUI's
@@ -46,6 +47,23 @@ final class MatronMacAppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             registerDeviceToken?(deviceToken)
         }
+    }
+
+    /// A silent push (`content-available`) from the journal. While nothing of
+    /// Matron is visible its socket is closed, so the push is what keeps the
+    /// Dock badge right: it carries the account's unread count as `aps.badge`.
+    func application(
+        _ application: NSApplication,
+        didReceiveRemoteNotification userInfo: [String: Any]
+    ) {
+        applyBadge(from: userInfo)
+    }
+
+    /// Sets the Dock badge from a push's count. A push without one leaves
+    /// the badge as it is.
+    func applyBadge(from userInfo: [AnyHashable: Any]) {
+        guard let count = PushBadge.count(from: userInfo) else { return }
+        NSApp.dockTile.badgeLabel = PushBadge.label(for: count)
     }
 
     func application(
