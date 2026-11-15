@@ -57,6 +57,8 @@ xcodebuild test-without-building -project Matron.xcodeproj -scheme Matron \
 
 The same seed adds the "Selection rig" conversation that
 `ChatSelectionUITests` drives (`-only-testing:MatronUITests/ChatSelectionUITests`).
+`ComposerKeyboardUITests` (selection and caret drags in the composer keep
+the keyboard) uses it too.
 `RIG_APP=<path to Matron.app>` makes `rebuild-rig.sh` install a build from
 another derived-data folder.
 
