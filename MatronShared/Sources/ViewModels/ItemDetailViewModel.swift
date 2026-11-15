@@ -1081,10 +1081,9 @@ public final class ItemDetailViewModel {
         var uploaded: [TrackerAttachment] = []
         do {
             for a in attachments {
-                let url = a.url
-                let data = try await Task.detached(priority: .userInitiated) { try Data(contentsOf: url) }.value
-                let ref = try await api.uploadMedia(data, contentType: a.mimeType)
-                uploaded.append(TrackerAttachment(blobRef: ref, mime: a.mimeType, name: a.filename, size: Int64(data.count)))
+                // Streamed from the staged file: a 100 MB video is never read into memory.
+                let ref = try await api.uploadMedia(fileAt: a.url, contentType: a.mimeType)
+                uploaded.append(TrackerAttachment(blobRef: ref, mime: a.mimeType, name: a.filename, size: Int64(a.sizeBytes)))
             }
         } catch {
             restoreUnsent(attachments, text: pending, note: note, localID: localID)
@@ -1145,12 +1144,12 @@ public final class ItemDetailViewModel {
     /// capped here (the Mac pane's old attach path enforced it); the check
     /// runs at attach time so an oversized file is refused while the user
     /// is still looking at what they picked, not at Send.
-    public nonisolated static let maxAttachmentBytes = 25 * 1024 * 1024
+    public nonisolated static let maxAttachmentBytes = AttachmentLimits.maxBytes
 
     /// The refusal for a file over `maxAttachmentBytes`, shared with the
     /// iOS host's pre-read check so both say the same thing.
     public nonisolated static func oversizeMessage(filename: String) -> String {
-        "\(filename) is larger than 25 MB and wasn't attached."
+        "\(filename) is larger than 100 MB and wasn't attached."
     }
 
     // MARK: Staged attachments

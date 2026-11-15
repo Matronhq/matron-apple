@@ -1,4 +1,5 @@
 import Foundation
+import MatronModels
 import UniformTypeIdentifiers
 
 /// A file handed to the share sheet, copied somewhere this process owns.
@@ -57,7 +58,7 @@ public enum ShareLoadError: LocalizedError, Equatable {
 /// bytes go from the provider's file to ours without passing through memory.
 public enum ShareItemLoader {
     /// The server's upload limit.
-    public static let maxBytes = 50 * 1024 * 1024
+    public static let maxBytes = AttachmentLimits.maxBytes
 
     enum Kind: Equatable {
         /// A file, carried under this type identifier.
