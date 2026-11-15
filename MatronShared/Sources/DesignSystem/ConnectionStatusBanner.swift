@@ -103,7 +103,7 @@ public struct ConnectionStatusBanner: View {
 
 /// Local mirror of the connection-state enum the View consumes. Defined
 /// in `MatronDesignSystem` so the banner doesn't have to import
-/// `MatronSync` (the design-system target deliberately stays free of
+/// the sync layer (the design-system target deliberately stays free of
 /// service-layer dependencies). Hosts in `Matron` / `MatronMac`
 /// translate from `SyncConnectionState` to this local type at the
 /// boundary — mapping is identity-shaped, so the cost is one switch.

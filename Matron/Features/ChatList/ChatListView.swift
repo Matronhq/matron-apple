@@ -5,7 +5,6 @@ import MatronDesignSystem
 import MatronJournal
 import MatronModels
 import MatronSearch
-import MatronSync
 import MatronViewModels
 
 /// iOS chat-list screen. Phase 2 wires `NavigationLink(value:)` rows that
@@ -75,7 +74,7 @@ struct ChatListView: View {
     /// without the full nav stack still construct the view.
     var onOpenChat: ((String) -> Void)? = nil
     /// Latest user-facing connection state, fed by the host's
-    /// `SyncService.stateStream()`. `.running` hides the indicator;
+    /// `JournalSyncEngine.stateStream()`. `.running` hides the indicator;
     /// `.connecting` / `.offline` render the inline nav-bar
     /// `connectionStatusLabel` — no async glue inside the View, just a
     /// `@State` mirror of the upstream stream.
@@ -288,8 +287,8 @@ struct ChatListView: View {
         // `MatronApp` (one .task per long-lived async loop).
         .task(id: session?.userID) {
             guard let deps, let session else { return }
-            let sync = deps.syncService(for: session)
-            for await state in await sync.stateStream() {
+            let sync = deps.syncEngine(for: session)
+            for await state in sync.stateStream() {
                 connectionState = .from(state)
                 // Catch-up counts: the socket IS established there, so a
                 // drop mid-replay should come back as "Reconnecting…".
@@ -435,6 +434,9 @@ struct ChatListView: View {
                             // A left drag here archives; it must not also
                             // switch tabs.
                             .ownsTrailingRowSwipe()
+                            // Outermost, after the swipe actions, or the
+                            // row keeps the system's cell colour.
+                            .listRowBackground(Color.matronPlainRow)
                         }
                     }
                 }
@@ -593,6 +595,7 @@ struct ChatListView: View {
                 }
             }
             .accessibilityIdentifier("chatList.archived")
+            .listRowBackground(Color.matronPlainRow)
         }
     }
 
@@ -663,10 +666,12 @@ extension ChatListView {
             Section("Pinned") {
                 ForEach(pins) { pin in
                     pinnedRow(pin, store: pinsStore)
+                        .listRowBackground(Color.matronPlainRow)
                     if let hint = pinsStore.successorHint(for: pin), let successor = pin.successor {
                         PinSuccessorHintRow(text: hint,
                                             onMove: { runPinAction { await $0.move(pin.convoID, to: successor.convoID) } },
                                             onDismiss: { runPinAction { await $0.dismissSuccessor(of: pin.convoID) } })
+                        .listRowBackground(Color.matronPlainRow)
                     }
                 }
             }
@@ -873,84 +878,6 @@ private struct NewChatPlaceholder: View {
             Button("Dismiss", action: onDismiss)
         }
         .padding(40)
-    }
-}
-
-/// Bounded per-room cache of (ChatViewModel, ComposerViewModel) pairs —
-/// see the `vmCache` doc comment on `ChatListView`. LRU so a session that
-/// visits many rooms doesn't pin every timeline's items forever. Mirrors
-/// the Mac's `ChatVMCache` (MacChatListView.swift).
-@MainActor
-final class ChatVMCache {
-    private var entries: [String: (chat: ChatViewModel, composer: ComposerViewModel)] = [:]
-    private var order: [String] = []
-    private let limit = 8
-    /// Running-subagent strip view models, keyed by PARENT convo id. Shared
-    /// between a parent chat's strip and its children's switchers, so all
-    /// surfaces observing the same parent's children stay in lockstep off
-    /// one subscription. Not LRU-bounded — one lightweight VM per parent
-    /// visited, which tracks the (small) `entries` working set.
-    private var stripEntries: [String: SubChatStripViewModel] = [:]
-
-    func viewModels(
-        for roomID: String, deps: AppDependencies, session: UserSession
-    ) -> (ChatViewModel, ComposerViewModel) {
-        if let cached = entries[roomID] {
-            order.removeAll { $0 == roomID }
-            order.append(roomID)
-            return cached
-        }
-        let timelineSvc = deps.timelineService(for: session, roomID: roomID)
-        let mediaSvc = deps.mediaService(for: session)
-        // The composer reads the chat half's session status for the palette's
-        // session-derived suggestions (`/model`, `/effort`). Weakly: this
-        // cache owns both, and the closure must not keep the chat VM alive
-        // past an eviction.
-        let chat = ChatViewModel(roomID: roomID, timeline: timelineSvc, media: mediaSvc,
-                                 agentChat: deps.agentChatService(for: session),
-                                 agentSpawn: deps.agentSpawnService(for: session),
-                                 sessionStopper: deps.sessionStopper(for: session),
-                                 grantAnswering: deps.grantAnsweringService(for: session),
-                                 search: deps.searchService(for: session))
-        chat.seen = deps.seenTracker(for: session)
-        let pair = (
-            chat: chat,
-            composer: ComposerViewModel(roomID: roomID, timeline: timelineSvc,
-                                        commands: BotCommandCatalog.claudeBridge,
-                                        sessionStatus: { [weak chat] in chat?.sessionStatus })
-        )
-        entries[roomID] = pair
-        order.append(roomID)
-        if order.count > limit, let evicted = order.first {
-            order.removeFirst()
-            entries[evicted]?.chat.stop()
-            entries.removeValue(forKey: evicted)
-        }
-        return pair
-    }
-
-    /// The running-subagent strip VM for a parent conversation. Shared, so
-    /// the parent chat's strip and every child's switcher read one stream.
-    func stripViewModel(
-        forParent parentConvoID: String, deps: AppDependencies, session: UserSession
-    ) -> SubChatStripViewModel {
-        if let cached = stripEntries[parentConvoID] { return cached }
-        let vm = SubChatStripViewModel(chat: deps.chatService(for: session), parentConvoID: parentConvoID)
-        stripEntries[parentConvoID] = vm
-        return vm
-    }
-
-    /// The (read-only timeline VM, switcher strip VM) pair for a subagent
-    /// child. The timeline VM is keyed by the child id (reusing the pair
-    /// cache; its composer is unused — the viewer has no composer), and the
-    /// switcher strip is the SHARED VM for the child's parent so it lists
-    /// siblings.
-    func subChatViewModels(
-        for childID: String, parentConvoID: String, deps: AppDependencies, session: UserSession
-    ) -> (ChatViewModel, SubChatStripViewModel) {
-        let chat = viewModels(for: childID, deps: deps, session: session).0
-        let strip = stripViewModel(forParent: parentConvoID, deps: deps, session: session)
-        return (chat, strip)
     }
 }
 

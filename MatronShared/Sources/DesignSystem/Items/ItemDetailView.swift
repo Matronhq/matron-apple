@@ -645,6 +645,12 @@ public struct ItemDetailView: View {
         placed && scrollable && !atBottom
     }
 
+    /// Whether the jump-to-top button is offered: the same rule as
+    /// `showsJumpToBottom`, for the other end of the thread.
+    public static func showsJumpToTop(placed: Bool, scrollable: Bool, atTop: Bool) -> Bool {
+        placed && scrollable && !atTop
+    }
+
     /// The one-time placement decision for an item (Bugbot, PR #198): it
     /// is made whether or not we scroll — staying at the top still arms
     /// follow-tail — and a bottom placement also marks the reader as AT
@@ -1549,27 +1555,15 @@ private extension View {
     }
 
     /// Reports whether a `ScrollView`'s bottom is currently visible, via
-    /// `onScrollGeometryChange` (iOS 18 / macOS 15 — same wave as
-    /// `onUserScrollGesture`'s `onScrollPhaseChange`, see that file). The
-    /// app's real deployment target is 18/15 (`project.yml`), but
-    /// `MatronShared`'s own declared package platforms are more
-    /// conservative (iOS 17 / macOS 14), so this still needs the
-    /// availability guard to typecheck; the `else` branch is a no-op
-    /// (`ItemDetailView.onBottomVisibilityChange` just never fires,
-    /// falling back to the existing "always opens at the top" behaviour).
-    @ViewBuilder
+    /// `onScrollGeometryChange`.
     func onItemThreadGeometryChange(action: @escaping (ItemThreadGeometry) -> Void) -> some View {
-        if #available(iOS 18.0, macOS 15.0, *) {
-            self.onScrollGeometryChange(for: ItemThreadGeometry.self) { geometry in
-                ItemThreadGeometry(
-                    atBottom: geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 8,
-                    scrollable: geometry.contentSize.height > geometry.containerSize.height + 8
-                )
-            } action: { _, geometry in
-                action(geometry)
-            }
-        } else {
-            self
+        onScrollGeometryChange(for: ItemThreadGeometry.self) { geometry in
+            ItemThreadGeometry(
+                atBottom: geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 8,
+                scrollable: geometry.contentSize.height > geometry.containerSize.height + 8
+            )
+        } action: { _, geometry in
+            action(geometry)
         }
     }
 }

@@ -59,6 +59,18 @@ final class JournalStoreWriterKindTests: XCTestCase {
         XCTAssertEqual(JournalStore.poolFlagKey, "store.pool")
     }
 
+    func testTheChangeFeedIsOnUnlessTurnedOff() throws {
+        let suite = "changeFeedFlag-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertEqual(JournalStore.changeFeedFlagKey, "store.changeFeed")
+        XCTAssertTrue(JournalStore.changeFeedEnabled(in: defaults), "unset reads as on")
+        defaults.set(false, forKey: JournalStore.changeFeedFlagKey)
+        XCTAssertFalse(JournalStore.changeFeedEnabled(in: defaults))
+        defaults.set(true, forKey: JournalStore.changeFeedFlagKey)
+        XCTAssertTrue(JournalStore.changeFeedEnabled(in: defaults))
+    }
+
     func testAFileBackedQueueStillOpensInWAL() throws {
         // A queue does not turn WAL on by itself; `prepareDatabase` does.
         let store = try makeTestStore(.queue)

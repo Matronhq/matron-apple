@@ -4,14 +4,13 @@ import PackageDescription
 let package = Package(
     name: "MatronShared",
     platforms: [
-        .iOS(.v17),
-        .macOS(.v14),
+        .iOS("18.0"),
+        .macOS("15.0"),
     ],
     products: [
         .library(name: "MatronAuth", targets: ["MatronAuth"]),
         .library(name: "MatronChat", targets: ["MatronChat"]),
         .library(name: "MatronStorage", targets: ["MatronStorage"]),
-        .library(name: "MatronSync", targets: ["MatronSync"]),
         .library(name: "MatronModels", targets: ["MatronModels"]),
         .library(name: "MatronViewModels", targets: ["MatronViewModels"]),
         .library(name: "MatronDesignSystem", targets: ["MatronDesignSystem"]),
@@ -43,18 +42,6 @@ let package = Package(
                 "MatronJournal",
             ],
             path: "Sources/Auth"
-        ),
-        .target(
-            name: "MatronSync",
-            dependencies: [
-                "MatronModels",
-                // Journal Task 10: JournalSyncConformance.swift bridges
-                // JournalSyncEngine into the SyncService protocol.
-                // MatronJournal never imports MatronSync back, so this
-                // doesn't create a cycle.
-                "MatronJournal",
-            ],
-            path: "Sources/Sync"
         ),
         .target(
             name: "MatronChat",
@@ -114,8 +101,7 @@ let package = Package(
                 // for service-layer → design-system enum mappings:
                 // `SyncBannerState.from(_:)` and `SendStateGlyph.from(_:)`
                 // both consume enums that live in `MatronModels`
-                // (`SyncConnectionState` moved here from `MatronSync` in
-                // the journal swap; `TimelineSendState` was always here).
+                // (`SyncConnectionState` and `TimelineSendState`).
                 // A leaf module with no SwiftUI surface, so the bridges
                 // live next to the target enums without creating a cycle.
                 "MatronModels",
@@ -131,9 +117,8 @@ let package = Package(
             ],
             path: "Sources/DesignSystem"
         ),
-        // Phase 4 Task 1: Push protocol surface. Journal Task 10 replaced
-        // the SDK-bridging live impl with `JournalPushService`, which
-        // registers device tokens via JournalAPI.registerPush/unregisterPush.
+        // Push: `JournalPushService` registers device tokens via
+        // JournalAPI.registerPush/unregisterPush.
         // Mac and iOS NSE both link this.
         .target(
             name: "MatronPush",

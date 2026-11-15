@@ -43,7 +43,9 @@ extension JournalStore {
     /// Delivers the first tail once read, empty or not, then again only
     /// when it changes. Reads run on a reader of a pool (beside the
     /// writer) and through the queue otherwise, never on the writer inside
-    /// a commit. Timed as `eventTail` in `metrics`.
+    /// a commit, and on `FeedReads`' dispatch queue, so one waiting behind
+    /// a long write never holds a cooperative-pool thread. Timed as
+    /// `eventTail` in `metrics`.
     public func eventTailStream(convoID: String, sinceSeq: Int64) -> AsyncStream<EventTail> {
         // The feed's snapshot is only the registration point: the tail is
         // read afterwards, off the writer.
@@ -64,7 +66,13 @@ extension JournalStore {
                 for await _ in wakes {
                     let work = pending.take()
                     do {
-                        let update = try tail.apply(work, db: db, metrics: metrics)
+                        let current = tail
+                        let (next, update) = try await FeedReads.run {
+                            var next = current
+                            let update = try next.apply(work, db: db, metrics: metrics)
+                            return (next, update)
+                        }
+                        tail = next
                         pending.finish(holding: tail.heldSeqs)
                         if let update { continuation.yield(update) }
                     } catch {
@@ -162,7 +170,7 @@ final class EventTailPending: @unchecked Sendable {
 
 /// The rows an event tail holds, and the fetches that keep them current.
 /// Reader-confined.
-struct EventTailState {
+struct EventTailState: Sendable {
     let convoID: String
     let sinceSeq: Int64
     /// Ascending by seq.

@@ -518,4 +518,67 @@ final class TimelineAPITests: XCTestCase {
         XCTAssertEqual(items.first { $0.name == "before" }?.value, "2026-10-26")
         XCTAssertEqual(items.first { $0.name == "limit" }?.value, "8")
     }
+
+    // MARK: a week's other projects
+
+    func testWeekProjectsDecodeRowsAndTheNextOffset() throws {
+        let page = try JournalAPI.decodeTimelineWeekProjects([
+            "week": "2026-11-02", "total": 30, "offset": 0, "next_offset": 24,
+            "projects": [
+                ["project": project(), "moved": 5, "sentence": "Roof went on.",
+                 "media": ["blob_id": "b1", "content_type": "image/jpeg", "name": "roof.jpg"],
+                 "marks": ["for_you": 1, "done": 2, "next": true]],
+                ["project": project("pj_b", num: 8, title: "Bike"), "moved": 1, "sentence": NSNull(), "media": NSNull(),
+                 "marks": ["for_you": 0, "done": 0, "next": false]],
+            ],
+        ])
+        XCTAssertEqual(page.week, "2026-11-02")
+        XCTAssertEqual(page.total, 30)
+        XCTAssertEqual(page.offset, 0)
+        XCTAssertEqual(page.nextOffset, 24)
+        XCTAssertEqual(page.projects.map(\.project.id), ["pj_a", "pj_b"])
+        XCTAssertEqual(page.projects[0].moved, 5)
+        XCTAssertEqual(page.projects[0].sentence, "Roof went on.")
+        XCTAssertEqual(page.projects[0].media, TimelineMedia(blobID: "b1", contentType: "image/jpeg", name: "roof.jpg"))
+        XCTAssertEqual(page.projects[0].marks, TimelineMarks(forYou: 1, done: 2, next: true))
+        XCTAssertNil(page.projects[1].sentence)
+        XCTAssertNil(page.projects[1].media)
+        XCTAssertTrue(page.projects[1].marks.isEmpty)
+        // As a card: the name, the sentence, the media and the marks.
+        XCTAssertEqual(page.projects[0].story.project.title, "Garden shed")
+        XCTAssertEqual(page.projects[0].story.marks, page.projects[0].marks)
+    }
+
+    func testWeekProjectsLastPageHasNoNextOffsetAndBadRowsAreDropped() throws {
+        let page = try JournalAPI.decodeTimelineWeekProjects([
+            "week": "2026-11-02", "total": 2, "offset": 24, "next_offset": NSNull(),
+            "projects": [["moved": 1], ["project": project(), "moved": 2]],
+        ])
+        XCTAssertNil(page.nextOffset)
+        XCTAssertEqual(page.projects.map(\.project.id), ["pj_a"])
+        XCTAssertTrue(page.projects[0].marks.isEmpty, "missing marks are none")
+    }
+
+    func testAMalformedWeekProjectsResponseIsATransportError() {
+        XCTAssertThrowsError(try JournalAPI.decodeTimelineWeekProjects(["week": "2026-11-02"])) { error in
+            guard case JournalAPIError.transport = error else { return XCTFail("got \(error)") }
+        }
+    }
+
+    func testTimelineWeekProjectsSendsTheOffsetAndLimit() async throws {
+        let (api, recorder) = makeStubbedAPI(body: ["week": "2026-11-02", "total": 0, "offset": 24,
+                                                     "next_offset": NSNull(), "projects": []])
+        _ = try await api.timelineWeekProjects("2026-11-02", offset: 24, limit: 24)
+        let url = try XCTUnwrap(recorder.lastRequest?.url)
+        XCTAssertEqual(url.path, "/timeline/weeks/2026-11-02/projects")
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        XCTAssertEqual(items.first { $0.name == "offset" }?.value, "24")
+        XCTAssertEqual(items.first { $0.name == "limit" }?.value, "24")
+    }
+
+    func testTimelineWeekProjects404IsNotFound() async {
+        let (api, _) = makeStubbedAPI(status: 404, body: ["error": "not_found"])
+        do { _ = try await api.timelineWeekProjects("2026-11-02", offset: 0, limit: 24); XCTFail("expected a throw") }
+        catch { XCTAssertEqual(error as? JournalAPIError, .notFound) }
+    }
 }

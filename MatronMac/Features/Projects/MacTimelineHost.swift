@@ -227,6 +227,8 @@ struct MacTimelinePlaceView: View {
                           onAsk: { stalled in Task { await viewModel.ask(about: stalled) } },
                           onLoadMoreFinished: { Task { await viewModel.loadMoreFinished() } },
                           onLoadMoreProjects: { Task { await viewModel.loadMoreProjects() } },
+                          weekExtras: viewModel.weekExtras(for: place),
+                          onLoadMoreWeekProjects: { Task { await viewModel.loadMoreWeekProjects() } },
                           onRetry: { Task { await onRefresh() } })
             .task(id: viewModel.imageBlobIDs(for: place)) {
                 guard let deps else { return }

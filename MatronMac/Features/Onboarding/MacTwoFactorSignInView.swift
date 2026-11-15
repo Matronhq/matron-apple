@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 import MatronAuth
 import MatronJournal
@@ -148,4 +147,3 @@ struct MacTwoFactorSignInView: View {
         .accessibilityIdentifier("signin.2fa.saved")
     }
 }
-#endif

@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 import MatronModels
 import MatronViewModels
@@ -24,4 +23,3 @@ struct MacCoordinatorSettingsPane: View {
         .frame(width: MacSettingsLayout.paneWidth, height: 780)
     }
 }
-#endif

@@ -42,11 +42,9 @@ private struct ShellToolbarHarness: View {
                 .navigationSplitViewColumnWidth(min: 472, ideal: 472, max: 472)
                 .toolbar {
                     MacHistoryToolbarItems(history: history, goBack: {}, goForward: {})
-                    #if compiler(>=6.2)
                     if #available(macOS 26.0, *) {
                         ToolbarSpacer(.flexible, placement: .primaryAction)
                     }
-                    #endif
                     ToolbarItem(placement: .primaryAction) { Button("New") {} }
                 }
         } detail: {

@@ -5,14 +5,13 @@ import MatronModels
 import MatronViewModels
 
 /// Builds the `ImageGallery` the fullscreen viewer steps through, for the
-/// two places an image can be opened from. Mirrors
-/// `Matron/Features/Chat/ImageGalleries.swift` token-for-token — the two
-/// app targets have separate `AppDependencies` types, so this cannot live
-/// in a shared package.
+/// two places an image can be opened from. Compiled into both apps (each
+/// has its own `AppDependencies` type, so this cannot live in a shared
+/// package).
 enum ImageGalleries {
     /// Gallery for a chat-timeline tap: every image in the conversation,
-    /// oldest → newest (so → means "newer", matching the direction the
-    /// timeline reads), starting at the tapped one.
+    /// oldest → newest (so → / swipe-left means "newer", matching the
+    /// direction the timeline reads), starting at the tapped one.
     ///
     /// The list comes straight from the journal store via the same
     /// mapping the media browser uses, so it covers the whole

@@ -82,7 +82,8 @@ final class JournalServerHarness {
     /// `node src/server.js` on a free port, and polls `GET /snapshot`
     /// (expects 401) until ready.
     static func start(
-        users: [UserSpec] = [], agents: [AgentSpec] = []
+        users: [UserSpec] = [], agents: [AgentSpec] = [], publicURL: Bool = false,
+        panic: (token: String, account: String)? = nil
     ) async throws -> JournalServerHarness {
         let serverPath = try requireServerRepo()
         let nodePath = try resolveNodePath()
@@ -113,7 +114,21 @@ final class JournalServerHarness {
             }
 
             let port = try findFreePort()
-            let (process, diagnostics) = try bootServer(nodePath: nodePath, serverPath: serverPath, dbPath: dbPath, port: port)
+            // `publicURL`: the journal is told its own address, which is
+            // what switches approval keys on (statements name its host).
+            // A throwaway token key comes with it: two-factor sign-in
+            // needs one, and a key is enrolled with a two-factor code.
+            var extra = publicURL
+                ? ["MATRON_PUBLIC_URL": "http://127.0.0.1:\(port)",
+                   "MATRON_TOKEN_KEY": (0..<32).map { _ in String(format: "%02x", UInt8.random(in: 0...255)) }.joined()]
+                : [:]
+            // `panic`: the token a watcher locks the account with.
+            if let panic {
+                extra["MATRON_PANIC_TOKEN"] = panic.token
+                extra["MATRON_PANIC_ACCOUNT"] = panic.account
+            }
+            let (process, diagnostics) = try bootServer(nodePath: nodePath, serverPath: serverPath, dbPath: dbPath, port: port,
+                                                        environment: extra)
             bootedProcess = process
             let baseURL = URL(string: "http://127.0.0.1:\(port)")!
 
@@ -155,6 +170,49 @@ final class JournalServerHarness {
         let token = try Self.parseAgentToken(output, agentName: name)
         agentTokens[name] = token
         return token
+    }
+
+    /// Runs `matron-admin` against the running server's database.
+    @discardableResult
+    /// Runs one SQL statement on the server's database, with the system's
+    /// `sqlite3` (WAL mode: safe beside the running server). For setting up
+    /// what a test cannot wait for, such as a key enrolled a day ago.
+    func sql(_ statement: String) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        process.arguments = [dbPath, statement]
+        try process.run()
+        process.waitUntilExit()
+        if process.terminationStatus != 0 { throw HarnessError.adminCLIFailed(arguments: ["sqlite3", statement], output: "") }
+    }
+
+    func admin(_ arguments: [String]) throws -> String {
+        try Self.runAdminCLI(nodePath: nodePath, serverPath: serverPath, dbPath: dbPath, arguments: arguments)
+    }
+
+    /// Runs the journal's reference verifier (`tools/approval-verify.mjs`)
+    /// on an approval, against `keys` pinned in a file, as a box would.
+    /// Returns its exit status and what it printed.
+    func verifyApproval(_ approval: [String: String], keys: [[String: String]], expect: [String: Any],
+                        maxAgeMS: Int = 300_000) throws -> (status: Int32, output: String) {
+        let keysFile = tempDir.appendingPathComponent("pinned-keys-\(UUID().uuidString).json")
+        try JSONSerialization.data(withJSONObject: ["keys": keys]).write(to: keysFile)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: nodePath)
+        process.arguments = ["tools/approval-verify.mjs", "--keys", keysFile.path,
+                             "--expect", String(decoding: try JSONSerialization.data(withJSONObject: expect), as: UTF8.self),
+                             "--max-age-ms", String(maxAgeMS)]
+        process.currentDirectoryURL = URL(fileURLWithPath: serverPath)
+        let input = Pipe(), output = Pipe()
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = output
+        try process.run()
+        input.fileHandleForWriting.write(try JSONSerialization.data(withJSONObject: approval))
+        try input.fileHandleForWriting.close()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return (process.terminationStatus, String(decoding: data, as: UTF8.self))
     }
 
     /// Terminates the server subprocess and deletes the temp DB directory.
@@ -374,7 +432,7 @@ final class JournalServerHarness {
     /// same guarantee — this needs no shared/discoverable state across
     /// runs, just a watchdog for whichever run is problematic.)
     private static func bootServer(
-        nodePath: String, serverPath: String, dbPath: String, port: UInt16
+        nodePath: String, serverPath: String, dbPath: String, port: UInt16, environment: [String: String] = [:]
     ) throws -> (Process, DiagnosticsBuffer) {
         let watchdogScript = """
         trap 'kill "$SERVER" 2>/dev/null; wait "$SERVER" 2>/dev/null; exit 0' TERM INT
@@ -394,6 +452,7 @@ final class JournalServerHarness {
         env["MATRON_DB"] = dbPath
         env["MATRON_PORT"] = String(port)
         env["MATRON_BIND"] = "127.0.0.1"
+        for (key, value) in environment { env[key] = value }
         process.environment = env
 
         let diagnostics = DiagnosticsBuffer()

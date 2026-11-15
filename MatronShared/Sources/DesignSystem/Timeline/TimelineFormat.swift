@@ -95,6 +95,31 @@ public enum TimelineFormat {
         count > 0 ? "Also moved: \(count) project\(count == 1 ? "" : "s")" : nil
     }
 
+    /// The week page's projects past its stories, when the journal pages
+    /// them: every story is a card (the journal sends none of those again).
+    public static func cards(_ week: TimelineWeek, extras: TimelineWeekExtras?) -> [TimelineStory] {
+        guard let extras, extras.status != .unsupported else { return cards(week) }
+        return week.stories + extras.projects.map(\.story)
+    }
+
+    /// The layout switch's accessibility label.
+    public static let layoutSwitchLabel = "Show projects as"
+    /// The row at the end of the page while the next projects load.
+    public static let loadingMoreProjects = "Loading more projects"
+    /// The row at the end of the page when they could not load.
+    public static let moreProjectsFailed = "Couldn't load the other projects."
+    public static let retry = "Retry"
+
+    /// What VoiceOver says for a list row: the name, the sentence, the marks.
+    public static func rowLabel(_ story: TimelineStory) -> String {
+        let sentence = String(MissionsDashboardFormat.statusPreviewText(sentence(story)).characters)
+        return ([story.project.title, sentence] + [marksLabel(story.marks)].compactMap { $0 })
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .map { $0.hasSuffix(".") ? String($0.dropLast()) : $0 }
+            .joined(separator: ". ")
+    }
+
     // MARK: Stories
 
     public static func sentence(_ story: TimelineStory) -> String {

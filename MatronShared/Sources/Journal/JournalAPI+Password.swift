@@ -44,11 +44,13 @@ extension JournalAPI: PasswordChanging {
     /// signed in either way.
     public func changePassword(oldPassword: String, newPassword: String,
                                signOutOthers: Bool) async throws -> PasswordChangeResult {
-        let body: [String: Any] = [
+        // The current password is still asked for; the signature is added
+        // to it, not swapped for it.
+        let body = try await approved([
             "old_password": oldPassword,
             "new_password": newPassword,
             "sign_out_others": signOutOthers,
-        ]
+        ], ApprovalRequest(kind: .account, subject: ApprovalSubjects.changePassword(), headline: "Change password"))
         let (data, response) = try await rawRequest(path: "/password", method: "POST", body: body)
         let status = response.statusCode
         guard status == 200 else {

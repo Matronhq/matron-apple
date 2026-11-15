@@ -25,7 +25,7 @@ Both apps are on the [App Store](https://apps.apple.com/app/matron/id6791565930)
 ## Requirements
 
 - macOS 15+ (the Mac app's deployment floor; also the build host)
-- Xcode 16+
+- Xcode 26+
 - iOS 18+ iPhone or simulator (iPad is not a supported device family in v1)
 - A matron-journal server you run yourself — see
   [matron-journal](https://github.com/Matronhq/matron-journal), or a local

@@ -13,7 +13,7 @@ struct MatronMacApp: App {
     /// installs the shared `MacNotificationHandler` as the
     /// `UNUserNotificationCenter` delegate so taps surface from launch.
     /// Task 12 wires the delegate's `registerDeviceToken` callback
-    /// directly to the journal `PushService` — see the push `.task`
+    /// directly to `JournalPushService` — see the push `.task`
     /// below and iOS `MatronApp` for the parallel wiring.
     @NSApplicationDelegateAdaptor(MatronMacAppDelegate.self) private var appDelegate
     /// Global voice-note hotkey (Settings → Device → Voice note key): the
@@ -112,13 +112,14 @@ struct MatronMacApp: App {
                         viewModel: ChatListViewModel(chat: dependencies.chatService(for: session), gate: .shared),
                         onSignOut: { signOut(activeSession: session) }
                     )
+                    .accountLocked(dependencies, session: session, onSignOut: { signOut(activeSession: session) })
                     // Answers the window's size probes itself, so they do
                     // not measure the whole split view (WindowRootFrame).
                     .windowRootFrame(minSize: CGSize(width: 800, height: 600),
                                      idealSize: CGSize(width: 1280, height: 860))
                     .environment(\.appDependencies, dependencies)
                     .environment(\.currentSession, session)
-                    .task { try? await dependencies.syncService(for: session).start() }
+                    .task { await dependencies.syncEngine(for: session).beginSync() }
                     // Push pipeline: request permission, register for
                     // remote notifications, and wire the delegate's
                     // device-token callback straight to the journal
@@ -139,7 +140,7 @@ struct MatronMacApp: App {
                     // while inactive. `NSApplication.didBecomeActiveNotification`
                     // is the Mac equivalent of iOS's `scenePhase == .active`.
                     .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-                        Task { await (dependencies.syncService(for: session) as? JournalSyncEngine)?.nudge() }
+                        Task { await dependencies.syncEngine(for: session).nudge() }
                         Task(priority: .utility) {
                             await dependencies.journalMaintenance(for: session).runIfDue()
                         }
@@ -221,7 +222,9 @@ struct MatronMacApp: App {
                     let linkViewModel = LinkSignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron Mac")
                     MacSignInView(
                         viewModel: revokedSession.map {
-                            SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron Mac", signedOutRemotely: $0)
+                            SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron Mac", signedOutRemotely: $0,
+                                            accountLocked: dependencies.accountLock.isLocked,
+                                            unlockAnswerLost: AppDependencies.pendingUnlock(for: $0).isPending)
                         } ?? SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron Mac"),
                         linkViewModel: linkViewModel,
                         rendezvousViewModel: RendezvousSignInViewModel(relay: RelayClient(), link: linkViewModel),
@@ -240,6 +243,8 @@ struct MatronMacApp: App {
                                 await dependencies.awaitPendingTeardown()
                                 await dependencies.wipeLocalDataForFreshLogin()
                                 self.revokedSession = nil
+                                dependencies.accountLock.cleared()
+                                AppDependencies.pendingUnlock(for: session).clear()
                                 self.session = session
                             }
                         }

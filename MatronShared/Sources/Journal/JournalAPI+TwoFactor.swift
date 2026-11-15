@@ -250,25 +250,29 @@ extension JournalAPI: TwoFactorSettingsProviding {
     public func beginTwoFactorSetup(password: String, code: String?) async throws -> TwoFactorSetup {
         var body: [String: Any] = ["password": password]
         if let code { body["code"] = code }
-        let obj = try await twoFactorSettingsRequest(path: "/2fa/setup", body: body)
+        let obj = try await twoFactorSettingsRequest(path: "/2fa/setup", body: body, action: .setup,
+                                                     headline: "Set up two-factor authentication")
         return try Self.setup(from: obj)
     }
 
     public func enableTwoFactor(code: String, signOutOthers: Bool) async throws -> TwoFactorEnableResult {
         let obj = try await twoFactorSettingsRequest(path: "/2fa/enable",
-                                                     body: ["code": code, "sign_out_others": signOutOthers])
+                                                     body: ["code": code, "sign_out_others": signOutOthers],
+                                                     action: .enable, headline: "Turn on two-factor authentication")
         return TwoFactorEnableResult(recoveryCodes: try Self.recoveryCodes(from: obj),
                                      signedOut: (obj["signed_out"] as? NSNumber)?.intValue ?? 0)
     }
 
     public func newTwoFactorRecoveryCodes(password: String, code: String) async throws -> [String] {
         let obj = try await twoFactorSettingsRequest(path: "/2fa/recovery-codes",
-                                                     body: ["password": password, "code": code])
+                                                     body: ["password": password, "code": code],
+                                                     action: .recoveryCodes, headline: "Make new recovery codes")
         return try Self.recoveryCodes(from: obj)
     }
 
     public func disableTwoFactor(password: String, code: String) async throws {
-        _ = try await twoFactorSettingsRequest(path: "/2fa/disable", body: ["password": password, "code": code])
+        _ = try await twoFactorSettingsRequest(path: "/2fa/disable", body: ["password": password, "code": code],
+                                               action: .disable, headline: "Turn off two-factor authentication")
     }
 
     /// The codes are shown only once, so a reply without them is an error,
@@ -291,7 +295,12 @@ extension JournalAPI: TwoFactorSettingsProviding {
 
     /// An authenticated POST to one of the `/2fa` settings routes, mapping
     /// their own error codes before the generic ones.
-    private func twoFactorSettingsRequest(path: String, body: [String: Any]) async throws -> [String: Any] {
+    /// Each of the four is an account action: signed once the account has
+    /// an approval key.
+    private func twoFactorSettingsRequest(path: String, body: [String: Any], action: ApprovalSubjects.TwoFactorAction,
+                                          headline: String) async throws -> [String: Any] {
+        let body = try await approved(body, ApprovalRequest(
+            kind: .account, subject: ApprovalSubjects.twoFactor(action), headline: headline))
         let (data, response) = try await rawRequest(path: path, method: "POST", body: body)
         let status = response.statusCode
         guard status == 200 else {

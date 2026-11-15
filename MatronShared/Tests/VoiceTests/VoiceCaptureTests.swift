@@ -164,7 +164,6 @@ final class VoiceCaptureTests: XCTestCase {
     /// A hands-free Bluetooth microphone runs at 16 kHz, where the encoder
     /// refuses the 64 kbit/s a voice note is written at elsewhere: the
     /// recording must still open and hold what was said.
-    @available(macOS 15, *)
     func testAnUtteranceIsRecordedAtAHandsFreeMicrophonesRate() throws {
         let core = CaptureCore()
         core.begin(record: true, format: Self.format)
@@ -180,7 +179,6 @@ final class VoiceCaptureTests: XCTestCase {
 
     /// Monitoring writes nothing; when it becomes a recording the file
     /// starts with the half second already heard.
-    @available(macOS 15, *)
     func testPromotingAMonitorStartsTheFileWithThePreRoll() throws {
         let core = CaptureCore()
         core.begin(record: false, format: Self.format)

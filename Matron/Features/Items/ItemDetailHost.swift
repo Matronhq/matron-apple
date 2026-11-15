@@ -88,12 +88,7 @@ struct ItemDetailHost: View {
     /// alert (the old fallback replaced the whole
     /// stack with a list).
     @MainActor private func openTrackerItem(num: Int) async -> TrackerItemLinkOutcome {
-        guard let deps else { return .ignore }
-        let outcome = await deps.trackerItemLinkOutcome(num: num, session: session)
-        // A link to the item already on screen is a no-op rather than a
-        // second identical push.
-        if case .open(let id) = outcome, id == itemID { return .ignore }
-        return outcome
+        await ItemDetailHostHelpers.trackerItemLinkOutcome(num: num, shownItemID: itemID, deps: deps, session: session)
     }
 
     /// In-app conversation opener for a `matron://convo/<id>` chip.
@@ -107,24 +102,16 @@ struct ItemDetailHost: View {
     /// message bodies so an item link works here too — and so no `matron://`
     /// URL is ever handed to the OS, which has no handler for the scheme.
     private func openLink(_ url: URL) {
-        switch MatronItemLink.action(for: url, numbers: trackerNumberLinks?.origin) {
-        // Through the relay, not straight to `openTrackerItem`: a chip tap
-        // is a tap like any other and must share the body's staleness gate
-        // — resolving it on the side would let a
-        // chip and a body link race each other.
-        case .openTrackerItem(let number): itemLinkRelay.action(number)
-        case .openConsent(let consent): openConsent(consent)
-        // Through the window/shell's conversation-link host, like a body
-        // link: it checks the conversation is known before navigating.
-        case .openConversation(let convoID): openConversationLink?(convoID)
-        case .openPage(let link): openPageLink?(link)
-        case .openTrackerNumber(let number):
-            trackerNumberLinks?.open(number, url: url, openItem: itemLinkRelay.action, openPage: openPageLink,
-                                     openWeb: TrackerNumberLinks.openInBrowser)
-        case .swallow: break
-        case .system(let url): openURL(url)
-        case .blocked(let url): BlockedLinkPrompt.present(url)
-        }
+        // Item links go through the relay, not straight to `openTrackerItem`:
+        // a chip tap is a tap like any other and must share the body's
+        // staleness gate. Conversation links go through the window/shell's
+        // conversation-link host, like a body link: it checks the
+        // conversation is known before navigating.
+        LinkTapRouter(openTrackerItem: itemLinkRelay.action, openConversation: openConversationLink,
+                      openPageLink: openPageLink, openConsent: openConsent,
+                      trackerNumberLinks: trackerNumberLinks,
+                      openExternally: { openURL($0) })
+            .route(url)
     }
 
     /// A consent chip: a spawn ask's card lives in this item's
@@ -133,13 +120,8 @@ struct ItemDetailHost: View {
     /// ask's card lives in the room it is about. A person-to-person ask's
     /// card sits beside its mirror, in the item's origin conversation.
     private func openConsent(_ consent: ConsentLink) {
-        switch consent {
-        case .spawn, .contact, .share, .room, .session, .handover, .invite:
-            guard let convoID = viewModel?.item?.originConvoID else { return }
-            onOpenConversation(convoID)
-        case .chat(let roomID, _):
-            onOpenConversation(roomID)
-        }
+        ItemDetailHostHelpers.openConsent(consent, originConvoID: viewModel?.item?.originConvoID,
+                                          openConversation: onOpenConversation)
     }
 
     private enum AttachmentPreview: Identifiable {
@@ -174,7 +156,7 @@ struct ItemDetailHost: View {
                     model: .init(
                         item: item,
                         comments: vm.threadComments,
-                        pending: vm.pendingComments.map(Self.pending) + Self.sending(vm),
+                        pending: vm.pendingComments.map(Self.pending) + ItemDetailHostHelpers.sending(vm),
                         // The mission and owner conversation.
                         // `currentConvoID` drops a row that would just point
                         // back at the chat underneath the drawer — tapping it
@@ -225,7 +207,7 @@ struct ItemDetailHost: View {
                     },
                     onAction: { label in Task { await vm.chooseAction(label) } },
                     onRemoveAttachment: { vm.removeAttachment(id: $0) },
-                    replyDelivery: Self.replyDelivery(vm),
+                    replyDelivery: ItemDetailHostHelpers.replyDelivery(vm),
                     onCommentAction: { commentID, label in Task { await vm.chooseCommentAction(commentID: commentID, label: label) } },
                     // The shell's mission opener, as a `matron://mission/N`
                     // link in the body would use.
@@ -392,27 +374,6 @@ struct ItemDetailHost: View {
     static func stagePicked(_ urls: [URL], into vm: any AttachmentStaging) async {
         await ComposerView.stageAndAttach(urls, into: vm, maxBytes: ItemDetailViewModel.maxAttachmentBytes,
                                           oversizeMessage: { ItemDetailViewModel.oversizeMessage(filename: $0) })
-    }
-
-    /// The thread's buttons for replies the agent hasn't got yet — Send
-    /// now, Cancel, and Edit and resend — wired to `vm`.
-    static func replyDelivery(_ vm: ItemDetailViewModel) -> ItemDetailView.ReplyDeliveryActions {
-        .init(sendQueuedNow: { id in Task { await vm.sendQueuedReplyNow(commentID: id) } },
-              cancelQueued: { id in Task { await vm.cancelQueuedReply(commentID: id) } },
-              editAndResend: { vm.editAndResend(commentID: $0) },
-              sendPendingNow: { Task { await vm.sendPendingNow() } },
-              cancelPending: { id in Task { await vm.cancelPendingReply(localID: id) } },
-              editQueued: { id in Task { await vm.editQueuedReply(commentID: id) } },
-              cancelQueuedEdit: { Task { await vm.cancelQueuedReplyEdit() } })
-    }
-
-    /// Replies still settling (`sendingReplies`) as "Sending…" rows —
-    /// attempts 0, no error — skipping any whose outbox row already shows.
-    static func sending(_ vm: ItemDetailViewModel) -> [ItemDetailView.PendingComment] {
-        let shown = Set(vm.pendingComments.map(\.localID))
-        return vm.sendingReplies.filter { !shown.contains($0.localID) }.map {
-            .init(id: $0.localID, body: $0.body, attachmentCount: $0.attachmentCount, attempts: 0, lastError: nil)
-        }
     }
 
     private static func pending(_ r: ItemOutboxRecord) -> ItemDetailView.PendingComment {

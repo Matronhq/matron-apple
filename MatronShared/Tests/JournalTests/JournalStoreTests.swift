@@ -187,6 +187,31 @@ class JournalStoreTests: XCTestCase {
         XCTAssertEqual(convo.unreadCount, 1)
     }
 
+    func testASilentEventIsStoredButNeverCountsAsUnread() throws {
+        let store = try makeStore()
+        let card: [String: Any] = ["question": "Reminder set", "options": ["Send now", "Cancel"],
+                                   "blocking": false, "silent": true]
+        try store.applyJournal(event(1))
+        try store.applyJournal(event(2, type: "prompt", payload: card))
+        try store.applyJournal(event(3, payload: ["body": "done", "silent": true]))
+        // Only a JSON true is silent, and a body that merely mentions the
+        // word is an ordinary message.
+        try store.applyJournal(event(4, payload: ["body": "x", "silent": 1]))
+        try store.applyJournal(event(5, payload: ["body": "the \"silent\" flag"]))
+        var convo = try XCTUnwrap(try store.conversations().first)
+        XCTAssertEqual(convo.unreadCount, 3)
+        // Still content: it is the row's latest line.
+        try store.applyJournal(event(6, type: "prompt", payload: card))
+        convo = try XCTUnwrap(try store.conversations().first)
+        XCTAssertEqual(convo.unreadCount, 3)
+        XCTAssertEqual(convo.snippet, "? Reminder set")
+        // A read marker recounts without them as well.
+        try store.applyJournal(event(7, sender: "user:alice", type: "read_marker",
+                                     payload: ["convo_id": "c1", "up_to_seq": 1]))
+        convo = try XCTUnwrap(try store.conversations().first)
+        XCTAssertEqual(convo.unreadCount, 2)
+    }
+
     func testSessionStatusUpdatesStateWithoutUnread() throws {
         let store = try makeStore()
         try store.applyJournal(event(1, type: "session_status", payload: ["state": "waiting"]))

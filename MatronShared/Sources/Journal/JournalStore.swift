@@ -364,8 +364,14 @@ public final class JournalStore: @unchecked Sendable {
     let changeFeed: StoreChangeFeed
 
     /// The `UserDefaults` key of the `usesChangeFeed` flag. A launch
-    /// argument `-store.changeFeed YES` sets it for one run.
+    /// argument `-store.changeFeed NO` turns it off for one run.
     public static let changeFeedFlagKey = "store.changeFeed"
+
+    /// Whether the apps open the store with `usesChangeFeed`: on unless the
+    /// user turned it off (Settings → Storage), so an unset key reads as on.
+    public static func changeFeedEnabled(in defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: changeFeedFlagKey) as? Bool ?? true
+    }
 
     /// The `UserDefaults` key of `init`'s `usesPool`. A launch argument
     /// `-store.pool YES` sets it for one run.
@@ -381,8 +387,10 @@ public final class JournalStore: @unchecked Sendable {
     /// streams (`needsUserCountsStream()`, `needsYouItemsByMissionStream()`,
     /// the mission and project item streams) from one shared `ItemsIndex`,
     /// which also serves `itemSectionsStream(scope:)` to the items panels.
-    /// Off by default; when off, the streams are exactly the value
-    /// observations, and the items panels read `itemsStream(scope:)`.
+    /// `init` defaults it to off; the apps turn it on unless the user
+    /// switched it off (`changeFeedEnabled(in:)`). When off, the streams are
+    /// exactly the value observations, and the items panels read
+    /// `itemsStream(scope:)`.
     public let usesChangeFeed: Bool
 
     private let conversationIndexHolder = OSAllocatedUnfairLock<ConversationIndex?>(initialState: nil)
@@ -1095,6 +1103,17 @@ public final class JournalStore: @unchecked Sendable {
             try Self.addColumnIfMissing(db, table: "item", column: "device_name", .text)
             try db.execute(sql: "DELETE FROM meta WHERE key = 'items_watermark_all' OR key LIKE 'items_watermark_convo_%'")
         }
+        // Step-up items (approval keys): whether a tap needs a signature,
+        // and the subject signed with it. Additive and nullable. A cached
+        // item has neither and a `since` refresh skips it until it changes,
+        // so the item watermarks are cleared and the next refresh refetches
+        // every item: a step-up item must never be tapped unsigned because
+        // its cached copy predates the mark.
+        migrator.registerMigration("item_step_up") { db in
+            try Self.addColumnIfMissing(db, table: "item", column: "step_up", .boolean)
+            try Self.addColumnIfMissing(db, table: "item", column: "subject_json", .text)
+            try db.execute(sql: "DELETE FROM meta WHERE key = 'items_watermark_all' OR key LIKE 'items_watermark_convo_%'")
+        }
         return migrator
     }
 
@@ -1682,7 +1701,10 @@ public final class JournalStore: @unchecked Sendable {
                 // needs to reproduce the tombstone shape at read time.
                 convo.lastMessageType = event.type
                 convo.expiredSnippet = Self.expiredSnippet(type: event.type, payload: payload)
-                if event.sender != ownSender, event.seq > convo.readUpToSeq {
+                // A silent event is shown and never counted (protocol
+                // "Silent events"); `recountUnread` leaves it out too.
+                if event.sender != ownSender, event.seq > convo.readUpToSeq,
+                   !JournalEventType.isSilent(payload: event.payload) {
                     convo.unreadCount += 1
                 }
                 // A message brings an archived conversation back, as the
@@ -1720,15 +1742,23 @@ public final class JournalStore: @unchecked Sendable {
             return true
     }
 
+    /// Unread = message rows from someone else above the read marker, less
+    /// the silent ones (`JournalEventType.isSilent`). The payload column is
+    /// a blob, which SQLite's JSON functions cannot read as text, so the
+    /// few rows that mention the flag at all are decoded and checked here.
     private static func recountUnread(_ db: Database, convoID: String, after seq: Int64, ownSender: String) throws -> Int {
         let placeholders = JournalEventType.messageTypes.map { _ in "?" }.joined(separator: ",")
         var arguments: [DatabaseValueConvertible] = [convoID, seq]
         arguments.append(contentsOf: Array(JournalEventType.messageTypes))
         arguments.append(ownSender)
-        return try Int.fetchOne(db, sql: """
-            SELECT COUNT(*) FROM event
-            WHERE convo_id = ? AND seq > ? AND type IN (\(placeholders)) AND sender != ?
-            """, arguments: StatementArguments(arguments)) ?? 0
+        let filter = "convo_id = ? AND seq > ? AND type IN (\(placeholders)) AND sender != ?"
+        let total = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM event WHERE \(filter)",
+                                     arguments: StatementArguments(arguments)) ?? 0
+        let flagged = try EventRecord.fetchAll(db, sql: """
+            SELECT * FROM event WHERE \(filter) AND instr(CAST(payload AS TEXT), '"silent"') > 0
+            """, arguments: StatementArguments(arguments))
+        let silent = flagged.filter { JournalEventType.isSilent(payload: $0.journalEvent.payload) }.count
+        return max(0, total - silent)
     }
 
     /// Mirrors the server's snippetOf (src/journal.js).

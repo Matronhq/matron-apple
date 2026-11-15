@@ -195,6 +195,87 @@ public struct TimelineWeek: Equatable, Hashable, Sendable {
     }
 }
 
+/// A row of `GET /timeline/weeks/:week/projects`: one project that moved
+/// that week beyond the week's stories, with what its card says.
+public struct TimelineWeekProject: Equatable, Hashable, Sendable {
+    public let project: TimelineProjectRef
+    /// How many times it moved that week.
+    public let moved: Int
+    /// The newest milestone title that week; nil when it moved without one.
+    public let sentence: String?
+    public let media: TimelineMedia?
+    public let marks: TimelineMarks
+
+    public init(project: TimelineProjectRef, moved: Int = 0, sentence: String? = nil,
+                media: TimelineMedia? = nil, marks: TimelineMarks = TimelineMarks()) {
+        self.project = project; self.moved = moved; self.sentence = sentence; self.media = media; self.marks = marks
+    }
+
+    /// nil without a project; a missing count is 0, missing marks none.
+    public init?(json: [String: Any]) {
+        guard let project = TimelineProjectRef(json: json["project"] as? [String: Any]) else { return nil }
+        self.init(project: project, moved: (json["moved"] as? NSNumber)?.intValue ?? 0,
+                  sentence: json["sentence"] as? String,
+                  media: TimelineMedia(json: json["media"] as? [String: Any]),
+                  marks: TimelineMarks(json: json["marks"] as? [String: Any]) ?? TimelineMarks())
+    }
+
+    /// The row as a card: the project's name, its sentence, media and marks.
+    public var story: TimelineStory {
+        TimelineStory(project: project, sentence: sentence, media: media, marks: marks)
+    }
+}
+
+/// `GET /timeline/weeks/:week/projects`: one page of the projects that
+/// moved that week beyond its stories, most active first, the full count
+/// and the next page's offset (nil on the last).
+public struct TimelineWeekProjectsPage: Equatable, Hashable, Sendable {
+    public let week: String
+    public let total: Int
+    public let offset: Int
+    public let nextOffset: Int?
+    public let projects: [TimelineWeekProject]
+
+    public init(week: String, total: Int, offset: Int, nextOffset: Int?, projects: [TimelineWeekProject]) {
+        self.week = week; self.total = total; self.offset = offset; self.nextOffset = nextOffset
+        self.projects = projects
+    }
+
+    /// Rows that fail to decode are dropped; nil without a week or rows.
+    public init?(json: [String: Any]) {
+        guard let week = json["week"] as? String, !week.isEmpty,
+              let rows = json["projects"] as? [[String: Any]] else { return nil }
+        self.init(week: week, total: (json["total"] as? NSNumber)?.intValue ?? 0,
+                  offset: (json["offset"] as? NSNumber)?.intValue ?? 0,
+                  nextOffset: (json["next_offset"] as? NSNumber)?.intValue,
+                  projects: rows.compactMap(TimelineWeekProject.init(json:)))
+    }
+}
+
+/// The projects a week page shows past its stories, as far as they have
+/// been paged, and where the paging stands. Built by `TimelineViewModel`.
+public struct TimelineWeekExtras: Equatable, Sendable {
+    public enum Status: Equatable, Sendable {
+        /// More to read: reaching the end of the page asks for it.
+        case more
+        case loading
+        /// The last read failed: the page offers Retry.
+        case failed
+        /// Every project is here.
+        case done
+        /// The journal has no such read: the page keeps its "Also moved" line.
+        case unsupported
+    }
+
+    public let week: String
+    public let projects: [TimelineWeekProject]
+    public let status: Status
+
+    public init(week: String, projects: [TimelineWeekProject] = [], status: Status) {
+        self.week = week; self.projects = projects; self.status = status
+    }
+}
+
 /// A row of `GET /timeline/quiet` or `/timeline/long`.
 public struct StalledProject: Equatable, Hashable, Sendable {
     public let project: TimelineProjectRef

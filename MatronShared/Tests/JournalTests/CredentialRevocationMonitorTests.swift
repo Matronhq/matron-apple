@@ -21,6 +21,40 @@ final class CredentialRevocationMonitorTests: XCTestCase {
                                     now: { probe.now }, onRevoked: { probe.fire() })
     }
 
+    // MARK: Held during an unlock
+
+    func testARefusalDuringAnUnlock_isHeld_andDroppedWhenTheNewTokenIsTaken() {
+        let probe = Probe()
+        let monitor = makeMonitor(probe)
+        monitor.hold()
+        monitor.handle(.rejected)
+        XCTAssertEqual(probe.fires, 0)
+        monitor.release(discard: true)
+        XCTAssertEqual(probe.fires, 0)
+        XCTAssertFalse(monitor.hasFired)
+        // Nothing is left over: a later refusal fires as ever.
+        monitor.handle(.rejected)
+        XCTAssertEqual(probe.fires, 1)
+    }
+
+    func testARefusalDuringAFailedUnlock_firesWhenItEnds() {
+        let probe = Probe()
+        let monitor = makeMonitor(probe)
+        monitor.hold()
+        monitor.handle(.rejected)
+        XCTAssertEqual(probe.fires, 0)
+        monitor.release(discard: false)
+        XCTAssertEqual(probe.fires, 1)
+    }
+
+    func testAHoldWithNoRefusal_firesNothing() {
+        let probe = Probe()
+        let monitor = makeMonitor(probe)
+        monitor.hold()
+        monitor.release(discard: false)
+        XCTAssertEqual(probe.fires, 0)
+    }
+
     // MARK: Handshake
 
     func testHandshakeRejectionFiresAtOnce() {

@@ -45,11 +45,10 @@ enum BackgroundCatchUp {
         // suspended, with the notification missed: re-read before any search
         // write can happen.
         dependencies.refreshProtectedDataState(sceneIsActive: false)
-        guard let restored = try? await dependencies.auth.restoreSession(),
-              let engine = dependencies.syncService(for: restored) as? JournalSyncEngine
-        else { return }
+        guard let restored = try? await dependencies.auth.restoreSession() else { return }
+        let engine = dependencies.syncEngine(for: restored)
         // No-op when already running.
-        try? await engine.start()
+        await engine.beginSync()
         await engine.nudge()
         // Before reading the state: a socket that died during the suspension
         // still reads as `.running`, and the wake would end here having

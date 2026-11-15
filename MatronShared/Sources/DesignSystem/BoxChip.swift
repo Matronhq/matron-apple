@@ -53,7 +53,7 @@ public struct BoxChip: View {
     /// not for being text — teal/cyan/mint captions on the pale fill land
     /// around 2:1 contrast. Pull the text toward the label colour (darker in
     /// light mode, lighter in dark) to clear readable contrast while keeping
-    /// the hue. Pre-mix OS floors (macOS 14 / iOS 17) keep the raw tint.
+    /// the hue.
     private var textTint: Color {
         Self.textTint(for: displayName, in: colorScheme)
     }
@@ -62,7 +62,6 @@ public struct BoxChip: View {
     /// carry the box's hue — e.g. the `A:bc` session tag ahead of titles.
     public static func textTint(for name: String, in colorScheme: ColorScheme) -> Color {
         let base = tint(for: name)
-        guard #available(iOS 18.0, macOS 15.0, *) else { return base }
         return colorScheme == .dark
             ? base.mix(with: .white, by: darkTextMixFraction)
             : base.mix(with: .black, by: lightTextMixFraction)

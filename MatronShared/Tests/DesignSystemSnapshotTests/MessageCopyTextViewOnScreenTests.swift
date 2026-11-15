@@ -37,7 +37,7 @@ final class MessageCopyTextViewOnScreenTests: XCTestCase {
         let target = (r: expected.redComponent * 255, g: expected.greenComponent * 255, b: expected.blueComponent * 255)
         func highlightPixels() throws -> Int {
             spin()
-            guard let img = CGWindowListCreateImage(.null, .optionIncludingWindow, CGWindowID(window.windowNumber), [.boundsIgnoreFraming, .bestResolution]),
+            guard let img = captureWindowImage(window),
                   img.width > 0, let data = img.dataProvider?.data, let ptr = CFDataGetBytePtr(data) else {
                 throw XCTSkip("window capture unavailable (headless runner)")
             }

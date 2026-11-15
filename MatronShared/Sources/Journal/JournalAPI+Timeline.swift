@@ -12,6 +12,11 @@ public protocol TimelineProviding: Sendable {
     /// `limit` nil takes the journal's default.
     func timelineWeeks(before: String?, limit: Int?) async throws -> (weeks: [TimelineWeekSummary], nextBefore: String?)
     func timelineWeek(_ week: String) async throws -> TimelineWeek
+    /// The projects that moved in `week` beyond its stories, most active
+    /// first, from `offset`; `limit` nil takes the journal's default. A
+    /// journal without the route answers 404: the week page then keeps its
+    /// "Also moved" line.
+    func timelineWeekProjects(_ week: String, offset: Int, limit: Int?) async throws -> TimelineWeekProjectsPage
     func wentQuiet() async throws -> StalledList
     func openLong() async throws -> StalledList
     /// Finished projects, newest finish first; `before` is a page's `nextBefore`.
@@ -24,6 +29,13 @@ public protocol TimelineProviding: Sendable {
     /// The project's weeks newest first; `before` is a week key (a page's `nextBefore`).
     func timelineProjectHistory(_ id: String, before: String?, limit: Int?) async throws
         -> (weeks: [TimelineHistoryWeek], nextBefore: String?)
+}
+
+public extension TimelineProviding {
+    /// A provider without the read answers as a journal without the route does.
+    func timelineWeekProjects(_ week: String, offset: Int, limit: Int?) async throws -> TimelineWeekProjectsPage {
+        throw JournalAPIError.notFound
+    }
 }
 
 extension JournalAPI: TimelineProviding {
@@ -52,6 +64,18 @@ extension JournalAPI: TimelineProviding {
             timelineAPILogger.error("dropped \(sent - week.stories.count + sentAlso - week.also.count, privacy: .public) malformed row(s) in timeline week \(week.week, privacy: .public)")
         }
         return week
+    }
+
+    static func decodeTimelineWeekProjects(_ obj: [String: Any]) throws -> TimelineWeekProjectsPage {
+        guard let page = TimelineWeekProjectsPage(json: obj) else {
+            throw JournalAPIError.transport("malformed timeline week projects response")
+        }
+        // The model drops bad rows quietly; say so here.
+        let sent = (obj["projects"] as? [Any])?.count ?? 0
+        if page.projects.count < sent {
+            timelineAPILogger.error("dropped \(sent - page.projects.count, privacy: .public) malformed row(s) in timeline week projects \(page.week, privacy: .public)")
+        }
+        return page
     }
 
     static func decodeStalledList(_ obj: [String: Any]) throws -> StalledList {
@@ -101,6 +125,13 @@ extension JournalAPI: TimelineProviding {
 
     public func timelineWeek(_ week: String) async throws -> TimelineWeek {
         try Self.decodeTimelineWeek(try await request(path: "/timeline/weeks/\(Self.pathSegment(week))"))
+    }
+
+    public func timelineWeekProjects(_ week: String, offset: Int, limit: Int?) async throws -> TimelineWeekProjectsPage {
+        var query = [URLQueryItem(name: "offset", value: String(max(0, offset)))]
+        if let limit { query.append(.init(name: "limit", value: String(min(max(limit, 1), 50)))) }
+        return try Self.decodeTimelineWeekProjects(
+            try await request(path: "/timeline/weeks/\(Self.pathSegment(week))/projects", query: query))
     }
 
     public func wentQuiet() async throws -> StalledList {
