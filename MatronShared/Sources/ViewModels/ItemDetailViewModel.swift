@@ -1081,10 +1081,9 @@ public final class ItemDetailViewModel {
         var uploaded: [TrackerAttachment] = []
         do {
             for a in attachments {
-                let url = a.url
-                let data = try await Task.detached(priority: .userInitiated) { try Data(contentsOf: url) }.value
-                let ref = try await api.uploadMedia(data, contentType: a.mimeType)
-                uploaded.append(TrackerAttachment(blobRef: ref, mime: a.mimeType, name: a.filename, size: Int64(data.count)))
+                // Streamed from the staged file: a 100 MB video is never read into memory.
+                let ref = try await api.uploadMedia(fileAt: a.url, contentType: a.mimeType)
+                uploaded.append(TrackerAttachment(blobRef: ref, mime: a.mimeType, name: a.filename, size: Int64(a.sizeBytes)))
             }
         } catch {
             restoreUnsent(attachments, text: pending, note: note, localID: localID)

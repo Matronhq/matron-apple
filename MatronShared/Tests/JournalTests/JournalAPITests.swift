@@ -277,6 +277,22 @@ final class JournalAPITests: XCTestCase {
         XCTAssertEqual(StubURLProtocol.lastRequestBody, Data("PNG".utf8))
     }
 
+    /// Tracker replies upload through `ItemsProviding`; the journal's own
+    /// conformance streams the staged file instead of reading it whole.
+    func testItemsProvidingUploadsAFileByStreamingIt() async throws {
+        StubURLProtocol.responses = ["/media": (200, #"{"media_id":"m-9","size":5,"content_type":"video/quicktime","sha256":"ab"}"#)]
+        let api = makeAPI()
+        await api.setToken("t")
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("upload-\(UUID().uuidString).mov")
+        try Data("VIDEO".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let provider: any ItemsProviding = api
+        let mediaID = try await provider.uploadMedia(fileAt: file, contentType: "video/quicktime")
+        XCTAssertEqual(mediaID, "m-9")
+        XCTAssertEqual(StubURLProtocol.lastRequest?.value(forHTTPHeaderField: "Content-Type"), "video/quicktime")
+        XCTAssertEqual(StubURLProtocol.lastRequestBody, Data("VIDEO".utf8))
+    }
+
     func testUploadMediaMapsErrorStatus() async throws {
         StubURLProtocol.responses = ["/media": (401, #"{"error":"unauthenticated"}"#)]
         let api = makeAPI()

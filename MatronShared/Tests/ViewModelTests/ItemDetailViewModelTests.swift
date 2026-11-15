@@ -89,6 +89,13 @@ final class ItemDetailViewModelTests: XCTestCase {
             if failUpload { throw JournalAPIError.transport("upload failed") }
             uploads.append(contentType); return "blob-\(uploads.count)"
         }
+        /// Staged files: (name, size on disk) as streamed from the tray's copy.
+        var fileUploads: [(String, Int)] = []
+        func uploadMedia(fileAt url: URL, contentType: String) async throws -> String {
+            let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? -1
+            fileUploads.append((url.lastPathComponent, size))
+            return try await uploadMedia(Data(), contentType: contentType)
+        }
         func closeItem(id: String, resolution: ItemResolution, comment: String?) async throws -> TrackerItem { closes.append((resolution, comment)); return TrackerItem(id: id, num: 1, kind: .task, state: .closed, title: "", originConvoID: "c1") }
         func reopenItem(id: String, comment: String?) async throws -> TrackerItem { reopens += 1; return TrackerItem(id: id, num: 1, kind: .task, title: "", originConvoID: "c1") }
         func listItems(_ query: ItemsListQuery) async throws -> ItemsPage { fatalError() }
@@ -221,6 +228,8 @@ final class ItemDetailViewModelTests: XCTestCase {
         await vm.attachFiles([try makeFile("s.png")])
         await vm.submitComment()
         XCTAssertEqual(api.uploads, ["image/png"])
+        XCTAssertEqual(api.fileUploads.map(\.0), ["s.png"], "Uploaded from the staged file, not read into memory")
+        XCTAssertEqual(sync.comments.first?.2.first?.size, 1)
         XCTAssertEqual(sync.comments.first?.1, "use A")
         XCTAssertEqual(sync.comments.first?.2.first?.blobRef, "blob-1")
         XCTAssertEqual(vm.draft, "")
@@ -619,7 +628,8 @@ final class ItemDetailViewModelTests: XCTestCase {
     }
 
     func testHundredMegabyteFileStagesButOneByteMoreIsRefused() async throws {
-        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: Sync())
+        let api = API(); let sync = Sync()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)
         defer { vm.discardAttachments() }
         let accepted = try makeFile("video.mov")
         let refused = try makeFile("too-big.mov")
@@ -633,6 +643,10 @@ final class ItemDetailViewModelTests: XCTestCase {
         XCTAssertEqual(vm.stagedAttachments.first?.sizeBytes, 100_000_000)
         XCTAssertEqual(vm.error, "too-big.mov is larger than 100 MB and wasn't attached.")
         XCTAssertFalse(FileManager.default.fileExists(atPath: refused.path))
+        await vm.submitComment()
+        XCTAssertEqual(api.fileUploads.map(\.0), ["video.mov"])
+        XCTAssertEqual(api.fileUploads.map(\.1), [100_000_000])
+        XCTAssertEqual(sync.comments.first?.2.first?.size, 100_000_000)
     }
 
     func testUnreadableFileReportsAndStagesNothing() async throws {
