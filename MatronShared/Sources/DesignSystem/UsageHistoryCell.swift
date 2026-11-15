@@ -105,11 +105,17 @@ public struct UsageHistoryBars: View {
         GeometryReader { proxy in
             let share = CGFloat(min(max(unused ?? 0, 0), 100)) / 100
             ZStack(alignment: .bottom) {
-                RoundedRectangle(cornerRadius: 3)
-                    .fill(isKnown && !isDashed ? UsageHistoryStyle.tint.opacity(0.75) : Color.clear)
-                if isKnown {
+                if isKnown, !isDashed {
+                    // Grey for what was used, with the blue cap drawn over
+                    // its top: the two never blend into one hue.
+                    Rectangle().fill(Color.secondary.opacity(0.3))
                     Rectangle()
-                        .fill(Color.secondary.opacity(isDashed ? 0.25 : 0.35))
+                        .fill(UsageHistoryStyle.tint)
+                        .frame(height: proxy.size.height * share)
+                        .frame(maxHeight: .infinity, alignment: .top)
+                } else if isKnown {
+                    Rectangle()
+                        .fill(Color.secondary.opacity(0.25))
                         .frame(height: proxy.size.height * (1 - share))
                 } else if !isDashed {
                     Rectangle().fill(Color.secondary.opacity(0.08))
