@@ -12,6 +12,11 @@ public struct BoxesDemoData: BoxesProviding {
         ProcessInfo.processInfo.environment["MATRON_DEBUG_BOXES_DEMO"] != nil
     }
 
+    /// Whether the made-up boxes should open on their usage history.
+    public static var isHistoryRequested: Bool {
+        isRequested && ProcessInfo.processInfo.environment["MATRON_DEBUG_BOXES_HISTORY"] != nil
+    }
+
     private static func date(in days: Double) -> Date { Date().addingTimeInterval(days * 86_400) }
 
     private static func box(_ id: Int64, _ name: String, connected: Bool, live: Int?, email: String?,
@@ -82,6 +87,48 @@ public struct BoxesDemoData: BoxesProviding {
 
     public func connectionStates() -> AsyncStream<SyncConnectionState> {
         AsyncStream { _ in }
+    }
+}
+#endif
+
+#if DEBUG
+extension BoxesDemoData: UsageHistoryProviding {
+    /// Twelve made-up weeks for the same made-up logins.
+    public func usageHistory(weeks: Int) async throws -> UsageHistory {
+        func meter(_ id: String, _ label: String, primary: Bool, resetsIn days: Double, left: Int,
+                   unused: [Int]) -> UsageMeter {
+            let next = Self.date(in: days)
+            let finished = unused.enumerated().map { index, value in
+                UsageWeek(resetsAt: next.addingTimeInterval(-Double(index + 1) * 7 * 86_400), unused: value,
+                          peak: 100 - value, lastReadingAt: nil)
+            }
+            return UsageMeter(id: id, label: label, isPrimary: primary,
+                              current: UsageWeekInProgress(resetsAt: next, unused: left, asOf: Date()),
+                              weeks: finished)
+        }
+        func account(_ email: String, boxes: [String], resetsIn days: Double, left: Int, unused: [Int],
+                     fable: [Int]) -> UsageAccount {
+            UsageAccount(id: "claude:login:\(email)", agent: "claude", email: email, boxes: boxes, meters: [
+                meter("week_all", "Week (all models)", primary: true, resetsIn: days, left: left, unused: unused),
+                meter("week_fable", "Week (Fable)", primary: false, resetsIn: days, left: 100 - (100 - left) / 4,
+                      unused: fable),
+            ])
+        }
+        return UsageHistory(accounts: [
+            account("alice@example.com", boxes: ["box-a"], resetsIn: 2.7, left: 79,
+                    unused: [18, 6, 0, 3, 27, 14, 0, 9, 41, 22, 38, 30],
+                    fable: [70, 64, 52, 60, 81, 77, 49, 66, 90, 84, 88, 85]),
+            account("bob@example.com", boxes: ["box-b"], resetsIn: 1.8, left: 77,
+                    unused: [31, 25, 12, 36, 21, 44, 30, 52, 47, 55, 61, 58],
+                    fable: [88, 80, 71, 86, 79, 92, 84, 95, 90, 93, 97, 96]),
+            account("carol@example.com", boxes: ["box-c", "box-d"], resetsIn: 4.6, left: 6,
+                    unused: [0, 0, 2, 0, 7, 0, 0, 12, 0, 4, 0, 1],
+                    fable: [40, 35, 48, 30, 55, 38, 42, 60, 36, 50, 44, 47]),
+            UsageAccount(id: "codex:device:5", agent: "codex", email: nil, boxes: ["box-e"], meters: [
+                meter("codex:codex:secondary", "Codex · Weekly", primary: true, resetsIn: 6.4, left: 85,
+                      unused: [62, 55, 49, 73, 66, 58, 70, 64, 91, 76, 80, 78]),
+            ]),
+        ])
     }
 }
 #endif

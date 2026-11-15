@@ -13,6 +13,8 @@ struct MacBoxesPage: View {
     let onOpenConversation: (String) -> Void
 
     @State private var viewModel: BoxesViewModel
+    @State private var historyViewModel: UsageHistoryViewModel
+    @State private var showsHistory = false
     @State private var expanded: Set<Int64> = []
     @State private var startingOn: DeviceDTO?
     @State private var unlocking: DeviceDTO?
@@ -26,13 +28,20 @@ struct MacBoxesPage: View {
     /// Narrower than this the defaults column folds under the box's name.
     private static let wideLayoutMinWidth: CGFloat = 1_020
 
-    /// `viewModel` is for tests and render harnesses; the app leaves it out.
+    /// `viewModel`, `historyViewModel` and `showsHistory` are for tests and
+    /// render harnesses; the app leaves them out.
     init(deps: AppDependencies, session: UserSession, viewModel: BoxesViewModel? = nil,
+         historyViewModel: UsageHistoryViewModel? = nil, showsHistory: Bool = false,
          onOpenConversation: @escaping (String) -> Void) {
         self.deps = deps
         self.session = session
         self.onOpenConversation = onOpenConversation
         _viewModel = State(initialValue: viewModel ?? deps.makeBoxesViewModel(for: session))
+        _historyViewModel = State(initialValue: historyViewModel ?? deps.makeUsageHistoryViewModel(for: session))
+        _showsHistory = State(initialValue: showsHistory)
+        #if DEBUG
+        if BoxesDemoData.isHistoryRequested { _showsHistory = State(initialValue: true) }
+        #endif
     }
 
     var body: some View {
@@ -47,10 +56,22 @@ struct MacBoxesPage: View {
                         Text("Boxes").font(.title.bold())
                         Text(summary.countsText).font(.callout).foregroundStyle(.secondary)
                     }
-                    if let error = viewModel.errorMessage {
+                    Picker("View", selection: $showsHistory) {
+                        Text("Now").tag(false)
+                        Text("Usage history").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize()
+                    .accessibilityIdentifier("boxes.view")
+                    if showsHistory {
+                        MacUsageHistoryView(viewModel: historyViewModel)
+                    } else if let error = viewModel.errorMessage {
                         Text(error).font(.callout).foregroundStyle(.red)
                     }
-                    if rows.isEmpty {
+                    if showsHistory {
+                        EmptyView()
+                    } else if rows.isEmpty {
                         if viewModel.hasLoaded {
                             Text("No boxes yet. Pair one in Settings → Devices.")
                                 .foregroundStyle(.secondary)
