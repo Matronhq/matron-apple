@@ -43,8 +43,18 @@ public final class UsageHistoryViewModel {
         do {
             history = try await api.usageHistory(weeks: UsageHistoryTable.defaultWeeks)
             errorMessage = nil
+            // A meter that dropped out of the window leaves the picker on
+            // the headline one, as the table already shows.
+            if !choices.contains(where: { $0.id == choiceID }) { choiceID = UsageMeterChoice.primaryID }
         } catch JournalAPIError.notFound {
             errorMessage = "This journal doesn't keep usage history yet. It needs an update."
+        } catch is CancellationError {
+            // The screen went away mid-read: not a failure to show.
+            return
+        } catch let error as JournalAPIError where error.isCancellation {
+            return
+        } catch let error as URLError where error.code == .cancelled {
+            return
         } catch {
             Self.logger.error("usage history load failed: \(String(describing: error), privacy: .public)")
             errorMessage = "Couldn't load the usage history. Try again."

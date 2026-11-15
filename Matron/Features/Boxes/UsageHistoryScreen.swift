@@ -83,7 +83,9 @@ struct UsageHistoryScreen: View {
                 Text(firstColumn.map(UsageHistoryStyle.columnText) ?? "")
                 Spacer()
                 if let average = row.averageUnused {
-                    Text("\(row.cells.count)-week average \(average)% unused")
+                    // Only weeks with a reading are in the average.
+                    let weeks = row.cells.compactMap { $0 }.count
+                    Text("\(weeks)-week average \(average)% unused")
                 }
                 Spacer()
                 Text("now")
