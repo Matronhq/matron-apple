@@ -1145,12 +1145,12 @@ public final class ItemDetailViewModel {
     /// capped here (the Mac pane's old attach path enforced it); the check
     /// runs at attach time so an oversized file is refused while the user
     /// is still looking at what they picked, not at Send.
-    public nonisolated static let maxAttachmentBytes = 25 * 1024 * 1024
+    public nonisolated static let maxAttachmentBytes = AttachmentLimits.maxBytes
 
     /// The refusal for a file over `maxAttachmentBytes`, shared with the
     /// iOS host's pre-read check so both say the same thing.
     public nonisolated static func oversizeMessage(filename: String) -> String {
-        "\(filename) is larger than 25 MB and wasn't attached."
+        "\(filename) is larger than 100 MB and wasn't attached."
     }
 
     // MARK: Staged attachments

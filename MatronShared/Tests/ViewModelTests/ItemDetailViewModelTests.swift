@@ -615,7 +615,24 @@ final class ItemDetailViewModelTests: XCTestCase {
         try handle.close()
         await vm.attachFiles([big, try makeFile("ok.png")])
         XCTAssertEqual(vm.stagedAttachments.map(\.filename), ["ok.png"])
-        XCTAssertEqual(vm.error, "huge.mov is larger than 25 MB and wasn't attached.")
+        XCTAssertEqual(vm.error, "huge.mov is larger than 100 MB and wasn't attached.")
+    }
+
+    func testHundredMegabyteFileStagesButOneByteMoreIsRefused() async throws {
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: Sync())
+        defer { vm.discardAttachments() }
+        let accepted = try makeFile("video.mov")
+        let refused = try makeFile("too-big.mov")
+        for (url, size) in [(accepted, 100_000_000), (refused, 100_000_001)] {
+            let handle = try FileHandle(forWritingTo: url)
+            try handle.truncate(atOffset: UInt64(size))
+            try handle.close()
+        }
+        await vm.attachTemporaryFiles([accepted, refused])
+        XCTAssertEqual(vm.stagedAttachments.map(\.filename), ["video.mov"])
+        XCTAssertEqual(vm.stagedAttachments.first?.sizeBytes, 100_000_000)
+        XCTAssertEqual(vm.error, "too-big.mov is larger than 100 MB and wasn't attached.")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: refused.path))
     }
 
     func testUnreadableFileReportsAndStagesNothing() async throws {

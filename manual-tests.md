@@ -243,7 +243,8 @@ Send a few files from an agent with `send_attachment` (a `.md` file, one with `t
 
 - [ ] In Files, hold a zip and choose Copy. In a chat, tap the composer twice and choose Paste: the zip joins the tray as a chip showing its own name and size, and nothing is typed into the field.
 - [ ] Repeat with a file from iCloud Drive and with a PDF. Send: the message shows the file under the same name.
-- [ ] Paste a file over 50 MB: it is refused with a message naming the file.
+- [ ] Paste a file over 100 MB (100,000,000 bytes): it is refused with a message naming the file.
+- [ ] Attach a 100 MB video to a tracker reply: it stages and sends against a journal configured to accept 100 MB. A file one byte larger is refused before upload.
 
 ### Share sheet
 

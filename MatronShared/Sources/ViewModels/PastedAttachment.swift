@@ -1,4 +1,5 @@
 import Foundation
+import MatronModels
 import OSLog
 import UniformTypeIdentifiers
 
@@ -82,7 +83,7 @@ public enum PastedAttachment {
     /// The largest file a paste will stage, matching the server's upload
     /// limit. Checked before the bytes are read, so an oversized file is
     /// refused instead of being pulled into memory.
-    public static let maxBytes = 50 * 1024 * 1024
+    public static let maxBytes = AttachmentLimits.maxBytes
 
     /// Where pasted and picked files wait before the tray takes them over.
     static var stagingRoot: URL {
