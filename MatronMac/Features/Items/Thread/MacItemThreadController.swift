@@ -590,7 +590,8 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
         let id = rowIDs[row]
         switch (measured[row], contents[row], view) {
         case (.card(let layout), .card(let card), let cell as MacItemCardCell):
-            cell.configure(rowID: id, layout: layout, mine: card.mine, dimmed: card.hasDelivery, factory: factory,
+            cell.configure(rowID: id, layout: layout, copyText: card.copyText, mine: card.mine,
+                           dimmed: card.hasDelivery, factory: factory,
                            selection: factory.selection, routing: routing)
         case (.hosted(let height), .hosted(let threadRow, _), let cell as MacItemHostedCell):
             cell.configure(rowID: id, expectedHeight: height, view: factory.view(.row(threadRow)))
