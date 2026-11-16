@@ -499,7 +499,82 @@ final class MarkdownCopyTests: XCTestCase {
 
         view.copy(nil)
 
-        XCTAssertEqual(view.pasteboard.string(forType: .string), "**bold** tail")
+        XCTAssertEqual(view.pasteboard.string(forType: .string), "bold tail",
+                       "a selection inside one paragraph copies the text as it reads")
+        XCTAssertNotNil(view.pasteboard.data(forType: .rtf), "rich targets still get the bold")
+    }
+
+    func test_copy_boldNumber_copiesBareNumber() {
+        let view = makeCopyView("Order **16343** is ready.\n\nNext paragraph.")
+        let full = view.textStorage!.string as NSString
+        view.setSelectedRange(full.range(of: "16343"))
+
+        view.copy(nil)
+
+        XCTAssertEqual(view.pasteboard.string(forType: .string), "16343")
+    }
+
+    func test_copy_inlineCodeAndLink_copyWithoutDelimiters() {
+        let view = makeCopyView("Run `abc-123` then see [docs](https://example.com).")
+        let full = view.textStorage!.string as NSString
+        view.setSelectedRange(NSRange(location: 0, length: full.length))
+        // Whole one-paragraph message: still the text as it reads.
+        view.copy(nil)
+        XCTAssertEqual(view.pasteboard.string(forType: .string), "Run abc-123 then see docs.")
+    }
+
+    func test_copy_tripleClickedParagraph_trimsTerminator() {
+        let view = makeCopyView("First **one**.\n\nSecond.")
+        let full = view.textStorage!.string as NSString
+        let second = full.range(of: "Second.")
+        // The first paragraph plus its newline, as a triple-click selects it.
+        view.setSelectedRange(NSRange(location: 0, length: second.location))
+        view.copy(nil)
+        XCTAssertEqual(view.pasteboard.string(forType: .string), "First one.")
+    }
+
+    func test_copy_acrossParagraphs_keepsMarkdown() {
+        let view = makeCopyView("First **one**.\n\nSecond `two`.")
+        let full = view.textStorage!.string as NSString
+        let start = full.range(of: "one").location
+        let end = NSMaxRange(full.range(of: "two"))
+        view.setSelectedRange(NSRange(location: start, length: end - start))
+
+        view.copy(nil)
+
+        XCTAssertEqual(view.pasteboard.string(forType: .string), "**one**.\n\nSecond `two`")
+    }
+
+    func test_copyAsMarkdown_shortSelection_keepsDelimiters() {
+        let view = makeCopyView("Order **16343** is ready.")
+        let full = view.textStorage!.string as NSString
+        view.setSelectedRange(full.range(of: "16343"))
+
+        view.copyAsMarkdown(nil)
+
+        XCTAssertEqual(view.pasteboard.string(forType: .string), "**16343**")
+    }
+
+    func test_copyAsMarkdown_wholeMessage_copiesSourceVerbatim() {
+        let source = "Run `abc-123` then see [docs](https://example.com)."
+        let view = makeCopyView(source)
+        view.setSelectedRange(NSRange(location: 0, length: view.textStorage!.length))
+
+        view.copyAsMarkdown(nil)
+
+        XCTAssertEqual(view.pasteboard.string(forType: .string), source)
+    }
+
+    func test_menu_addsCopyAsMarkdownAfterCopy() {
+        let menu = NSMenu()
+        menu.addItem(NSMenuItem(title: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: ""))
+
+        MessageCopyTextView.addCopyAsMarkdown(to: menu, target: nil)
+        MessageCopyTextView.addCopyAsMarkdown(to: menu, target: nil)
+
+        XCTAssertEqual(menu.items.map(\.title), ["Cut", "Copy", "Copy as Markdown", "Paste"])
     }
 
     /// The full-selection raw-source fast path must NOT win when the whole

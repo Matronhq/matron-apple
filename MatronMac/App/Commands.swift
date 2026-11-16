@@ -71,6 +71,13 @@ struct ChatCommands: Commands {
         // Edit menu — `.pasteboard` group is "Cut/Copy/Paste"; we add
         // our chat-specific Find + Slash Command after it.
         CommandGroup(after: .pasteboard) {
+            // ⌘C copies a selection inside one paragraph as the text you
+            // see; this keeps the markdown. Sent down the responder chain
+            // to the focused message text.
+            Button("Copy as Markdown") {
+                NSApp.sendAction(Selector(("copyAsMarkdown:")), to: nil, from: nil)
+            }
+            .keyboardShortcut("c", modifiers: [.command, .option, .shift])
             // The key window's chat with focus — per
             // window like Back/Forward, so not a bus command.
             Button("Find in Chat") { navigation?.findInChat?() }
