@@ -590,9 +590,10 @@ public struct ItemDetailView: View {
     /// drawn. The journal writes a consent item's body as a plain-text copy
     /// of the request for places that cannot draw the card (notifications,
     /// the chat copy); under the card it would show the same request twice.
-    /// While the card has not synced, the body stays as the only copy.
+    /// While the card has not synced, the body stays as the only copy, and
+    /// a body with attachments stays so they remain reachable.
     public static func drawsBody(_ model: Model) -> Bool {
-        if model.spawnConsent?.request != nil { return false }
+        if model.spawnConsent?.request != nil, model.item.attachments.isEmpty { return false }
         return !model.item.body.isEmpty || !model.item.attachments.isEmpty
     }
 
