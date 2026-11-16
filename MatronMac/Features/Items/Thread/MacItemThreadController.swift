@@ -504,7 +504,8 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
     private func installSelection() {
         let selection = factory.selection
         let model = factory.detail.threadModel
-        let order = ItemDetailView.selectionOrder(item: model.item, comments: model.comments) { [self] card, body, attachments in
+        let order = ItemDetailView.selectionOrder(item: model.item, comments: model.comments,
+                                                  showsBody: ItemDetailView.drawsBody(model)) { [self] card, body, attachments in
             ids(ofCard: card, body: body, attachments: attachments).all
         }
         if selection.orderedIDs != order { selection.orderedIDs = order }

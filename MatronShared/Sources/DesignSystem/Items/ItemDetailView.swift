@@ -585,6 +585,18 @@ public struct ItemDetailView: View {
         .background(MatronTimelineBackground())
     }
 
+    /// Whether the thread draws the item's body card: when it has a body or
+    /// attachments, and is not a consent item whose live request card is
+    /// drawn. The journal writes a consent item's body as a plain-text copy
+    /// of the request for places that cannot draw the card (notifications,
+    /// the chat copy); under the card it would show the same request twice.
+    /// While the card has not synced, the body stays as the only copy, and
+    /// a body with attachments stays so they remain reachable.
+    public static func drawsBody(_ model: Model) -> Bool {
+        if model.spawnConsent?.request != nil, model.item.attachments.isEmpty { return false }
+        return !model.item.body.isEmpty || !model.item.attachments.isEmpty
+    }
+
     /// The thread's rows for `model`, top to bottom. `offersActions` is
     /// whether the host answers the item's action buttons (`onAction`).
     public static func rows(for model: Model, offersActions: Bool) -> [ItemThreadRow] {
@@ -595,7 +607,7 @@ public struct ItemDetailView: View {
         if !item.labels.isEmpty || !item.links.isEmpty { rows.append(.meta) }
         #endif
         if model.spawnConsent != nil { rows.append(.consent) }
-        if !item.body.isEmpty || !item.attachments.isEmpty { rows.append(.body) }
+        if drawsBody(model) { rows.append(.body) }
         if offersActions, showsActions(model.actions, isOpen: item.state == .open) { rows.append(.actions) }
         rows.append(.divider)
         rows += model.comments.map { .comment($0.id) }
@@ -1013,13 +1025,14 @@ public struct ItemDetailView: View {
     /// passes THROUGH, and the transcript stands in a marker for it — the
     /// chat timeline's rule for an uncaptioned image (reviewer, PR #232).
     /// `cardIDs` answers one card's ids (`selectionIDs`); a host that keeps
-    /// them per card passes its own.
+    /// them per card passes its own. `showsBody` is false when the thread
+    /// leaves the body card out (`drawsBody`).
     public static func selectionOrder(
-        item: TrackerItem, comments: [TrackerComment],
+        item: TrackerItem, comments: [TrackerComment], showsBody: Bool = true,
         cardIDs: (_ cardID: String, _ body: String, _ attachments: [TrackerAttachment]) -> [String] = selectionIDs
     ) -> [String] {
         var ids: [String] = []
-        if !item.body.isEmpty || !item.attachments.isEmpty {
+        if showsBody, !item.body.isEmpty || !item.attachments.isEmpty {
             ids += cardIDs(bodySelectionID(for: item.id), item.body, item.attachments)
         }
         for c in comments where c.kind != .status || !c.body.isEmpty {
@@ -1099,9 +1112,9 @@ public struct ItemDetailView: View {
     /// shows. Without it there is nothing to approve: the id in the item's
     /// link is agent-written and could name an ask the user has never seen,
     /// so the placeholder says the card has not arrived and offers no
-    /// buttons; the view model re-derives the moment it syncs. The body
-    /// stays either way; it holds facts (model, room flag) the card does
-    /// not draw.
+    /// buttons; the view model re-derives the moment it syncs. Once the
+    /// card is drawn the body card is left out (`drawsBody`): it repeats
+    /// the same request as text.
     /// The placeholder's sentence while the spawn card has not synced.
     /// When the item carries its own Approve and Decline, those answer it
     /// exactly as the card would, and it says so.
@@ -1458,7 +1471,7 @@ extension ItemDetailView {
     }
 
     /// Row order as the controller wants it, recomputed from the model.
-    fileprivate var selectionOrder: [String] { Self.selectionOrder(item: item, comments: model.comments) }
+    fileprivate var selectionOrder: [String] { Self.selectionOrder(item: item, comments: model.comments, showsBody: Self.drawsBody(model)) }
 
     /// Installs the spans → transcript bridge for `model` — the value the
     /// `onChange` that calls this just received, captured by value:
