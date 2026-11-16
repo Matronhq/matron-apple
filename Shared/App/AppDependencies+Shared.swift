@@ -88,6 +88,10 @@ extension AppDependencies {
         /// Handle for the `maintenance.start()` kickoff — awaited before
         /// `stop()` in the sign-out teardown, same rule as `itemsStartTask`.
         var maintenanceStartTask: Task<Void, Never>?
+        /// Waits for the socket's first answer, for the launch timings.
+        /// Cancelled on sign-out: offline, it would otherwise wait on the
+        /// engine's state for good and keep the engine and store alive.
+        var connectedMarkTask: Task<Void, Never>?
         init(api: JournalAPI, store: JournalStore, engine: JournalSyncEngine, items: ItemsSync, missions: MissionsSync,
              projects: ProjectsSync, coordinator: CoordinatorSync, notify: NotifySettingsStore,
              defaults: NewChatDefaultsStore, userSettings: UserSettingsStore, briefing: LatestBriefingStore, pins: PinsStore,
@@ -239,7 +243,9 @@ extension AppDependencies {
     /// list and the badge. Created and started by the shell, stopped when
     /// the shell leaves the hierarchy on sign-out.
     @MainActor func makeDecisionsViewModel(for session: UserSession) -> ItemsPanelViewModel {
-        makeItemsPanelViewModel(for: session, convoID: nil)
+        let viewModel = makeItemsPanelViewModel(for: session, convoID: nil)
+        viewModel.onFirstPublish = { LaunchTimeline.shared.mark(.forYouCached) }
+        return viewModel
     }
 
     /// The Memories screen's "On your boxes" section: each box's own Claude

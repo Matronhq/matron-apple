@@ -30,6 +30,9 @@ private final class FakeItemsStore: ItemsStoreReading, @unchecked Sendable {
         }
     }
     func itemOutboxCreatesStream() -> AsyncStream<[ItemOutboxRecord]> { AsyncStream { self.createsCont = $0 } }
+    /// What the needs-you-first read serves; `nil` is a store without it.
+    var needsUser: [TrackerItem]?
+    func needsUserItems() throws -> [TrackerItem]? { needsUser }
 }
 /// Main-actor bound: its async methods otherwise run off-main and race the test's reads.
 @MainActor
@@ -979,6 +982,40 @@ final class ItemsPanelLiveUpdateTests: XCTestCase {
 final class ItemsPanelItemsIndexTests: XCTestCase {
     private func store(changeFeed: Bool) throws -> JournalStore {
         try JournalStore(databaseURL: nil, ownSender: "user:alice", metrics: StoreMetrics(), usesChangeFeed: changeFeed)
+    }
+
+    /// For you draws the items that need the user from their own short
+    /// read, before the read of every item the device holds has returned.
+    func testForYouShowsWhatNeedsTheUserBeforeTheFullRead() async throws {
+        let store = FakeItemsStore()
+        let waiting = item("it_q", num: 7, kind: .question, awaiting: .user, updated: 50)
+        store.needsUser = [waiting]
+        let vm = ItemsPanelViewModel(convoID: nil, store: store, api: FakeAPI(), sync: FakeSync())
+        var firstPublishes = 0
+        vm.onFirstPublish = { firstPublishes += 1 }
+        vm.start()
+        try await waitUntil { vm.awaitingYou.map(\.id) == ["it_q"] }
+        XCTAssertEqual(firstPublishes, 1)
+        // The full read lands afterwards and takes over.
+        try await waitUntil { store.cont != nil }
+        let closed = item("it_c", num: 3, kind: .question, state: .closed, awaiting: nil, updated: 40)
+        store.cont?.yield([waiting, closed])
+        try await waitUntil { vm.decided.map(\.id) == ["it_c"] }
+        XCTAssertEqual(vm.awaitingYou.map(\.id), ["it_q"])
+        XCTAssertEqual(firstPublishes, 1, "once per view model")
+        vm.stop()
+    }
+
+    /// A conversation's pane reads its own items and never the app-wide
+    /// needs-you rows.
+    func testAConversationPaneSkipsTheNeedsYouFirstRead() async throws {
+        let store = FakeItemsStore()
+        store.needsUser = [item("it_other", num: 9, kind: .question, awaiting: .user, origin: "c2")]
+        let vm = ItemsPanelViewModel(convoID: "c1", store: store, api: FakeAPI(), sync: FakeSync())
+        vm.start()
+        try await waitUntil { store.cont != nil }
+        XCTAssertTrue(vm.sections.needsYou.isEmpty)
+        vm.stop()
     }
 
     private func item(_ id: String, num: Int, kind: ItemKind = .task, state: ItemState = .open,

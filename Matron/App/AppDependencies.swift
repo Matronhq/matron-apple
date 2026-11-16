@@ -342,6 +342,16 @@ final class AppDependencies {
         core.deviceID = Int64(session.deviceID)
         installApprovals(on: core, session: session, directory: sessionsDirectory)
         core.itemsStartTask = Task {
+            // Launch timings: when For you first matched the journal, and
+            // how long each list refresh took (the diagnostic file keeps
+            // the lines, so a slow one on a phone can be read afterwards).
+            await items.setRefreshObserver { scope, outcome, took in
+                guard scope == .all else { return }
+                if outcome == .succeeded { LaunchTimeline.shared.mark(.forYouFresh) }
+                let seconds = Double(took.components.seconds) + Double(took.components.attoseconds) * 1e-18
+                MatronFileLog.append(String(format: "For you refresh %@ in %.3f s",
+                                            outcome == .succeeded ? "ok" : "not ok", seconds))
+            }
             // Spec 2026-09-28 dashboard §3.7: an item change on a mission
             // refetches that mission, so its needs-you count stays current.
             await items.setMissionRefetcher { missionID in await missions.refreshMission(id: missionID) }
@@ -350,6 +360,18 @@ final class AppDependencies {
         core.missionsStartTask = Task { await missions.start() }
         core.projectsStartTask = Task { await projects.start() }
         core.coordinatorStartTask = Task { await coordinator.start() }
+        // Launch timing: the socket answering its hello.
+        core.connectedMarkTask = Task {
+            for await state in engine.stateStream() {
+                switch state {
+                case .catchingUp, .running:
+                    LaunchTimeline.shared.mark(.connected)
+                    return
+                case .connecting, .offline:
+                    continue
+                }
+            }
+        }
         notify.start()
         defaults.start()
         userSettings.start()
@@ -425,6 +447,15 @@ final class AppDependencies {
     /// `runIfDue()` on it.
     func journalMaintenance(for session: UserSession) -> JournalMaintenance {
         core(for: session).maintenance
+    }
+
+    /// Asks the journal what changed in the tracker, now: the app has come
+    /// to the foreground, and For you should not wait for the socket to be
+    /// checked, replaced and caught up. A refresh already running is
+    /// joined, not repeated.
+    func refreshForYou(for session: UserSession) {
+        let items = core(for: session).items
+        Task { await items.refresh(scope: .all) }
     }
 
     /// The session's `MissionsSync` actor — marker refetches and the
@@ -698,6 +729,7 @@ final class AppDependencies {
                 //    resume after the wipe below and re-stamp
                 //    `maintenance_last_run` on an empty `meta`, so `stop()`
                 //    awaits it (see `JournalMaintenance.stop`).
+                core.connectedMarkTask?.cancel()
                 await core.maintenanceStartTask?.value
                 await core.maintenance.stop()
                 // Best-effort server-side sign-out while the API still holds
