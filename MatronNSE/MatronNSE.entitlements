@@ -1,10 +1,22 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+	Hand-managed, like the other targets' entitlements (see project.yml).
+	The Keychain access group is the app's: the key that opens a push's
+	sealed content is a Keychain item in the app's default group, and an
+	item with no explicit group lands in the FIRST `keychain-access-groups`
+	entry. Keep this list identical to the app's (one entry, same string)
+	so both default to the same group.
+-->
 <plist version="1.0">
 <dict>
 	<key>com.apple.security.application-groups</key>
 	<array>
 		<string>group.chat.matron</string>
+	</array>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)chat.matron</string>
 	</array>
 </dict>
 </plist>

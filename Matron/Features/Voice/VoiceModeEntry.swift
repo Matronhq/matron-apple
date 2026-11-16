@@ -21,14 +21,8 @@ enum VoiceModeAvailability {
     /// whose recogniser is available. Below that its buttons are hidden;
     /// the app's floor stays where it is. Asked once a launch: the shell
     /// reads it every time its body runs.
-    ///
-    /// `VoiceCapture` exists only when the app was built by an Xcode with
-    /// the iOS 26 SDK (see `VoiceCapture.swift`); built by an older one,
-    /// voice mode is simply not there.
     @MainActor static let isSupported: Bool = {
-        #if compiler(>=6.2)
         if #available(iOS 26, *) { return VoiceCapture.isSupported }
-        #endif
         return false
     }()
 

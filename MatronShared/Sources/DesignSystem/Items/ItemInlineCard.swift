@@ -6,8 +6,8 @@ import MatronEvents
 /// PR B / Task 13). `created`/`closed` render as a compact card;
 /// `commented`/`reopened` render as `ItemInlineNote`, a one-line muted
 /// summary — both share this type so a caller can switch on `marker.action`
-/// once and get the right shape (`TimelineItemView`/`MacTimelineItemView`
-/// just drop this straight into the row, no branching of their own).
+/// once and get the right shape (`TimelineItemView`
+/// just drops this straight into the row, no branching of their own).
 /// `reordered`/`updated` never reach here — `JournalTimelineMapper` hides
 /// them before a `TimelineItem` is even built.
 public struct ItemInlineCard: View {

@@ -243,7 +243,8 @@ Send a few files from an agent with `send_attachment` (a `.md` file, one with `t
 
 - [ ] In Files, hold a zip and choose Copy. In a chat, tap the composer twice and choose Paste: the zip joins the tray as a chip showing its own name and size, and nothing is typed into the field.
 - [ ] Repeat with a file from iCloud Drive and with a PDF. Send: the message shows the file under the same name.
-- [ ] Paste a file over 50 MB: it is refused with a message naming the file.
+- [ ] Paste a file over 100 MB (100,000,000 bytes): it is refused with a message naming the file.
+- [ ] Attach a 100 MB video to a tracker reply: it stages and sends against a journal configured to accept 100 MB. A file one byte larger is refused before upload.
 
 ### Share sheet
 
@@ -321,6 +322,7 @@ Use a long conversation (thousands of events) unless an item says otherwise.
 - [ ] Select text wholly inside one fenced code block and copy: the pasteboard holds the bare code (no fence, no language tag, no surrounding prose).
 - [ ] An agent-chat request card and an agent-spawn request card in the timeline: Approve / Decline work, the card updates to its resolved state and its row resizes with no overlap; a started spawn's "Open room" opens it.
 - [ ] Item, milestone and mission cards/markers in the timeline: clicking each opens the tracker item pane, or the mission page, to the right entry.
+- [ ] Open an item with a long thread and scroll down: an up-arrow pill appears in the top-right corner, matching the chat's jump-to-my-message pill. Click it (or press ⌘↑ with the keyboard outside the reply box): the thread lands at its very top and the pill goes. A short thread never shows it, and ⌘↑ inside the reply box still moves the caret to the start.
 - [ ] A subtask card in the timeline: clicking it opens the sub-chat pane on that sub-chat.
 - [ ] Click a file attachment in a hosted row: the spinner shows while it downloads, then the file opens in its default app.
 - [ ] Drag a file and an image from Finder over the timeline rows (not only the empty area) and drop: the drop overlay shows while hovering anywhere on the column, and both land as attachments in the composer.
@@ -337,3 +339,67 @@ Needs a real device with a microphone; the simulator's synthetic mic is live at 
 - [ ] The recording bar names the microphone under the timer. iPhone with AirPods connected: it still says the iPhone's microphone; pick AirPods from the menu mid-note and the rest of the note comes from AirPods (play it back). The pick is remembered for the next note; pick the iPhone microphone to go back.
 - [ ] Mac with AirPods as the system input: the bar says AirPods while starting; pick the built-in microphone and the note starts over on it, nothing lost. The next note starts on the built-in microphone straight away. Pick another mic once the timer runs (AirPods to the built-in microphone, say): the bar names it at once, and the note switches to it without stopping. Keep talking through the switch, then play the sent note back: every word is there, the first part from the old mic and the rest from the new one. The next note starts on the new mic. "System default" goes back to following macOS.
 - [ ] Mac: unplug a picked USB microphone, then start a note: it records from the system default instead.
+
+## Notifications that say what they are about
+
+Needs a real iPhone and a journal that seals notification content. The simulator does not run the notification extension for a simulated push, so the opening step cannot be checked there.
+
+- [ ] Sign in, allow notifications, leave the app. Have an agent file a question for you: the notification shows the question's title, "Question" and the conversation's name under it, and the start of its text. Not "Your agent needs you".
+- [ ] With Settings ▸ Notifications ▸ Show Previews set to "When Unlocked", lock the iPhone and have another item filed: the lock screen shows a notification from Matron with no text until the iPhone is unlocked.
+- [ ] A question with buttons: hold the notification, the item's buttons are there with its labels. Tap one: the item shows that answer in the app and on another device, and the app did not open.
+- [ ] A first question with a set of buttons never seen before on this iPhone shows them too (the extension registers them as it arrives).
+- [ ] A notice: hold the notification, tap Seen: the notice closes.
+- [ ] Tap an item's notification: the app opens on that item, not on its conversation.
+- [ ] Two questions from one conversation: both notifications stay. A follow-up comment on one of them replaces that one's notification.
+- [ ] Turn on airplane mode, tap a button on a notification: a notification comes back saying the answer was not confirmed; tapping it opens the item.
+- [ ] Sign out and in again, then have an item filed: its notification still shows its text (the new session registered a new key).
+- [ ] Settings ▸ Notifications in the app, Coordinator mode: "Coordinator finished a turn" is off; the Coordinator finishing a turn sends nothing, an item for you still does.
+
+## Approval keys (on a real iPhone and a Mac with Touch ID)
+
+The Secure Enclave and the system's Face ID and Touch ID prompts cannot be
+driven from tests, so these are checked by hand, against a server that has
+approval keys on and an account with two-factor on.
+
+### Setting up and the keys screen
+
+- [ ] Settings ▸ Approval keys on an account with no key says "No approval key yet" and offers "Set Up with Password and Code".
+- [ ] Set up with the password and a code from the authenticator: no system prompt is shown, the screen changes to "This device can approve" and shows a fingerprint, and the key is listed as "Added with password and code".
+- [ ] A recovery code in place of the authenticator code is refused with a sentence saying so. A wrong code says the code is incorrect; three wrong tries say when to try again.
+- [ ] On a second device, "Ask a Device That Has a Key" shows a fingerprint and "Waiting for another device to approve". The first device lists the request with the same fingerprint; Approve… shows the confirm sheet and asks for Face ID or Touch ID; the second device then turns to "This device can approve" by itself.
+- [ ] Remove on another device's key asks to confirm, then for Face ID or Touch ID; the key shows struck through with the date. That device's screen says its key was removed and offers to set up a new one.
+- [ ] A Mac with no Touch ID says it can't hold a key and to use the iPhone.
+
+### Approving
+
+- [ ] A step-up question's button opens the confirm sheet with the item's number and title, the button's label and every subject line. Cancel sends nothing and the button stays unpressed. Confirm shows the system prompt; after it the button shows as chosen.
+- [ ] Cancel at the system prompt returns to the confirm sheet, which can be confirmed again or cancelled.
+- [ ] With the device offline, a step-up button says it can't wait for a connection; an ordinary item's button still queues.
+- [ ] Changing the password, turning two-factor off, changing the Coordinator, linking a device and signing out another device each open the confirm sheet over the sheet they were started from.
+- [ ] On a device with no key, on an account that has one, each of those says this device has no approval key, and nothing is sent.
+- [ ] Approve on a request to start a session on a protected box shows the task in full and the subject, then signs. Decline asks for nothing.
+
+### After signing in again, and biometry changes
+
+- [ ] Sign out and in again: Settings marks Approval keys as needing attention, the screen says the key needs re-attaching, and Re-attach asks for Face ID or Touch ID once. Approving something before re-attaching says Face ID is asked twice, and is.
+- [ ] Add a fingerprint (or reset Face ID) in the system settings: the screen says the key no longer works and offers a new one.
+- [ ] Several failed Face ID tries lock biometry: the confirm sheet says to unlock the device with its passcode, and there is no passcode button on the system prompt.
+
+### Locked boxes and the locked account
+
+- [ ] A locked box shows a lock and "Locked". Unlock… offers 15 minutes, 30 minutes (selected), 1 hour and 2 hours; after Face ID the box shows "Unlocked for N more minutes" and Lock Now.
+- [ ] Lock Now needs no Face ID and returns the box to "Locked".
+- [ ] A box in lockdown answers an unlock with a sentence saying so and offers Clear Lockdown…, which asks for Face ID.
+- [ ] While the server answers 423, "This account is locked" shows across the top of the app, and goes when the lock is cleared.
+
+### Unlocking a locked account
+
+Needs a test journal with a panic token set, and an approval key on the
+iPhone enrolled more than a day before the lock (or its `created_at` moved
+back on the test database).
+
+- [ ] Lock the account with the panic token. The iPhone shows the locked screen ("This account is locked", the time it began, Unlock with Face ID); a device with no key goes to the sign-in screen, which says the device was signed out because the account was locked.
+- [ ] Unlock with Face ID shows the confirm sheet with `op: clear_panic` and the lock's start as `since`. Cancel leaves the locked screen as it was.
+- [ ] Confirm with Face ID: the locked screen goes, chats and items load again without signing in, and the other devices are signed out. Quit and reopen the app: it is still signed in (the new token was saved).
+- [ ] Lock again, turn off the network after confirming but before the answer arrives, then turn it on: if the account was unlocked, the app goes to the sign-in screen and says the server's answer was lost. Sign in, then remove the old entry for this device in Settings ▸ Devices (Face ID re-attaches the key first).
+- [ ] With the account locked, a key enrolled less than a day ago does not freeze the device: it is signed out like a device with no key.

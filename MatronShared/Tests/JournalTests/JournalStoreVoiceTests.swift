@@ -191,6 +191,16 @@ final class JournalStoreVoiceTests: XCTestCase {
         XCTAssertNil(rows.first?.agentName)
     }
 
+    func testASilentCardIsNotAQuestion() throws {
+        let store = try makeStore()
+        _ = try store.applyJournalBatch([
+            prompt(1, payload: ["question": "Reminder set", "options": ["Send now", "Cancel"],
+                                "blocking": false, "silent": true]),
+            prompt(2),
+        ])
+        XCTAssertEqual(try store.unansweredPrompts(since: Date(timeIntervalSince1970: 0)).map(\.event.seq), [2])
+    }
+
     func testAnAnsweredPromptIsLeftOut() throws {
         let store = try makeStore()
         _ = try store.applyJournalBatch([

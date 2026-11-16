@@ -1,4 +1,3 @@
-#if os(macOS)
 import CoreGraphics
 
 /// Shared sizing for the Settings window's panes.
@@ -8,4 +7,3 @@ enum MacSettingsLayout {
     /// sets the floor: its list needs the room.
     static let paneWidth: CGFloat = 560
 }
-#endif

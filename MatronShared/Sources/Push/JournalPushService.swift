@@ -2,7 +2,7 @@ import Foundation
 import UserNotifications
 import MatronJournal
 
-/// `PushService` implementation backed by the journal server's
+/// Push registration backed by the journal server's
 /// `/push/register` endpoint (`JournalAPI.registerPush` /
 /// `unregisterPush`), replacing `PushServiceLive`'s SDK-side
 /// `setPusher`/`deletePusher` calls now that push registration is a plain
@@ -12,16 +12,24 @@ import MatronJournal
 /// stored state is a value type (`JournalAPI` is an actor reference, safe
 /// to share) plus a `Sendable` enum, but nothing here actually needs the
 /// opt-out — kept for parity with the sibling live service.
-public final class JournalPushService: PushService, @unchecked Sendable {
+public final class JournalPushService: @unchecked Sendable {
     private let api: JournalAPI
     private let environment: JournalAPI.PushEnvironment
+    private let pushKey: @Sendable () -> String?
 
     /// The app decides sandbox vs. prod (`#if DEBUG` → `.sandbox`, else
     /// `.prod`) at the call site in a later task; this service just
     /// forwards whichever environment it's constructed with.
-    public init(api: JournalAPI, environment: JournalAPI.PushEnvironment) {
+    ///
+    /// `pushKey` gives this device's public key for sealed notification
+    /// content, asked for at each registration. The iPhone app passes its
+    /// `PushKeyStore`; a platform with no notification extension to open
+    /// the content leaves it out and registers without one.
+    public init(api: JournalAPI, environment: JournalAPI.PushEnvironment,
+                pushKey: @escaping @Sendable () -> String? = { nil }) {
         self.api = api
         self.environment = environment
+        self.pushKey = pushKey
     }
 
     public func requestPermission() async -> Bool {
@@ -33,12 +41,13 @@ public final class JournalPushService: PushService, @unchecked Sendable {
         }
     }
 
-    /// `pusherBaseURL` is part of the legacy `PushService` protocol
+    /// `pusherBaseURL` is part of the legacy push registration
     /// signature (the Sygnal pusher URL); the journal server doesn't need
     /// it — registration is keyed on the authenticated device alone — so
     /// its value is ignored here.
     public func registerToken(_ deviceToken: Data, pusherBaseURL: URL) async throws {
-        try await api.registerPush(tokenHex: Self.hexString(from: deviceToken), environment: environment)
+        try await api.registerPush(tokenHex: Self.hexString(from: deviceToken), environment: environment,
+                                   pushKey: pushKey())
     }
 
     public func unregister(deviceToken: Data, pusherBaseURL: URL) async throws {

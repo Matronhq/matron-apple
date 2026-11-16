@@ -8,6 +8,11 @@ public enum CredentialSignal: Sendable, Equatable {
     /// `auth`): the device was signed out, from another device or by the
     /// server. Definitive.
     case rejected
+    /// The journal said the whole account is locked: a `panic` frame on
+    /// the live socket, or a hello refused with `account_locked`. It says
+    /// nothing about this device's token on its own, though a lock signs
+    /// every device out, so a rejection usually follows.
+    case accountLocked(AccountLock)
 }
 
 /// Decides when this device's credentials have been revoked, so the app can
@@ -43,6 +48,10 @@ public final class CredentialRevocationMonitor: @unchecked Sendable {
     private var firstRejectionAt: ContinuousClock.Instant?
     private var armed = true
     private var fired = false
+    /// Held while this device's unlock of a locked account is in flight: a
+    /// refusal then may be of the token the unlock is replacing.
+    private var holds = 0
+    private var heldRejection = false
 
     public init(
         rejectionThreshold: Int = 3,
@@ -72,6 +81,8 @@ public final class CredentialRevocationMonitor: @unchecked Sendable {
             lock.unlock()
         case .rejected:
             fireOnce()
+        case .accountLocked:
+            break
         }
     }
 
@@ -108,8 +119,35 @@ public final class CredentialRevocationMonitor: @unchecked Sendable {
         firstRejectionAt = nil
     }
 
+    /// Holds back a revoke while this device unlocks a locked account. The
+    /// journal can unlock before its answer arrives, and the old token is
+    /// refused from that moment: a refusal then says nothing about the
+    /// new token the answer carries.
+    public func hold() {
+        lock.lock()
+        holds += 1
+        lock.unlock()
+    }
+
+    /// Ends a `hold()`. `discard`: the unlock went through and this device
+    /// took its new token, so a refusal held meanwhile was of the old one.
+    /// Otherwise a held refusal fires now.
+    public func release(discard: Bool) {
+        lock.lock()
+        holds = max(0, holds - 1)
+        let fire = holds == 0 && heldRejection && !discard
+        if holds == 0 { heldRejection = false }
+        lock.unlock()
+        if fire { fireOnce() }
+    }
+
     private func fireOnce() {
         lock.lock()
+        if holds > 0 {
+            heldRejection = true
+            lock.unlock()
+            return
+        }
         guard armed, !fired else {
             lock.unlock()
             return

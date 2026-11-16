@@ -32,10 +32,12 @@ struct NewChatSheet: View {
         self.session = session
         self.startOn = startOn
         self.onCreated = onCreated
-        _viewModel = State(initialValue: NewChatViewModel(
+        let model = NewChatViewModel(
             api: deps.agentRPCService(for: session),
             capacityCache: deps.boxCapacityCache(for: session),
-            pinnedModel: pinnedModel))
+            pinnedModel: pinnedModel)
+        model.approvalSigner = deps.approvalSigner(for: session)
+        _viewModel = State(initialValue: model)
     }
 
     var body: some View {

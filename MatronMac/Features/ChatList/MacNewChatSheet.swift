@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 import MatronDesignSystem
 import MatronJournal
@@ -73,10 +72,12 @@ struct MacNewChatSheet: View {
         self.startOn = startOn
         self.onCreated = onCreated
         _layout = State(initialValue: Self.layout(for: windowSize))
-        _viewModel = State(initialValue: NewChatViewModel(
+        let model = NewChatViewModel(
             api: deps.agentRPCService(for: session),
             capacityCache: deps.boxCapacityCache(for: session),
-            pinnedModel: pinnedModel))
+            pinnedModel: pinnedModel)
+        model.approvalSigner = deps.approvalSigner(for: session)
+        _viewModel = State(initialValue: model)
     }
 
     var body: some View {
@@ -564,4 +565,3 @@ struct MacAgentPickerHeader: View {
         .accessibilityHidden(true)
     }
 }
-#endif

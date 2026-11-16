@@ -283,7 +283,7 @@ final class MacChatViewTranscriptTests: XCTestCase {
 
     /// `sender` carries the already-stripped display form the journal
     /// mapper produces (`"claude"`, `"alice"`), NOT a full `agent:claude`
-    /// id — `MacTimelineItemView.displayName(for:)` splits on ":" and
+    /// id — `TimelineItemView.displayName(for:)` splits on ":" and
     /// would render the latter as "agent".
     private func item(_ id: String, _ kind: TimelineItem.Kind, own: Bool) -> TimelineItem {
         TimelineItem(id: id, sender: own ? "alice" : "claude", timestamp: t, kind: kind, isOwn: own)

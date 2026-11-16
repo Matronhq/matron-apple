@@ -287,10 +287,23 @@ final class StoreChangeFeed: TransactionObserver, @unchecked Sendable {
         switch table {
         case .item: pendingItems.insert(event.rowID)
         case .comment: pendingComments.insert(event.rowID)
-        case .event: pendingEvents.insert(event.rowID)
+        case .event:
+            pendingEvents.insert(event.rowID)
+            // A bulk write (an archive purge, the For-you-only drop, a big
+            // catch-up) would otherwise be looked up again row by row on
+            // the writer at commit and handed whole to every open tail. Past
+            // this many rows one reload per subscriber is cheaper.
+            if pendingEvents.count > Self.eventRowsBeforeReset {
+                pendingEvents = []
+                pendingReset.insert(.event)
+            }
         default: pendingConversations.insert(event.rowID)
         }
     }
+
+    /// Event rows one transaction may change before the feed publishes it
+    /// as a reset of `event` instead of itemising them.
+    static let eventRowsBeforeReset = 5_000
 
     /// A change GRDB could not itemise (`Database.notifyChanges(in:)`).
     /// The store makes none today; if it ever does, subscribers reload.
@@ -534,10 +547,20 @@ extension JournalStore {
         tables: StoreFeedTables,
         snapshot: @escaping @Sendable (Database) throws -> Snapshot
     ) -> AsyncStream<StoreFeedEvent<Snapshot>> {
-        AsyncStream { continuation in
+        // Weak: the subscription's callbacks live in the feed's subscriber
+        // list, which the store owns, so a strong reference here would keep
+        // the store (and its indexes) alive for as long as any stream is
+        // left un-cancelled, sign-out included. With the store gone the
+        // stream ends.
+        weak let store = self
+        return AsyncStream { continuation in
             let holder = FeedSubscriptionHolder()
             func subscribe() {
-                let subscription = observeChanges(tables: tables, snapshot: snapshot, onEvent: { event in
+                guard let store else {
+                    continuation.finish()
+                    return
+                }
+                let subscription = store.observeChanges(tables: tables, snapshot: snapshot, onEvent: { event in
                     if case .snapshot = event { holder.recordSuccess() }
                     continuation.yield(event)
                 }, onError: { error in
@@ -559,13 +582,15 @@ extension JournalStore {
 }
 
 /// How long to wait before subscribing to the feed again after a failure:
-/// 1 s, doubling with each consecutive failure, capped at 30 s. A database
+/// 1 s, doubling with each consecutive failure, capped at 8 s. A database
 /// that keeps failing its snapshot read (I/O trouble, a suspended store
-/// that stays suspended) is retried a few times a minute, not every second
-/// for as long as it lasts.
+/// that stays suspended) is retried several times a minute, not every
+/// second for as long as it lasts; and a list whose first read failed while
+/// the store was suspended in the background loads at most 8 s after the
+/// app comes back.
 struct ResubscribeBackoff {
     static let firstDelay: TimeInterval = 1
-    static let maxDelay: TimeInterval = 30
+    static let maxDelay: TimeInterval = 8
 
     private(set) var consecutiveFailures = 0
 

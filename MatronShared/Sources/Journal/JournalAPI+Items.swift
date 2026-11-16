@@ -148,9 +148,29 @@ public protocol ItemsProviding: Sendable {
     func reopenItem(id: String, comment: String?) async throws -> TrackerItem
     func rankItem(id: String, _ change: ItemRankChange) async throws -> TrackerItem
     func uploadMedia(_ data: Data, contentType: String) async throws -> String
+    /// The same upload with the body streamed from a file, so a large
+    /// attachment is never held in memory whole.
+    func uploadMedia(fileAt url: URL, contentType: String) async throws -> String
+    /// A tap carrying the user's signed approval: a button on a step-up
+    /// item or follow-up question (an `item_tap` statement), or Approve on
+    /// a consent item aimed at a protected box (a `consent` statement).
+    /// Sent at once, never queued: a signature must not wait on disk.
+    func tapItem(id: String, action: String, replyTo: String?, approval: SignedApproval, idempotencyKey: String) async throws -> (item: TrackerItem, comment: TrackerComment?)
 }
 
 public extension ItemsProviding {
+    /// A provider without a streaming upload reads the file and sends its bytes.
+    func uploadMedia(fileAt url: URL, contentType: String) async throws -> String {
+        let data = try await Task.detached(priority: .userInitiated) { try Data(contentsOf: url) }.value
+        return try await uploadMedia(data, contentType: contentType)
+    }
+
+    /// A provider that cannot carry an approval refuses the tap rather
+    /// than sending it unsigned.
+    func tapItem(id: String, action: String, replyTo: String?, approval: SignedApproval, idempotencyKey: String) async throws -> (item: TrackerItem, comment: TrackerComment?) {
+        throw JournalAPIError.approvalRequired
+    }
+
     /// A provider that knows nothing of `replaces` posts the reply without
     /// the link: the words still go.
     func commentItem(id: String, body: String, attachments: [TrackerAttachment], action: String?, replyTo: String?, replaces: String?, idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment?) {
@@ -159,6 +179,10 @@ public extension ItemsProviding {
 }
 
 extension JournalAPI: ItemsProviding {
+    public func uploadMedia(fileAt url: URL, contentType: String) async throws -> String {
+        try await uploadMedia(fileAt: url, contentType: contentType, progress: nil)
+    }
+
     private func decodeItem(_ obj: [String: Any]) throws -> TrackerItem {
         guard let item = (obj["item"] as? [String: Any]).flatMap(TrackerItem.init(json:)) else {
             throw JournalAPIError.transport("malformed item response")
@@ -191,8 +215,19 @@ extension JournalAPI: ItemsProviding {
         try await commentItem(id: id, body: body, attachments: attachments, action: action, replyTo: replyTo, replaces: nil, idempotencyKey: idempotencyKey)
     }
 
+    public func tapItem(id: String, action: String, replyTo: String?, approval: SignedApproval, idempotencyKey: String) async throws -> (item: TrackerItem, comment: TrackerComment?) {
+        try await commentItem(id: id, body: action, attachments: [], action: action, replyTo: replyTo, replaces: nil,
+                              approval: approval, idempotencyKey: idempotencyKey)
+    }
+
     public func commentItem(id: String, body: String, attachments: [TrackerAttachment], action: String?, replyTo: String?, replaces: String?, idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment?) {
+        try await commentItem(id: id, body: body, attachments: attachments, action: action, replyTo: replyTo, replaces: replaces,
+                              approval: nil, idempotencyKey: idempotencyKey)
+    }
+
+    private func commentItem(id: String, body: String, attachments: [TrackerAttachment], action: String?, replyTo: String?, replaces: String?, approval: SignedApproval?, idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment?) {
         var json: [String: Any] = ["body": body]
+        if let approval, action != nil { json["approval"] = approval.json }
         if let replaces { json["replaces"] = replaces }
         if let action {
             json["action"] = action

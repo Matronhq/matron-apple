@@ -62,6 +62,7 @@ struct AppShellView: View {
     @State var memoriesVM: MemoriesViewModel
     /// The Boxes page's view model. Reads nothing until the page shows.
     @State var boxesVM: BoxesViewModel
+    @State var usageHistoryVM: UsageHistoryViewModel
     /// The Memories screen's "On your boxes" section. Asks no box until
     /// the screen appears, and is stopped with it.
     @State var localMemoriesVM: LocalMemoriesViewModel
@@ -89,6 +90,7 @@ struct AppShellView: View {
         let shellNav = navigation ?? AppShellNavigation()
         #if DEBUG
         if BoxesDemoData.isRequested { shellNav.tab = .boxes }
+        if BoxesDemoData.isHistoryRequested { shellNav.boxesPath = [UsageHistoryScreen.path] }
         #endif
         _nav = State(initialValue: shellNav)
         _chatListVM = State(initialValue: ChatListViewModel(chat: deps.chatService(for: session)))
@@ -96,6 +98,7 @@ struct AppShellView: View {
         _missionsVM = State(initialValue: deps.makeMissionsDashboardViewModel(for: session))
         _memoriesVM = State(initialValue: deps.makeMemoriesViewModel(for: session))
         _boxesVM = State(initialValue: deps.makeBoxesViewModel(for: session))
+        _usageHistoryVM = State(initialValue: deps.makeUsageHistoryViewModel(for: session))
         _localMemoriesVM = State(initialValue: deps.makeLocalMemoriesViewModel(for: session))
         _coordinatorConvoID = AppStorage(CoordinatorSetting.defaultsKey(for: session.userID))
     }
@@ -243,6 +246,12 @@ struct AppShellView: View {
             reportTappedNotificationsSeen()
             nav.openChat(roomID)
         }
+        // A notification about a tracker item opens the item.
+        .onReceive(NotificationDelegate.shared.tappedItemID) { itemID in
+            reportTappedNotificationsSeen()
+            _ = NotificationDelegate.shared.consumePendingItemID()
+            nav.openItem(itemID)
+        }
         #if DEBUG || MATRON_PERF_PROBE
         // Perf gate (UIKit timeline plan, Task 29): open a conversation
         // straight from the launch environment — no UI automation needed.
@@ -257,7 +266,7 @@ struct AppShellView: View {
         // asked for (a /start sent from here) opens; a session an agent or
         // a routine started is marked new in the list and nothing moves.
         .task(id: session.userID) {
-            for await born in await deps.syncService(for: session).newConversations() {
+            for await born in deps.syncEngine(for: session).newConversations() {
                 if nav.conversationBorn(born) { chatListVM.markNew(born.id) }
             }
         }
@@ -273,6 +282,9 @@ struct AppShellView: View {
             reportTappedNotificationsSeen()
             if let pending = NotificationDelegate.shared.consumePendingRoomID() {
                 nav.openChat(pending)
+            }
+            if let pending = NotificationDelegate.shared.consumePendingItemID() {
+                nav.openItem(pending)
             }
         }
         // Mirror the cached setting into the nav rules and the list filter.
@@ -508,7 +520,9 @@ struct AppShellView: View {
     }
 
     @ViewBuilder private func boxesDestination(_ value: String) -> some View {
-        if let id = BoxRoute.id(from: value), let row = boxesVM.rows().first(where: { $0.id == id }) {
+        if value == UsageHistoryScreen.path {
+            UsageHistoryScreen(viewModel: usageHistoryVM)
+        } else if let id = BoxRoute.id(from: value), let row = boxesVM.rows().first(where: { $0.id == id }) {
             BoxSessionsView(row: row, onOpenChat: { nav.openChat($0) })
         }
     }

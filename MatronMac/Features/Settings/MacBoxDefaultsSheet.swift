@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 import MatronJournal
 import MatronViewModels
@@ -123,4 +122,3 @@ struct MacBoxDefaultsSheet: View {
         }
     }
 }
-#endif

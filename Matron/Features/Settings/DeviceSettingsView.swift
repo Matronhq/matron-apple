@@ -29,9 +29,14 @@ struct DeviceSettingsView: View {
     /// Filled by the `.task` below; `nil` while the read is in flight, which
     /// is what `StorageSettingsRows` renders as a spinner.
     @State private var storage: StorageSettingsRows.Model?
+    /// On unless turned off, matching `JournalStore.changeFeedEnabled(in:)`.
+    /// Read once, when the journal store opens, so it applies next launch.
+    @AppStorage(JournalStore.changeFeedFlagKey) private var usesChangeFeed = true
     /// Settings → Security, held here so its sheets present from the
     /// `Form` (see `securitySettingsSheet(_:)`); nil without `deps`.
     @State private var security: SecuritySettingsModel?
+    /// Settings → Approval keys; nil without `deps`.
+    @State private var approvalKeys: ApprovalKeysScreenModel?
 
     init(session: UserSession, devicesAPI: (any DevicesProviding)? = nil, linkAPI: (any DeviceLinking)? = nil,
          agentChatAPI: (any AgentChatProviding)? = nil, onSignOut: (() -> Void)? = nil,
@@ -47,6 +52,7 @@ struct DeviceSettingsView: View {
                                   passwordAPI: $0.passwordService(for: session),
                                   emailAPI: $0.accountEmailService(for: session))
         })
+        _approvalKeys = State(initialValue: deps.map { ApprovalKeysScreenModel(center: $0.approvals(for: session)) })
     }
 
     var body: some View {
@@ -62,6 +68,16 @@ struct DeviceSettingsView: View {
             }
             if let security {
                 TwoFactorSettingsSection(security: security)
+            }
+            if let approvalKeys {
+                Section {
+                    NavigationLink {
+                        ApprovalKeysScreen(model: approvalKeys)
+                    } label: {
+                        ApprovalKeysRowLabel(model: approvalKeys)
+                    }
+                    .accessibilityIdentifier("settings.approvalKeys")
+                }
             }
             if devicesAPI != nil || linkAPI != nil {
                 Section("Devices") {
@@ -119,6 +135,7 @@ struct DeviceSettingsView: View {
                 }
                 NewChatDefaultsSection(store: deps.newChatDefaults(for: session))
                 ForYouSettingsSection(store: deps.userSettings(for: session))
+                ProjectsPreviewSettingsSection()
                 SyncScopeSettingsSection(engine: deps.syncEngine(for: session))
                 AutoArchiveSettingsSection(store: deps.userSettings(for: session))
 
@@ -127,8 +144,14 @@ struct DeviceSettingsView: View {
                 VoiceSettingsSection(settings: voiceSettings, synth: deps?.speechSynthesiser(for: session))
             }
             if let deps {
-                Section("Storage") {
+                Section {
                     StorageSettingsRows(model: storage)
+                    Toggle(StorageSettingsRows.changeFeedTitle, isOn: $usesChangeFeed)
+                        .accessibilityIdentifier("settings.changeFeed")
+                } header: {
+                    Text("Storage")
+                } footer: {
+                    Text("\(StorageSettingsRows.changeFeedFooter) Takes effect the next time Matron opens.")
                 }
             }
             // Only offered when the device can actually authenticate —

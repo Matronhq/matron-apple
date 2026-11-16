@@ -173,7 +173,7 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
     /// Single source of truth for the two places that need to tell the
     /// difference and would otherwise drift: `ChatViewModel
     /// .hasMultipleSenders` (must not count this row's "agent" as a
-    /// distinct sender) and `TimelineItemView`/`MacTimelineItemView
+    /// distinct sender) and `TimelineItemView
     /// .avatarSender` (must not attribute a bubble to it either — the
     /// render-side twin of the same bug, Cursor Bugbot on PR #141).
     public var isEphemeralStreamingPlaceholder: Bool {

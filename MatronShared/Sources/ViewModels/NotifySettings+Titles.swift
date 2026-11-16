@@ -14,7 +14,7 @@ public extension NotifySettings.Mode {
 
     var subtitle: String {
         switch self {
-        case .coordinator: return "Only the Coordinator's turns and anything that needs you"
+        case .coordinator: return "Only what lands in For you and anything else that needs you"
         case .all: return "Every session's turns and anything that needs you"
         case .custom: return "Your own choice of the events below"
         }

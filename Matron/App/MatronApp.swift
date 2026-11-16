@@ -1,3 +1,4 @@
+import MatronPushContent
 import SwiftUI
 import UIKit
 import MatronAuth
@@ -28,7 +29,7 @@ struct MatronApp: App {
     /// `didRegisterForRemoteNotificationsWithDeviceToken` back to the same
     /// object every push registration cycle. Task 11 wires the delegate's
     /// `registerDeviceToken` callback directly to the journal
-    /// `PushService` — see the push `.task` below.
+    /// `JournalPushService` — see the push `.task` below.
     @UIApplicationDelegateAdaptor(MatronAppDelegate.self) private var appDelegate
 
     @State private var dependencies = AppRoot.dependencies
@@ -67,11 +68,12 @@ struct MatronApp: App {
                         .task { await bootstrap() }
                 } else if let session {
                     AppShellView(session: session, deps: dependencies, onSignOut: { signOut() })
+                        .accountLocked(dependencies, session: session, onSignOut: { signOut() })
                     // Settings (a sheet off the chat list) reads this to
                     // render the Privacy section — sheets inherit the
                     // presenting hierarchy's environment.
                     .environment(\.appLockController, appLock)
-                    .task { try? await dependencies.syncService(for: session).start() }
+                    .task { await dependencies.syncEngine(for: session).beginSync() }
                     // Push pipeline: request permission, register for
                     // remote notifications, and wire the delegate's device-
                     // token callback straight to the journal server's
@@ -102,14 +104,14 @@ struct MatronApp: App {
                     .onChange(of: scenePhase) { _, phase in
                         if phase == .active {
                             Task {
-                                let engine = dependencies.syncService(for: session) as? JournalSyncEngine
-                                await engine?.nudge()
+                                let engine = dependencies.syncEngine(for: session)
+                                await engine.nudge()
                                 // Half the default wait: the user is
                                 // looking at the screen, and a socket that
                                 // died while the app was suspended answers
                                 // nothing. Replacing a slow but live one
                                 // costs one reconnect.
-                                await engine?.verifyConnection(timeout: .milliseconds(1500))
+                                await engine.verifyConnection(timeout: .milliseconds(1500))
                             }
                             // For you first: one request for what changed in
                             // the tracker, sent now rather than once the
@@ -190,7 +192,9 @@ struct MatronApp: App {
                     let linkViewModel = LinkSignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron iOS")
                     SignInView(
                         viewModel: revokedSession.map {
-                            SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron iOS", signedOutRemotely: $0)
+                            SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron iOS", signedOutRemotely: $0,
+                                            accountLocked: dependencies.accountLock.isLocked,
+                                            unlockAnswerLost: AppDependencies.pendingUnlock(for: $0).isPending)
                         } ?? SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron iOS"),
                         linkViewModel: linkViewModel,
                         rendezvousViewModel: RendezvousSignInViewModel(relay: RelayClient(), link: linkViewModel),
@@ -210,6 +214,8 @@ struct MatronApp: App {
                                 await dependencies.awaitPendingTeardown()
                                 await dependencies.wipeLocalDataForFreshLogin()
                                 self.revokedSession = nil
+                                dependencies.accountLock.cleared()
+                                AppDependencies.pendingUnlock(for: session).clear()
                                 self.session = session
                                 CarPlayLink.shared.publish(session: session)
                             }
@@ -235,7 +241,7 @@ struct MatronApp: App {
                 DatabaseLifecycle.sceneDidChange(to: phase) {
                     guard let session else { return }
                     OutboxBackgroundGrace.holdIfNeeded(
-                        engine: dependencies.syncService(for: session) as? JournalSyncEngine)
+                        engine: dependencies.syncEngine(for: session))
                 }
             }
             // Shareable tracker links opened from outside the app
@@ -330,6 +336,10 @@ struct MatronApp: App {
         // callback survives sign-out"). The next session's push .task
         // installs a fresh one.
         appDelegate.registerDeviceToken = nil
+        // The key for sealed notification content belongs to the session
+        // that registered it: the next sign-in makes and registers a new
+        // one, and nothing sealed for this account opens after it.
+        PushKeyStore.live().delete()
         // Drop any buffered cold-start tap so the next sign-in's task
         // doesn't drain a stale room ID from the prior account.
         NotificationDelegate.shared.clearPendingRoomID()

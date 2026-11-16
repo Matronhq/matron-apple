@@ -111,6 +111,10 @@ public final class ItemDetailViewModel {
     private let store: any ItemsStoreReading
     private let api: any ItemsProviding
     private let sync: any ItemsSyncing
+    /// Signs the taps that need an approval key (step-up items and
+    /// follow-up questions). Set by the app; without it such a tap is
+    /// refused with a sentence rather than sent unsigned.
+    public var approvalSigner: ApprovalSigner?
     /// The origin conversation's consent rows — the card's own payload and
     /// its outcome. Optional so existing call sites construct unchanged; a
     /// view model without it draws no card and so never answers.
@@ -953,12 +957,19 @@ public final class ItemDetailViewModel {
         spawnTransient = .sending
         refreshSpawnConsent()
         do {
-            try await agentSpawn.answerAgentSpawn(requestID: consent.requestID, decision: approve ? .approve : .deny)
+            let request = consent.request
+            try await agentSpawn.answerAgentSpawn(
+                SpawnAsk(requestID: consent.requestID, targetDeviceID: request?.targetDeviceID,
+                         workdir: request?.workdir, task: request?.task, headline: request?.headline),
+                decision: approve ? .approve : .deny)
             spawnTransient = .resolved(approve
                 ? .approved(requestID: consent.requestID)
                 : SpawnOutcome(requestID: consent.requestID, outcome: SpawnOutcome.Kind.declined.rawValue))
             await sync.refreshItem(id: itemID)
         } catch is CancellationError {
+            spawnTransient = nil
+        } catch ApprovalKeyFailure.cancelled {
+            // Backed out of the approval: the card is answerable again.
             spawnTransient = nil
         } catch JournalAPIError.conflict {
             spawnTransient = .resolved(.expired(requestID: consent.requestID))
@@ -1070,10 +1081,9 @@ public final class ItemDetailViewModel {
         var uploaded: [TrackerAttachment] = []
         do {
             for a in attachments {
-                let url = a.url
-                let data = try await Task.detached(priority: .userInitiated) { try Data(contentsOf: url) }.value
-                let ref = try await api.uploadMedia(data, contentType: a.mimeType)
-                uploaded.append(TrackerAttachment(blobRef: ref, mime: a.mimeType, name: a.filename, size: Int64(data.count)))
+                // Streamed from the staged file: a 100 MB video is never read into memory.
+                let ref = try await api.uploadMedia(fileAt: a.url, contentType: a.mimeType)
+                uploaded.append(TrackerAttachment(blobRef: ref, mime: a.mimeType, name: a.filename, size: Int64(a.sizeBytes)))
             }
         } catch {
             restoreUnsent(attachments, text: pending, note: note, localID: localID)
@@ -1134,12 +1144,12 @@ public final class ItemDetailViewModel {
     /// capped here (the Mac pane's old attach path enforced it); the check
     /// runs at attach time so an oversized file is refused while the user
     /// is still looking at what they picked, not at Send.
-    public nonisolated static let maxAttachmentBytes = 25 * 1024 * 1024
+    public nonisolated static let maxAttachmentBytes = AttachmentLimits.maxBytes
 
     /// The refusal for a file over `maxAttachmentBytes`, shared with the
     /// iOS host's pre-read check so both say the same thing.
     public nonisolated static func oversizeMessage(filename: String) -> String {
-        "\(filename) is larger than 25 MB and wasn't attached."
+        "\(filename) is larger than 100 MB and wasn't attached."
     }
 
     // MARK: Staged attachments
@@ -1209,6 +1219,20 @@ public final class ItemDetailViewModel {
         guard !isBusy, offeredActions.contains(label), label != selectedAction else { return }
         enqueueingAction = label
         sawEnqueuedRow = false
+        // A step-up item's tap is confirmed, signed and posted at once; it
+        // never waits in the outbox.
+        if let item, let sent = await sendSigned(item: item, comment: nil, label: label) {
+            if let fresh = try? store.item(id: itemID) {
+                self.item = fresh
+                subscribeConsentRows()
+                refreshSpawnConsent()
+            }
+            // Sent: the marker stays until the item stream shows the
+            // choice, as for a queued tap (a snapshot from before the tap
+            // can still arrive). Not sent: the button is free again.
+            if !sent, enqueueingAction == label { enqueueingAction = nil }
+            return
+        }
         await sync.enqueueComment(itemID: itemID, localID: UUID().uuidString, body: label, attachments: [], action: label, replyTo: nil)
         // Take the store's answer now rather than waiting on the streams:
         // the row still queued (offline) or the item the posted tap
@@ -1308,6 +1332,13 @@ public final class ItemDetailViewModel {
               label != selectedCommentActions[commentID] else { return }
         enqueueingCommentActions[commentID] = label
         sawEnqueuedCommentRows.remove(commentID)
+        if let sent = await sendSigned(item: item, comment: asking, label: label) {
+            if let fresh = try? store.item(id: itemID) { self.item = fresh }
+            if let thread = try? store.comments(itemID: itemID) { comments = thread }
+            // As above: a sent tap's marker waits for the comments stream.
+            if !sent, enqueueingCommentActions[commentID] == label { clearEnqueueingCommentAction(commentID) }
+            return
+        }
         await sync.enqueueComment(itemID: itemID, localID: UUID().uuidString, body: label, attachments: [], action: label, replyTo: commentID)
         // The store's answer now, as in `chooseAction`: the row still
         // queued (offline), or the thread the posted tap updated — the
@@ -1329,6 +1360,24 @@ public final class ItemDetailViewModel {
         let recorded = thread?.first { $0.id == commentID }?.chosenAction == label
         if queued, enqueueingCommentActions[commentID] == label { sawEnqueuedCommentRows.insert(commentID) }
         if !queued, !recorded, enqueueingCommentActions[commentID] == label { clearEnqueueingCommentAction(commentID) }
+    }
+
+    /// Sends a tap that needs a signature. `nil` when no signature applies
+    /// and the outbox should take it; otherwise whether it was sent (not
+    /// sent: cancelled, or refused with `error` saying why).
+    private func sendSigned(item: TrackerItem, comment: TrackerComment?, label: String) async -> Bool? {
+        // A spawn ask's task, as its card carries it: the only text a
+        // consent approval for it may be signed over.
+        let task = comment == nil ? spawnConsent?.request?.task : nil
+        switch await StepUpTap.send(item: item, comment: comment, label: label, verifiedText: task, api: api, sync: sync,
+                                    signer: approvalSigner) {
+        case .unsigned: return nil
+        case .sent: return true
+        case .cancelled: return false
+        case .failed(let message):
+            error = message
+            return false
+        }
     }
 
     private func clearEnqueueingCommentAction(_ commentID: String) {

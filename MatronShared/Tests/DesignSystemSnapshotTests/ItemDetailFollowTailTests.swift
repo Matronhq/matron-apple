@@ -97,4 +97,11 @@ final class ItemResolveControlLabelTests: XCTestCase {
         XCTAssertEqual(ItemResolveControl.actionLabel(.reversed), "Reverse")
         XCTAssertEqual(ItemResolveControl.actionLabel(.cancelled), "Dismiss")
     }
+
+    func test_jumpToTopShowsOnlyAwayFromTheTopOfAnOverflowingThread() {
+        XCTAssertTrue(ItemDetailView.showsJumpToTop(placed: true, scrollable: true, atTop: false))
+        XCTAssertFalse(ItemDetailView.showsJumpToTop(placed: true, scrollable: true, atTop: true))
+        XCTAssertFalse(ItemDetailView.showsJumpToTop(placed: true, scrollable: false, atTop: false))
+        XCTAssertFalse(ItemDetailView.showsJumpToTop(placed: false, scrollable: true, atTop: false))
+    }
 }

@@ -190,7 +190,7 @@ final class PastedAttachmentTests: XCTestCase {
         } catch {
             XCTAssertEqual(error as? PastedAttachmentError, .tooLarge(name: "huge.zip"))
             XCTAssertEqual(error.localizedDescription,
-                           "huge.zip is too large to attach. The limit is 52.4 MB.")
+                           "huge.zip is too large to attach. The limit is 100 MB.")
         }
     }
 

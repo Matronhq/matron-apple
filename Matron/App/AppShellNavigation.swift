@@ -291,7 +291,7 @@ final class AppShellNavigation {
     }
 
     /// A conversation born while the app is live
-    /// (`SyncService.newConversations()`). One this device asked for opens
+    /// (`JournalSyncEngine.newConversations()`). One this device asked for opens
     /// (`autoOpenChat`). Any other — a session an agent, the Coordinator or
     /// a routine started, or the user started on another device — changes
     /// nothing here: no tab switch, no push. Returns whether the list

@@ -39,15 +39,25 @@ struct MacItemNativeThread: View {
     var body: some View {
         VStack(spacing: 0) {
             if !fillsTitleBar { detail.resolveControlRow() }
-            MacItemThreadRepresentable(factory: factory, proxy: proxy,
-                                       linkAnswers: trackerNumberLinks?.titles?.answers ?? [:])
-                // On Decisions the thread runs up under the clear title
-                // bar, as the SwiftUI thread does (`fillingTitleBar`).
-                .ignoresSafeArea(.container, edges: fillsTitleBar ? .top : [])
-                .overlay(alignment: .bottomTrailing) {
-                    if proxy.showsJump { JumpToBottomButton { proxy.jump() } }
+            // The jump-to-top pill sits in the stack, not on the table, so
+            // it stays below the title bar when the table runs up under it.
+            ZStack(alignment: .topTrailing) {
+                MacItemThreadRepresentable(factory: factory, proxy: proxy,
+                                           linkAnswers: trackerNumberLinks?.titles?.answers ?? [:])
+                    // On Decisions the thread runs up under the clear title
+                    // bar, as the SwiftUI thread does (`fillingTitleBar`).
+                    .ignoresSafeArea(.container, edges: fillsTitleBar ? .top : [])
+                    .overlay(alignment: .bottomTrailing) {
+                        if proxy.showsJump { JumpToBottomButton { proxy.jump() } }
+                    }
+                if proxy.showsJumpToTop {
+                    JumpToTopButton { proxy.jumpToTop() }
+                        .padding(.trailing, 16)
+                        .padding(.top, 8)
                 }
-                .animation(.easeInOut(duration: 0.18), value: proxy.showsJump)
+            }
+            .animation(.easeInOut(duration: 0.18), value: proxy.showsJump)
+            .animation(.easeInOut(duration: 0.18), value: proxy.showsJumpToTop)
             Divider()
             detail.replyComposer()
         }
@@ -67,7 +77,8 @@ struct MacItemNativeThread: View {
 }
 
 /// What the face reads back from the table: whether the reader is at the
-/// bottom of a thread that overflows, and a way to send them there.
+/// top or the bottom of a thread that overflows, and a way to send them
+/// to either end.
 @MainActor @Observable
 final class MacItemThreadProxy {
     var geometry = MacItemThreadController.Geometry()
@@ -78,7 +89,13 @@ final class MacItemThreadProxy {
                                          atBottom: geometry.atBottom)
     }
 
+    var showsJumpToTop: Bool {
+        ItemDetailView.showsJumpToTop(placed: geometry.placed, scrollable: geometry.scrollable, atTop: geometry.atTop)
+    }
+
     func jump() { controller?.scrollToBottom() }
+
+    func jumpToTop() { controller?.scrollToTop() }
 }
 
 struct MacItemThreadRepresentable: NSViewControllerRepresentable {

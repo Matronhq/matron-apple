@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 import AppKit
 import MatronJournal
@@ -91,4 +90,3 @@ struct MacChangePasswordSheet: View {
         }
     }
 }
-#endif

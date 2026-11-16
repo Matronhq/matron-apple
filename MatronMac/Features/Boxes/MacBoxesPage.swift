@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 import AppKit
 import MatronDesignSystem
@@ -14,8 +13,11 @@ struct MacBoxesPage: View {
     let onOpenConversation: (String) -> Void
 
     @State private var viewModel: BoxesViewModel
+    @State private var historyViewModel: UsageHistoryViewModel
+    @State private var showsHistory = false
     @State private var expanded: Set<Int64> = []
     @State private var startingOn: DeviceDTO?
+    @State private var unlocking: DeviceDTO?
 
     private static let sessionsWidth: CGFloat = 62
     /// Meters narrow first, so the box column keeps room for its login.
@@ -26,11 +28,20 @@ struct MacBoxesPage: View {
     /// Narrower than this the defaults column folds under the box's name.
     private static let wideLayoutMinWidth: CGFloat = 1_020
 
-    init(deps: AppDependencies, session: UserSession, onOpenConversation: @escaping (String) -> Void) {
+    /// `viewModel`, `historyViewModel` and `showsHistory` are for tests and
+    /// render harnesses; the app leaves them out.
+    init(deps: AppDependencies, session: UserSession, viewModel: BoxesViewModel? = nil,
+         historyViewModel: UsageHistoryViewModel? = nil, showsHistory: Bool = false,
+         onOpenConversation: @escaping (String) -> Void) {
         self.deps = deps
         self.session = session
         self.onOpenConversation = onOpenConversation
-        _viewModel = State(initialValue: deps.makeBoxesViewModel(for: session))
+        _viewModel = State(initialValue: viewModel ?? deps.makeBoxesViewModel(for: session))
+        _historyViewModel = State(initialValue: historyViewModel ?? deps.makeUsageHistoryViewModel(for: session))
+        _showsHistory = State(initialValue: showsHistory)
+        #if DEBUG
+        if BoxesDemoData.isHistoryRequested { _showsHistory = State(initialValue: true) }
+        #endif
     }
 
     var body: some View {
@@ -45,10 +56,22 @@ struct MacBoxesPage: View {
                         Text("Boxes").font(.title.bold())
                         Text(summary.countsText).font(.callout).foregroundStyle(.secondary)
                     }
-                    if let error = viewModel.errorMessage {
+                    Picker("View", selection: $showsHistory) {
+                        Text("Now").tag(false)
+                        Text("Usage history").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize()
+                    .accessibilityIdentifier("boxes.view")
+                    if showsHistory {
+                        MacUsageHistoryView(viewModel: historyViewModel)
+                    } else if let error = viewModel.errorMessage {
                         Text(error).font(.callout).foregroundStyle(.red)
                     }
-                    if rows.isEmpty {
+                    if showsHistory {
+                        EmptyView()
+                    } else if rows.isEmpty {
                         if viewModel.hasLoaded {
                             Text("No boxes yet. Pair one in Settings → Devices.")
                                 .foregroundStyle(.secondary)
@@ -82,6 +105,9 @@ struct MacBoxesPage: View {
                 startingOn = nil
                 onOpenConversation(convoID)
             }
+        }
+        .sheet(item: $unlocking) { device in
+            BoxUnlockSheet(device: device, viewModel: viewModel) { unlocking = nil }
         }
     }
 
@@ -168,6 +194,12 @@ struct MacBoxesPage: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
+            if viewModel.showsLock(row.device) {
+                BoxLockBar(device: row.device, viewModel: viewModel) { unlocking = $0 }
+                    .frame(maxWidth: 560, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 9)
+            }
             if expanded.contains(row.id) {
                 sessionList(row)
             }
@@ -191,6 +223,7 @@ struct MacBoxesPage: View {
                 } else if row.isMostSpare {
                     BoxBadge("Most spare", color: .green)
                 }
+                if row.device.isProtected { ProtectedBoxBadge() }
             }
             HStack(spacing: 4) {
                 if let caption = row.wake?.caption {
@@ -300,4 +333,3 @@ struct MacBoxesPage: View {
         .padding(.bottom, 10)
     }
 }
-#endif

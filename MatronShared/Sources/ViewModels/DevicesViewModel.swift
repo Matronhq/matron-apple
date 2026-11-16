@@ -17,12 +17,25 @@ public protocol DevicesProviding: Sendable {
     func pairApprove(code: String, agentName: String, tagChar: String?) async throws
     /// `PUT /devices/:id/defaults` for the picked keys; see `JournalAPI`.
     func setBoxDefaults(deviceID: Int64, _ picks: [BoxDefaults.Pick]) async throws -> BoxDefaults
+    /// Revokes another of the user's devices: signed once the account has
+    /// an approval key.
+    func revokeOtherDevice(id: Int64, name: String) async throws
+    /// Marks or unmarks an agent box as protected: signed likewise.
+    func setDeviceProtected(id: Int64, name: String, on: Bool) async throws
 }
 
 public extension DevicesProviding {
     /// For fakes that never edit box defaults: what a journal predating
     /// them answers.
     func setBoxDefaults(deviceID: Int64, _ picks: [BoxDefaults.Pick]) async throws -> BoxDefaults {
+        throw JournalAPIError.notFound
+    }
+
+    func revokeOtherDevice(id: Int64, name: String) async throws {
+        try await revokeDevice(id: id)
+    }
+
+    func setDeviceProtected(id: Int64, name: String, on: Bool) async throws {
         throw JournalAPIError.notFound
     }
 }
@@ -81,7 +94,11 @@ public final class DevicesViewModel {
     public func revoke(_ device: DeviceDTO) async {
         do {
             do {
-                try await api.revokeDevice(id: device.id)
+                if device.isSelf {
+                    try await api.revokeDevice(id: device.id)
+                } else {
+                    try await api.revokeOtherDevice(id: device.id, name: device.name)
+                }
             } catch JournalAPIError.notFound {
                 // Already gone — fall through to the success path.
             }
@@ -94,8 +111,27 @@ public final class DevicesViewModel {
                 devices.removeAll { $0.id == device.id }
                 await refresh()
             }
+        } catch ApprovalKeyFailure.cancelled {
+            // Backed out of the approval: nothing changed.
         } catch {
             errorMessage = "Couldn't revoke \(device.name) — \(Self.describe(error))"
+        }
+    }
+
+    /// Protects an agent box, or stops protecting it. A protected box's
+    /// work needs the user's own approval, signed once the account has an
+    /// approval key; the Coordinator cannot approve for it.
+    public func setProtected(_ device: DeviceDTO, on: Bool) async {
+        do {
+            try await api.setDeviceProtected(id: device.id, name: device.name, on: on)
+            errorMessage = nil
+            await refresh()
+        } catch ApprovalKeyFailure.cancelled {
+            // Backed out of the approval: nothing changed.
+        } catch JournalAPIError.notFound {
+            errorMessage = "This server can't protect boxes yet."
+        } catch {
+            errorMessage = "Couldn't change \(device.name) — \(Self.describe(error))"
         }
     }
 

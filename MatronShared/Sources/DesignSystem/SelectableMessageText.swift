@@ -83,7 +83,7 @@ public struct SelectableMessageText: View {
     static let realiseMargin: CGFloat = 400
 
     public var body: some View {
-        if defersTextView, !isRealised, #available(macOS 15.0, *) {
+        if defersTextView, !isRealised {
             DeferredTextBox(rendered: rendered) { Color.clear }
                 // Until it is built the body is an empty box; carry its words
                 // so VoiceOver reads a card still outside the realise margin

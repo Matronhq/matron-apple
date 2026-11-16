@@ -15,6 +15,6 @@ final class TimelineSharedSourcesTests: XCTestCase {
 
     func test_senderLabelsMatchBothItemViews() {
         XCTAssertEqual(TimelineSenderLabels.displayName(for: "@bot:server.com"), "bot")
-        XCTAssertEqual(MacTimelineItemView.displayName(for: "@bot:server.com"), "bot")
+        XCTAssertEqual(TimelineItemView.displayName(for: "@bot:server.com"), "bot")
     }
 }

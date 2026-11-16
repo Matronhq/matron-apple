@@ -17,6 +17,9 @@ public struct TimelinePlaceView<Footer: View>: View {
     let onAsk: (StalledProject) -> Void
     let onLoadMoreFinished: () -> Void
     let onLoadMoreProjects: () -> Void
+    /// The shown week's projects past its stories (`TimelineWeekView`).
+    let weekExtras: TimelineWeekExtras?
+    let onLoadMoreWeekProjects: () -> Void
     let onRetry: () -> Void
     let footer: Footer
 
@@ -24,18 +27,22 @@ public struct TimelinePlaceView<Footer: View>: View {
                 asked: Set<String>, onOpenProject: @escaping (String) -> Void,
                 onAsk: @escaping (StalledProject) -> Void, onLoadMoreFinished: @escaping () -> Void,
                 onLoadMoreProjects: @escaping () -> Void = {},
+                weekExtras: TimelineWeekExtras? = nil, onLoadMoreWeekProjects: @escaping () -> Void = {},
                 onRetry: @escaping () -> Void, @ViewBuilder footer: () -> Footer) {
         self.content = content; self.now = now; self.images = images; self.sizes = sizes; self.asked = asked
         self.onOpenProject = onOpenProject; self.onAsk = onAsk
         self.onLoadMoreFinished = onLoadMoreFinished; self.onLoadMoreProjects = onLoadMoreProjects
+        self.weekExtras = weekExtras; self.onLoadMoreWeekProjects = onLoadMoreWeekProjects
         self.onRetry = onRetry; self.footer = footer()
     }
 
     public var body: some View {
         switch content {
         case .week(let week):
-            TimelineWeekView(week: week, now: now, images: images, sizes: sizes,
-                             onOpenProject: onOpenProject) { footer }
+            // Paged projects read for another week never show under this one.
+            TimelineWeekView(week: week, extras: weekExtras.flatMap { $0.week == week.week ? $0 : nil },
+                             now: now, images: images, sizes: sizes, onOpenProject: onOpenProject,
+                             onLoadMore: onLoadMoreWeekProjects) { footer }
         case .projects(let list, let hasMore):
             AllProjectsListView(list: list, now: now, onOpenProject: onOpenProject,
                                 onLoadMore: hasMore ? onLoadMoreProjects : nil)
@@ -79,9 +86,12 @@ public extension TimelinePlaceView where Footer == EmptyView {
     init(content: TimelinePlaceContent, now: Date, images: [String: Image], sizes: [String: CGSize] = [:],
          asked: Set<String>, onOpenProject: @escaping (String) -> Void,
          onAsk: @escaping (StalledProject) -> Void, onLoadMoreFinished: @escaping () -> Void,
-         onLoadMoreProjects: @escaping () -> Void = {}, onRetry: @escaping () -> Void) {
+         onLoadMoreProjects: @escaping () -> Void = {},
+         weekExtras: TimelineWeekExtras? = nil, onLoadMoreWeekProjects: @escaping () -> Void = {},
+         onRetry: @escaping () -> Void) {
         self.init(content: content, now: now, images: images, sizes: sizes, asked: asked, onOpenProject: onOpenProject,
                   onAsk: onAsk, onLoadMoreFinished: onLoadMoreFinished,
-                  onLoadMoreProjects: onLoadMoreProjects, onRetry: onRetry) { EmptyView() }
+                  onLoadMoreProjects: onLoadMoreProjects, weekExtras: weekExtras,
+                  onLoadMoreWeekProjects: onLoadMoreWeekProjects, onRetry: onRetry) { EmptyView() }
     }
 }

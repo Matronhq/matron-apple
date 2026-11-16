@@ -388,8 +388,7 @@ final class MarkdownCodeBlockBoxTests: XCTestCase {
         guard let textView = find(hosting), let box = textView.codeBlockBoxes().first else {
             return XCTFail("no text view / no box")
         }
-        guard let image = CGWindowListCreateImage(.null, .optionIncludingWindow, CGWindowID(window.windowNumber),
-                                                  [.boundsIgnoreFraming, .bestResolution]),
+        guard let image = captureWindowImage(window),
               image.width > 0, let data = image.dataProvider?.data, let bytes = CFDataGetBytePtr(data) else {
             throw XCTSkip("window capture unavailable (headless runner)")
         }

@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 import MatronModels
 import MatronDesignSystem
@@ -91,4 +90,3 @@ struct MacDeviceLinkSheet: View {
         }
     }
 }
-#endif

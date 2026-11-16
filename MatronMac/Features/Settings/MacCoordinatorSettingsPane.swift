@@ -1,10 +1,9 @@
-#if os(macOS)
 import SwiftUI
 import MatronModels
 import MatronViewModels
 
 /// Settings → Coordinator: the Coordinator conversation and what it may
-/// approve, the pinned chats, For you, and the agent chat requests still
+/// approve, the pinned chats, For you, the Projects preview, and the agent chat requests still
 /// waiting on a decision.
 struct MacCoordinatorSettingsPane: View {
     let session: UserSession
@@ -15,6 +14,7 @@ struct MacCoordinatorSettingsPane: View {
             MacCoordinatorSettingRow(session: session, deps: deps)
             MacPinnedChatsSection(session: session, deps: deps, store: deps.pinsStore(for: session))
             MacForYouSettingsSection(store: deps.userSettings(for: session))
+            MacProjectsPreviewSettingsSection()
             MacAgentChatRequestsSection(api: deps.agentChatService(for: session))
         }
         .formStyle(.grouped)
@@ -23,4 +23,3 @@ struct MacCoordinatorSettingsPane: View {
         .frame(width: MacSettingsLayout.paneWidth, height: 780)
     }
 }
-#endif

@@ -26,6 +26,20 @@ final class TimelineHostStateTests: XCTestCase {
         XCTAssertFalse(state.isShown)
     }
 
+    /// Turned off in Settings after a visit: the next visit drops the
+    /// timeline and Projects is the home again; turned back on, it builds anew.
+    func testFlagTurnedOff_theNextVisitDropsTheTimeline() async {
+        let state = TimelineHostState()
+        await state.projectsShown(flagOn: true) { Self.viewModel(StubTimeline()) }?.value
+        XCTAssertTrue(state.isShown)
+        XCTAssertNil(state.projectsShown(flagOn: false) { XCTFail("built with the flag off"); return Self.viewModel() })
+        XCTAssertNil(state.viewModel)
+        XCTAssertFalse(state.isShown)
+        XCTAssertNil(state.place)
+        await state.projectsShown(flagOn: true) { Self.viewModel(StubTimeline()) }?.value
+        XCTAssertTrue(state.isShown)
+    }
+
     func testFlagOn_buildsOnce_showsOnceTheJournalAnswers_andLoadsTheCounts() async {
         let state = TimelineHostState()
         let timeline = StubTimeline()

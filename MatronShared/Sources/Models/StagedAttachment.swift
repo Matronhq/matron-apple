@@ -71,19 +71,31 @@ public struct StagedAttachment: Identifiable, Equatable, Sendable {
     /// journal event carries, and what claude sees in the upload annotation
     /// — while still letting two attachments with the same name coexist.
     public static func stage(copying source: URL) throws -> StagedAttachment {
-        let data = try Data(contentsOf: source)
+        // Copied file to file rather than read into memory: an attachment
+        // can be 100 MB. Only a regular file is accepted (a link is followed),
+        // as reading one did; a folder is refused rather than copied whole.
+        let file = source.resolvingSymlinksInPath()
+        guard try file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
+            throw CocoaError(.fileReadUnknown, userInfo: [NSFilePathErrorKey: source.path])
+        }
         let id = UUID()
         let directory = stagingDirectory.appendingPathComponent(id.uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let name = source.lastPathComponent.isEmpty ? "attachment" : source.lastPathComponent
         let destination = directory.appendingPathComponent(name)
-        try data.write(to: destination)
+        do {
+            try FileManager.default.copyItem(at: file, to: destination)
+        } catch {
+            try? FileManager.default.removeItem(at: directory)
+            throw error
+        }
+        let size = (try? FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? Int) ?? 0
         return StagedAttachment(
             id: id,
             url: destination,
             filename: name,
             mimeType: mimeType(forExtension: source.pathExtension),
-            sizeBytes: data.count
+            sizeBytes: size
         )
     }
 

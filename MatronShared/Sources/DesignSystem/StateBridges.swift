@@ -11,8 +11,8 @@ import MatronModels
 ///   `SyncBannerState`. Was duplicated as `bannerState(from:)` on iOS
 ///   `ChatListView` and Mac `MacChatListView`.
 /// - `SendStateGlyph.from(_:)` — `TimelineSendState` (MatronModels) →
-///   `SendStateGlyph`. Was duplicated as `sendStateGlyph(for:)` on iOS
-///   `TimelineItemView` and Mac `MacTimelineItemView`. The source enum
+///   `SendStateGlyph`. Was duplicated as `sendStateGlyph(for:)` in the
+///   iOS and Mac timeline item views. The source enum
 ///   is `MatronModels`-resident so the design-system target needn't
 ///   depend on `MatronChat`.
 

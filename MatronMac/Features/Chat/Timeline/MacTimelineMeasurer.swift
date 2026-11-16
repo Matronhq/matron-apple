@@ -244,7 +244,7 @@ final class MacTimelineMeasureCache {
     func streamingSizerForTesting(_ id: String) -> MarkdownAttributed.StreamingSizer? { streamingSizers[id] }
     #endif
 
-    /// The conversation-link pill row under a bubble, as `MacTimelineItemView`
+    /// The conversation-link pill row under a bubble, as `TimelineItemView`
     /// lays it out (full row width), with the titles the host holds now —
     /// the ones the row's `pillLabels` were built from.
     func pillsHeight(_ refs: [ConversationLinkRef], isOwn: Bool, hasAvatar: Bool, width: CGFloat) -> CGFloat {
@@ -253,7 +253,7 @@ final class MacTimelineMeasureCache {
                       width: width)
     }
 
-    /// The own-message send-state footer, as `MacTimelineItemView` lays it
+    /// The own-message send-state footer, as `TimelineItemView` lays it
     /// out (`.padding(.horizontal)` inside the row). `state` defaults to
     /// `.sending`; the glyph (not a `.failed` reason) decides the height, so
     /// heights are memoised per glyph kind and width.

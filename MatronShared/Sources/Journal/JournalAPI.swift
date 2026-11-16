@@ -56,6 +56,16 @@ public enum JournalAPIError: Error, Equatable, Sendable {
     /// was already answered: "Already answered: this request was
     /// approved."), `nil` otherwise.
     case conflict(message: String? = nil)
+    /// 403 `approval_required`: the account has an approval key and this
+    /// request needed a signature it did not carry.
+    case approvalRequired
+    /// 400 `approval_invalid`: the journal refused the signed approval.
+    /// `reason` is its own word: `mismatch`, `nonce`, `revoked_key`,
+    /// `wrong_device`, `unknown_key`, `signature`, `bad_statement`.
+    case approvalInvalid(reason: String)
+    /// 423 `account_locked`: the whole account is locked; nothing is
+    /// accepted until it is cleared.
+    case accountLocked
     case http(status: Int, message: String)
     case transport(String)
 }
@@ -93,11 +103,122 @@ extension JournalAPIError: LocalizedError {
             return "Not found on the server."
         case .conflict(let message):
             return message.flatMap { $0.isEmpty ? nil : $0 } ?? "Already handled — possibly on another device."
+        case .approvalRequired:
+            return "This needs a signature from an approval key. Approve it on an iPhone or Mac that has one."
+        case .approvalInvalid(let reason):
+            return Self.approvalInvalidText(reason)
+        case .accountLocked:
+            return "This account is locked."
         case .http(let status, let message):
             return message.isEmpty ? "Server error (HTTP \(status))." : message
         case .transport(let detail):
             return detail.isEmpty ? "Couldn't reach the server." : "Couldn't reach the server — \(detail)"
         }
+    }
+}
+
+extension JournalAPIError {
+    /// One sentence for each reason the journal (or a box) gives for
+    /// refusing a signed approval.
+    public static func approvalInvalidText(_ reason: String) -> String {
+        switch reason {
+        case "mismatch":
+            return "The request changed while you were approving it, or this device's clock is wrong. Check it and approve again."
+        case "nonce", "nonce_reused":
+            return "The approval took too long to send. Approve again."
+        case "stale":
+            return "The approval was too old when it arrived. Approve again."
+        case "revoked_key":
+            return "This device's approval key has been removed from the account. Set up a new key in Settings."
+        case "wrong_device":
+            return "This device's approval key is not attached to this sign-in. Re-attach it in Settings, then approve again."
+        case "unknown_key":
+            return "The account does not have this device's approval key. Set up a new key in Settings."
+        case "signature", "bad_statement":
+            return "The approval signature was refused."
+        default:
+            return reason.isEmpty ? "The approval was refused." : "The approval was refused (\(reason))."
+        }
+    }
+}
+
+/// What the journal says when it refuses a request because the whole
+/// account is locked: since when, and whether this device can unlock it
+/// (it holds an approval key old enough, so the journal froze it instead
+/// of signing it out).
+public struct AccountLock: Equatable, Sendable {
+    /// When the lock began, epoch ms; nil when the answer left it out.
+    public let since: Int64?
+    /// This device was frozen, not signed out: it keeps its token and can
+    /// unlock the account with a signed statement.
+    public let canUnlock: Bool
+
+    public init(since: Int64?, canUnlock: Bool) {
+        self.since = since
+        self.canUnlock = canUnlock
+    }
+
+    /// From an object that says `account_locked`: an HTTP answer's body or
+    /// a socket's control error. `since` and `unlock` as the journal sends
+    /// them.
+    public static func decode(_ obj: [String: Any]) -> AccountLock {
+        AccountLock(since: (obj["since"] as? NSNumber)?.int64Value, canUnlock: obj["unlock"] as? Bool ?? false)
+    }
+
+    /// From an HTTP answer: 423 with `account_locked`, or any 423.
+    static func decode(status: Int, data: Data) -> AccountLock? {
+        let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        guard status == 423 || obj?["error"] as? String == "account_locked" else { return nil }
+        return decode(obj ?? [:])
+    }
+}
+
+/// What a box that checks approvals reports about its lock, in `GET
+/// /devices` and in live `device_meta` frames: `{on, until,
+/// lockdown_until}`. A box that does not check approvals reports nothing.
+public struct BoxLock: Equatable, Sendable {
+    /// Locked: the box starts a turn from outside only once it is unlocked.
+    public let on: Bool
+    /// When the open unlock window ends; `nil` with no window open.
+    public let until: Date?
+    /// When the box's lockdown ends, after it refused several approvals;
+    /// `nil` when it is not in lockdown, and from a server that does not
+    /// pass the field on.
+    public let lockdownUntil: Date?
+
+    public init(on: Bool = true, until: Date? = nil, lockdownUntil: Date? = nil) {
+        self.on = on
+        self.until = until
+        self.lockdownUntil = lockdownUntil
+    }
+
+    /// Whether an unlock window is open at `now`.
+    public func isUnlocked(at now: Date = Date()) -> Bool {
+        guard let until else { return false }
+        return until > now
+    }
+
+    /// Whether the box is in lockdown at `now`.
+    public func isInLockdown(at now: Date = Date()) -> Bool {
+        guard let lockdownUntil else { return false }
+        return lockdownUntil > now
+    }
+
+    /// Whether there is anything to show: the box is locked, has (or had)
+    /// an unlock window, or is in lockdown. False for a box that checks
+    /// approvals but is in none of those states.
+    public func isShown(at now: Date = Date()) -> Bool {
+        on || until != nil || isInLockdown(at: now)
+    }
+
+    /// `nil` for anything but an object: absent and `null` both mean the
+    /// box reports no lock.
+    public static func decode(_ raw: Any?) -> BoxLock? {
+        guard let obj = raw as? [String: Any] else { return nil }
+        func date(_ key: String) -> Date? {
+            (obj[key] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue / 1000) }
+        }
+        return BoxLock(on: obj["on"] as? Bool ?? false, until: date("until"), lockdownUntil: date("lockdown_until"))
     }
 }
 
@@ -132,11 +253,24 @@ public struct DeviceDTO: Equatable, Sendable, Identifiable {
     /// the Devices screen can show a pick, or a live `box_defaults` frame,
     /// without re-fetching the roster.
     public var defaults: BoxDefaults?
+    /// A protected box: work aimed at it needs the user's own approval,
+    /// signed once the account has an approval key. Always false for a
+    /// client and from a journal predating the flag.
+    public var isProtected: Bool
+    /// The box's locked mode, `nil` when it is not in it.
+    public var locked: BoxLock?
+    /// A client whose token went unused too long and stopped working; the
+    /// row stays until it is removed.
+    public var idleExpired: Bool
 
     public init(id: Int64, kind: String, name: String, createdAt: Int64,
                 cursor: Int64, lag: Int64, lastSeenAt: Int64?, isSelf: Bool,
                 connected: Bool = false, tagChar: String? = nil, status: BoxStatus? = nil,
-                defaults: BoxDefaults? = nil) {
+                defaults: BoxDefaults? = nil, isProtected: Bool = false, locked: BoxLock? = nil,
+                idleExpired: Bool = false) {
+        self.isProtected = isProtected
+        self.locked = locked
+        self.idleExpired = idleExpired
         self.id = id
         self.kind = kind
         self.name = name
@@ -306,13 +440,37 @@ public actor JournalAPI {
     /// `CredentialRevocationMonitor`). Unauthenticated requests and
     /// transport failures are not reported.
     private let authResponses: (@Sendable (Int) -> Void)?
+    /// Told each time a token-bearing request is refused because the whole
+    /// account is locked (HTTP 423 `account_locked`), with what the answer
+    /// says about it.
+    private let accountLocks: (@Sendable (AccountLock) -> Void)?
 
     public init(serverURL: URL, urlSession: URLSession = .shared, token: String? = nil,
-                authResponses: (@Sendable (Int) -> Void)? = nil) {
+                authResponses: (@Sendable (Int) -> Void)? = nil,
+                accountLocks: (@Sendable (AccountLock) -> Void)? = nil) {
         self.serverURL = serverURL
         self.urlSession = urlSession
         self.token = token
         self.authResponses = authResponses
+        self.accountLocks = accountLocks
+    }
+
+    /// Replaces this device's token: the journal gave it a new one (an
+    /// unlock of a locked account) and the old one no longer works. A
+    /// request still out with the old token is dropped when it answers,
+    /// and its answer is not reported: a 401 for a token that has been
+    /// replaced says nothing about the new one.
+    public func replaceToken(_ newToken: String) {
+        token = newToken
+    }
+
+    /// What an answer to a request sent with `sentWith` means for the
+    /// owner, reported; throws when the token was replaced meanwhile.
+    private func report(status: Int, data: Data, sentWith: String?) throws {
+        guard let sentWith else { return }
+        guard sentWith == token else { throw JournalAPIError.transport(JournalAPIError.cancelledDetail) }
+        authResponses?(Self.credentialStatus(status, data: data))
+        if let lock = AccountLock.decode(status: status, data: data) { accountLocks?(lock) }
     }
 
     public nonisolated var wsURL: URL {
@@ -335,6 +493,25 @@ public actor JournalAPI {
 
     public func setToken(_ token: String?) {
         self.token = token
+    }
+
+    /// Who signs the requests that need an approval key. Set once by the
+    /// app; without one every request goes unsigned, as before.
+    private var approvalSigner: ApprovalSigner?
+
+    public func setApprovalSigner(_ signer: ApprovalSigner?) {
+        approvalSigner = signer
+    }
+
+    /// `body` with `approval` added when the account has an approval key:
+    /// the signer shows the user what is being approved and signs it. It
+    /// returns nil for an account with no key, and the request goes as it
+    /// always did. Throws when the user cancels or this device cannot sign.
+    func approved(_ body: [String: Any], _ request: ApprovalRequest) async throws -> [String: Any] {
+        guard let approvalSigner, let approval = try await approvalSigner(request) else { return body }
+        var signed = body
+        signed["approval"] = approval.json
+        return signed
     }
 
     public func login(username: String, password: String, deviceName: String) async throws -> LoginResponse {
@@ -551,7 +728,7 @@ public actor JournalAPI {
         var request = URLRequest(url: components.url!)
         request.httpMethod = "POST"
         request.timeoutInterval = 300
-        let sentToken = token != nil
+        let sentToken = token
         if let token {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
@@ -581,7 +758,7 @@ public actor JournalAPI {
             }
             task.resume()
         }
-        if sentToken { authResponses?(response.statusCode) }
+        try report(status: response.statusCode, data: respData, sentWith: sentToken)
         guard response.statusCode == 200 else { throw Self.error(status: response.statusCode, data: respData) }
         guard let obj = (try? JSONSerialization.jsonObject(with: respData)) as? [String: Any],
               let mediaID = obj["media_id"] as? String
@@ -621,7 +798,10 @@ public actor JournalAPI {
                 connected: d["connected"] as? Bool ?? false,
                 tagChar: d["tag_char"] as? String,
                 status: (d["status"] as? [String: Any]).flatMap(BoxStatus.parse),
-                defaults: (d["defaults"] as? [String: Any]).flatMap(BoxDefaults.decodeRoster)
+                defaults: (d["defaults"] as? [String: Any]).flatMap(BoxDefaults.decodeRoster),
+                isProtected: d["protected"] as? Bool ?? false,
+                locked: BoxLock.decode(d["locked"]),
+                idleExpired: d["idle_expired"] as? Bool ?? false
             )
         }
     }
@@ -632,6 +812,25 @@ public actor JournalAPI {
     /// treat it as success.
     public func revokeDevice(id: Int64) async throws {
         _ = try await request(path: "/devices/\(id)/revoke", method: "POST", body: [:])
+    }
+
+    /// Revokes ANOTHER of the user's devices: an account action, signed
+    /// once the account has an approval key. Revoking a device revokes the
+    /// approval key attached to it.
+    public func revokeOtherDevice(id: Int64, name: String) async throws {
+        let body = try await approved([:], ApprovalRequest(
+            kind: .account, subject: ApprovalSubjects.revokeDevice(id: id),
+            headline: "Sign out \(name)"))
+        _ = try await request(path: "/devices/\(id)/revoke", method: "POST", body: body)
+    }
+
+    /// Marks or unmarks one of the user's agent boxes as protected
+    /// (`POST /devices/:id/protected`): an account action.
+    public func setDeviceProtected(id: Int64, name: String, on: Bool) async throws {
+        let body = try await approved(["on": on], ApprovalRequest(
+            kind: .account, subject: ApprovalSubjects.protectDevice(id: id, on: on),
+            headline: on ? "Protect \(name)" : "Stop protecting \(name)"))
+        _ = try await request(path: "/devices/\(id)/protected", method: "POST", body: body)
     }
 
     /// The server side of signing this device out, best effort: revoke its
@@ -707,6 +906,9 @@ public actor JournalAPI {
     public func pairApprove(code: String, agentName: String, tagChar: String? = nil) async throws {
         var body: [String: Any] = ["pair_code": code, "agent_name": agentName]
         if let tagChar { body["tag_char"] = tagChar }
+        body = try await approved(body, ApprovalRequest(
+            kind: .account, subject: ApprovalSubjects.pairBridge(code: code, name: agentName),
+            headline: "Add the agent box \(agentName)"))
         _ = try await request(path: "/pair/approve", method: "POST", body: body)
     }
 
@@ -751,12 +953,21 @@ public actor JournalAPI {
     public func answerAgentChat(
         roomID: String, targetDeviceID: Int64, decision: AgentChatDecision
     ) async throws -> Bool {
-        let obj = try await request(
-            path: "/agent-chat/answer", method: "POST",
-            body: [
-                "room_id": roomID, "target_device_id": targetDeviceID,
-                "decision": decision.rawValue,
-            ])
+        try await answerAgentChat(roomID: roomID, targetDeviceID: targetDeviceID, decision: decision, approval: nil)
+    }
+
+    /// `answerAgentChat` with the user's signed approval, for an invite
+    /// aimed at a protected box. A decline never carries one.
+    @discardableResult
+    public func answerAgentChat(
+        roomID: String, targetDeviceID: Int64, decision: AgentChatDecision, approval: SignedApproval?
+    ) async throws -> Bool {
+        var body: [String: Any] = [
+            "room_id": roomID, "target_device_id": targetDeviceID,
+            "decision": decision.rawValue,
+        ]
+        if decision == .approve, let approval { body["approval"] = approval.json }
+        let obj = try await request(path: "/agent-chat/answer", method: "POST", body: body)
         return obj["delivered"] as? Bool ?? false
     }
 
@@ -774,9 +985,16 @@ public actor JournalAPI {
     /// (404) if the request isn't this user's. The resolution itself arrives
     /// separately, as a `spawn_outcome` event in the journal.
     public func answerAgentSpawn(requestID: String, decision: AgentSpawnDecision) async throws {
-        _ = try await request(
-            path: "/agent-spawn/answer", method: "POST",
-            body: ["request_id": requestID, "decision": decision.rawValue])
+        try await answerAgentSpawn(requestID: requestID, decision: decision, approval: nil)
+    }
+
+    /// `answerAgentSpawn` with the user's signed approval, for a spawn
+    /// onto a protected box. A decline never carries one.
+    public func answerAgentSpawn(requestID: String, decision: AgentSpawnDecision,
+                                 approval: SignedApproval?) async throws {
+        var body: [String: Any] = ["request_id": requestID, "decision": decision.rawValue]
+        if decision == .approve, let approval { body["approval"] = approval.json }
+        _ = try await request(path: "/agent-spawn/answer", method: "POST", body: body)
     }
 
     /// Answers a person-to-person grant from this client device — the
@@ -851,7 +1069,10 @@ public actor JournalAPI {
     /// Approves this device's claimed session. `.conflict` = nothing
     /// claimed yet or already resolved; `.notFound` = expired/gone.
     public func linkApprove(code: String) async throws {
-        _ = try await request(path: "/link/approve", method: "POST", body: ["link_code": code])
+        let body = try await approved(["link_code": code], ApprovalRequest(
+            kind: .account, subject: ApprovalSubjects.linkDevice(code: code),
+            headline: "Sign in a new device"))
+        _ = try await request(path: "/link/approve", method: "POST", body: body)
     }
 
     public func linkDeny(code: String) async throws {
@@ -899,9 +1120,16 @@ public actor JournalAPI {
     /// Registers this device for APNs pushes. Server: POST /push/register
     /// (client devices only). Xcode debug builds register sandbox tokens;
     /// TestFlight/App Store builds are prod.
-    public func registerPush(tokenHex: String, environment: PushEnvironment) async throws {
-        _ = try await request(path: "/push/register", method: "POST",
-                              body: ["apns_token": tokenHex, "environment": environment.rawValue])
+    ///
+    /// `pushKey` is this device's public key for sealed notification
+    /// content (unpadded base64url of 32 raw X25519 bytes). With one, the
+    /// journal seals what each notification says to it; without, pushes
+    /// carry no content the device can open. A journal that predates the
+    /// field ignores it.
+    public func registerPush(tokenHex: String, environment: PushEnvironment, pushKey: String? = nil) async throws {
+        var body: [String: Any] = ["apns_token": tokenHex, "environment": environment.rawValue]
+        if let pushKey { body["push_key"] = pushKey }
+        _ = try await request(path: "/push/register", method: "POST", body: body)
     }
 
     /// Clears this device's push registration (apns_token: null per protocol).
@@ -966,7 +1194,7 @@ public actor JournalAPI {
         if !query.isEmpty { components.queryItems = query }
         var request = URLRequest(url: components.url!)
         request.httpMethod = method
-        let sentToken = authenticated && token != nil
+        let sentToken = authenticated ? token : nil
         if authenticated, let token {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
@@ -989,7 +1217,7 @@ public actor JournalAPI {
             guard let http = response as? HTTPURLResponse else {
                 throw JournalAPIError.transport("non-HTTP response")
             }
-            if sentToken { authResponses?(Self.credentialStatus(http.statusCode, data: data)) }
+            try report(status: http.statusCode, data: data, sentWith: sentToken)
             return (data, http)
         } catch let error as JournalAPIError {
             throw error
@@ -1020,6 +1248,9 @@ public actor JournalAPI {
         let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         let code = obj?["error"] as? String
         switch (status, code) {
+        case (423, _), (_, "account_locked"): return .accountLocked
+        case (403, "approval_required"): return .approvalRequired
+        case (400, "approval_invalid"): return .approvalInvalid(reason: obj?["reason"] as? String ?? "")
         case (403, "bad_credentials"): return .badCredentials
         case (429, "locked_out"):
             return .lockedOut(retryAfterSeconds: (obj?["retry_after"] as? NSNumber)?.intValue ?? 60)

@@ -6,9 +6,8 @@ import MatronEvents
 import MatronModels
 @testable import MatronMac
 
-/// Mac mirror of `MatronTests/TimelineItemViewTests`. The Mac
-/// `MacTimelineItemView` is a separate type from the iOS one (per-platform
-/// glue mirrors the rest of the apps), so it gets its own coverage.
+/// Mac mirror of `MatronTests/TimelineItemViewTests`: `TimelineItemView`
+/// is shared, so these run the same contract inside the Mac app target.
 final class MacTimelineItemViewTests: XCTestCase {
 
     // MARK: - shouldRender (round-5 bugbot finding #2)
@@ -28,7 +27,7 @@ final class MacTimelineItemViewTests: XCTestCase {
             isOwn: false,
             sendState: .sent
         )
-        XCTAssertFalse(MacTimelineItemView.shouldRender(item),
+        XCTAssertFalse(TimelineItemView.shouldRender(item),
                        "virtual placeholders must skip rendering to avoid blank padded rows")
     }
 
@@ -41,7 +40,7 @@ final class MacTimelineItemViewTests: XCTestCase {
             isOwn: false,
             sendState: .sent
         )
-        XCTAssertFalse(MacTimelineItemView.shouldRender(item),
+        XCTAssertFalse(TimelineItemView.shouldRender(item),
                        "populated state-change rows are meta-noise in a bot chat — hide them")
     }
 
@@ -61,7 +60,7 @@ final class MacTimelineItemViewTests: XCTestCase {
             kind: .askUserAnswer(promptEventID: "$1", selectedValues: ["yes"]),
             isOwn: true, sendState: .sent
         )
-        XCTAssertFalse(MacTimelineItemView.shouldRender(item),
+        XCTAssertFalse(TimelineItemView.shouldRender(item),
                        "button-response answers must stay hidden")
     }
 
@@ -78,7 +77,7 @@ final class MacTimelineItemViewTests: XCTestCase {
                 timestamp: Date(timeIntervalSince1970: 0),
                 kind: kind, isOwn: false, sendState: .sent
             )
-            XCTAssertTrue(MacTimelineItemView.shouldRender(item),
+            XCTAssertTrue(TimelineItemView.shouldRender(item),
                           "content kind \(kind) must render")
         }
     }
@@ -90,7 +89,7 @@ final class MacTimelineItemViewTests: XCTestCase {
             id: "1", sender: "box-2", timestamp: .now,
             kind: .text(body: "hi", formattedHTML: nil), isOwn: true, sendState: .sent
         )
-        XCTAssertNil(MacTimelineItemView.avatarSender(for: item, hasMultipleSenders: true))
+        XCTAssertNil(TimelineItemView.avatarSender(for: item, hasMultipleSenders: true))
     }
 
     func test_avatarSender_singleSenderRoom_isNil() {
@@ -98,7 +97,7 @@ final class MacTimelineItemViewTests: XCTestCase {
             id: "1", sender: "matron", timestamp: .now,
             kind: .text(body: "hi", formattedHTML: nil), isOwn: false, sendState: .sent
         )
-        XCTAssertNil(MacTimelineItemView.avatarSender(for: item, hasMultipleSenders: false))
+        XCTAssertNil(TimelineItemView.avatarSender(for: item, hasMultipleSenders: false))
     }
 
     func test_avatarSender_multiSenderRoom_returnsSenderName() {
@@ -106,7 +105,7 @@ final class MacTimelineItemViewTests: XCTestCase {
             id: "1", sender: "box-2", timestamp: .now,
             kind: .text(body: "hi", formattedHTML: nil), isOwn: false, sendState: .sent
         )
-        XCTAssertEqual(MacTimelineItemView.avatarSender(for: item, hasMultipleSenders: true), "box-2")
+        XCTAssertEqual(TimelineItemView.avatarSender(for: item, hasMultipleSenders: true), "box-2")
     }
 
     /// Render-side twin of the `ChatViewModel.hasMultipleSenders`
@@ -119,7 +118,7 @@ final class MacTimelineItemViewTests: XCTestCase {
             id: "eph:1", sender: "agent", timestamp: .now,
             kind: .text(body: "partial reply…", formattedHTML: nil), isOwn: false, sendState: .sent
         )
-        XCTAssertNil(MacTimelineItemView.avatarSender(for: item, hasMultipleSenders: true))
+        XCTAssertNil(TimelineItemView.avatarSender(for: item, hasMultipleSenders: true))
     }
 
     /// Both mission kinds are visible rows — they are navigation
@@ -135,15 +134,15 @@ final class MacTimelineItemViewTests: XCTestCase {
                                    kind: .missionMarker(eventID: "4211", MissionMarkerEvent(
                                       missionID: "ms_1", num: 61, title: nil, action: .closed, by: .user)),
                                    isOwn: false)
-        XCTAssertTrue(MacTimelineItemView.shouldRender(milestone))
-        XCTAssertTrue(MacTimelineItemView.shouldRender(mission))
+        XCTAssertTrue(TimelineItemView.shouldRender(milestone))
+        XCTAssertTrue(TimelineItemView.shouldRender(mission))
     }
 
     func testCoordinatorMarkerRenders() {
         let item = TimelineItem(id: "77", sender: "user:alice", timestamp: Date(),
                                 kind: .coordinatorMarker(eventID: "77", CoordinatorMarkerEvent(role: .assigned)),
                                 isOwn: true)
-        XCTAssertTrue(MacTimelineItemView.shouldRender(item))
+        XCTAssertTrue(TimelineItemView.shouldRender(item))
     }
 
     /// The routine marker is a visible row — the "[unsupported event:
@@ -154,7 +153,7 @@ final class MacTimelineItemViewTests: XCTestCase {
                                 kind: .routineMarker(eventID: "78", RoutineMarkerEvent(
                                     routineID: "rt_1", name: "daily-sweep", action: .fired, outcome: "applied now")),
                                 isOwn: false)
-        XCTAssertTrue(MacTimelineItemView.shouldRender(item))
+        XCTAssertTrue(TimelineItemView.shouldRender(item))
     }
 
     /// The Coordinator's consent answer is a visible row, not the
@@ -164,7 +163,7 @@ final class MacTimelineItemViewTests: XCTestCase {
                                 kind: .consentDecision(eventID: "79", ConsentDecisionEvent(
                                     kind: .spawn, decision: .approve, reason: "Fits the box rules")),
                                 isOwn: false)
-        XCTAssertTrue(MacTimelineItemView.shouldRender(item))
+        XCTAssertTrue(TimelineItemView.shouldRender(item))
     }
 }
 #endif

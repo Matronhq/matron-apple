@@ -23,6 +23,10 @@ public final class TimelineHostState {
         defaults.bool(forKey: TimelineViewModel.flagKey)
     }
 
+    /// Settings → the switch for the flag, on iPhone, iPad and Mac.
+    public static let previewTitle = "Projects preview"
+    public static let previewFooter = "Shows Projects as weekly cards, one per project: what got done, what's next and what went quiet. Takes effect the next time you open Projects."
+
     /// The timeline replaces the home only once the journal has answered
     /// the weeks list: until then (nil) there is nothing to show instead.
     public var isShown: Bool { viewModel?.isSupported == true }
@@ -38,14 +42,19 @@ public final class TimelineHostState {
     /// Projects came on screen: the first time (flag on; nil reads it)
     /// builds and starts the view model, then reads the counts; later
     /// visits re-read what is on screen and the counts, unless the journal
-    /// has no timeline (its 404 would only come again). Returns the reads' task.
+    /// has no timeline (its 404 would only come again). A visit with the
+    /// flag turned off since drops the timeline, so Projects is the home
+    /// again. Returns the reads' task.
     @discardableResult
     public func projectsShown(flagOn: Bool? = nil, build: () -> TimelineViewModel) -> Task<Void, Never>? {
+        guard flagOn ?? Self.flagOn() else {
+            if viewModel != nil { reset() }
+            return nil
+        }
         if let viewModel {
             guard viewModel.isSupported != false else { return nil }
             return Task { await refresh() }
         }
-        guard flagOn ?? Self.flagOn() else { return nil }
         let viewModel = build()
         self.viewModel = viewModel
         return Task {

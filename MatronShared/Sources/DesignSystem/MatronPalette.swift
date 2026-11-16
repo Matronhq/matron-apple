@@ -13,10 +13,10 @@ import SwiftUI
 /// The soft dark palette used on iPhone and iPad, in 0–255 sRGB. The Mac
 /// keeps its own dark colours.
 public enum MatronDarkSurface {
-    public static let page: (Double, Double, Double) = (44, 45, 51)         // #2c2d33
-    public static let card: (Double, Double, Double) = (55, 56, 64)         // #373840
-    public static let raised: (Double, Double, Double) = (66, 67, 76)       // #42434c
-    public static let ownBubble: (Double, Double, Double) = (52, 73, 92)    // #34495c
+    public static let page: (Double, Double, Double) = (34, 35, 39)         // #222327
+    public static let card: (Double, Double, Double) = (46, 47, 54)         // #2e2f36
+    public static let raised: (Double, Double, Double) = (58, 58, 66)       // #3a3a42
+    public static let ownBubble: (Double, Double, Double) = (41, 66, 82)    // #294252
     public static let accent: (Double, Double, Double) = (134, 189, 226)    // #86bde2
     public static let label: (Double, Double, Double) = (227, 225, 224)     // #e3e1e0
     public static let secondaryLabel: (Double, Double, Double) = (165, 163, 168) // #a5a3a8
@@ -52,6 +52,14 @@ public extension Color {
     static let matronAccent = adaptive(
         light: (11, 110, 125), dark: (110, 205, 220),
         iPhoneDark: MatronDarkSurface.accent)
+
+    /// A plain `List` row's background: the page colour, so rows sit flush
+    /// with the header and section headers around them. A plain row with
+    /// swipe actions otherwise draws the system's own cell colour, which
+    /// the soft dark palette does not reach. Light: white, as the system's.
+    static let matronPlainRow = adaptive(
+        light: (255, 255, 255), dark: (0, 0, 0),
+        iPhoneDark: MatronDarkSurface.page)
 
     /// Builds a light/dark adaptive color from 0–255 sRGB components.
     /// `iPhoneDark` replaces `dark` on iPhone and iPad, whose dark mode uses

@@ -19,7 +19,7 @@ import MatronDesignSystem
 
     /// The SwiftUI row's height at `width` — what the table row must equal.
     private func swiftUIHeight(_ item: TimelineItem, width: CGFloat) -> CGFloat {
-        let host = NSHostingView(rootView: MacTimelineItemView(item: item).frame(width: width))
+        let host = NSHostingView(rootView: TimelineItemView(item: item).frame(width: width))
         return host.fittingSize.height
     }
 
@@ -66,7 +66,7 @@ import MatronDesignSystem
                                              pills: ConversationLinkRefs.extract(from: body, cache: true))
                 let measurer = MacTimelineMeasurer(hostedRow: { _ in AnyView(EmptyView()) })
                 let m = measurer.measure(.text(content), width: width)
-                let host = NSHostingView(rootView: MacTimelineItemView(item: it, hasMultipleSenders: multi)
+                let host = NSHostingView(rootView: TimelineItemView(item: it, hasMultipleSenders: multi)
                     .frame(width: width))
                 let ui = host.fittingSize.height
                 XCTAssertEqual(m.height, ui, accuracy: 1,
@@ -77,7 +77,7 @@ import MatronDesignSystem
 
     /// Spec §6 frame parity: at 420 / 700 / 1100 pt, for the corpus, own and
     /// not-own, with and without the avatar, the table row's bubble frame,
-    /// text origin and timestamp match the SwiftUI `MacTimelineItemView` row
+    /// text origin and timestamp match the SwiftUI `TimelineItemView` row
     /// within 1 pt.
     ///
     /// Reading SwiftUI's frames: the body is a real `NSTextView`, so its frame
@@ -124,7 +124,7 @@ import MatronDesignSystem
                     let label = "width \(width) own \(own) avatar \(multi) body \(body.prefix(20))"
                     cases += 1
 
-                    let host = NSHostingView(rootView: MacTimelineItemView(item: it, hasMultipleSenders: multi)
+                    let host = NSHostingView(rootView: TimelineItemView(item: it, hasMultipleSenders: multi)
                         .frame(width: width))
                     host.appearance = NSAppearance(named: .aqua)
                     host.frame = NSRect(x: 0, y: 0, width: width, height: host.fittingSize.height)
@@ -243,7 +243,7 @@ import MatronDesignSystem
     }
 }
 
-/// A SwiftUI `MacTimelineItemView` row's frames, top-left origin in the
+/// A SwiftUI `TimelineItemView` row's frames, top-left origin in the
 /// host (see `test_textRowFramesMatchSwiftUIRow`).
 private final class FlippedContainer: NSView {
     override var isFlipped: Bool { true }
@@ -298,7 +298,7 @@ private final class FlippedContainer: NSView {
     }
 }
 
-/// A SwiftUI `MacTimelineItemView` row's body and bubble frames, top-left
+/// A SwiftUI `TimelineItemView` row's body and bubble frames, top-left
 /// origin in the host (see `test_textRowFramesMatchSwiftUIRow`).
 @MainActor private struct SwiftUIRowFrames {
     let text: CGRect

@@ -3,7 +3,7 @@ import XCTest
 import MatronEvents
 
 /// Pins `DiffCard.accessibilitySummary(for:)` — the single source of truth
-/// the chat timeline rows (iOS `TimelineItemView`, Mac `MacTimelineItemView`)
+/// the chat timeline rows (`TimelineItemView`, on both platforms)
 /// must reuse for their row-level `.accessibilityLabel` instead of
 /// duplicating a shorter "Edited <file>" string that would silently
 /// replace this card's own combined accessibility value (bugbot:

@@ -400,7 +400,7 @@ struct MacChatView: View {
             default:
                 continue
             }
-            let name = item.isOwn ? "Me" : MacTimelineItemView.displayName(for: item.sender)
+            let name = item.isOwn ? "Me" : TimelineItemView.displayName(for: item.sender)
             entries.append(TranscriptEntry(timestamp: item.timestamp, name: name, text: text))
         }
         return SelectionTranscript(
