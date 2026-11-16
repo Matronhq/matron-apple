@@ -23,10 +23,13 @@ final class JournalSyncEngineRestartTests: XCTestCase {
         return store
     }
 
-    private func makeEngine(store: JournalStore, connector: any WebSocketConnecting) -> JournalSyncEngine {
+    /// Every engine here runs on a path monitor the test controls, never the
+    /// host's real one, so no result depends on connectivity.
+    private func makeEngine(store: JournalStore, connector: any WebSocketConnecting,
+                            pathMonitors: FakePathMonitors = FakePathMonitors()) -> JournalSyncEngine {
         JournalSyncEngine(api: JournalAPI(serverURL: URL(string: "https://x")!), store: store,
                           connector: connector, token: "t", ownSender: "user:alice", search: nil,
-                          backoffBaseSeconds: 0.01)
+                          backoffBaseSeconds: 0.01, pathMonitorFactory: pathMonitors.factory)
     }
 
     private func waitUntil(_ condition: @autoclosure () -> Bool, timeout: TimeInterval = 2) async {
@@ -148,16 +151,36 @@ final class JournalSyncEngineRestartTests: XCTestCase {
 
     /// A callback from a monitor that a restart replaced arrives late.
     func testRetiredMonitorCallbackDoesNotMarkARestartedEngineAsWaitingForNetwork() async throws {
-        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([]))
+        let monitors = FakePathMonitors()
+        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([]), pathMonitors: monitors)
         await engine.beginSync()
         await engine.endSync()
         await engine.beginSync()
-        // Epochs count up from 1 and the live monitor is the second one:
-        // any other value belongs to a retired monitor.
-        await engine.handlePathUpdate(satisfied: false, signature: "unsatisfied|", epoch: 1)
+        XCTAssertEqual(monitors.made.count, 2)
+        let retired = monitors.made[0]
+        let live = monitors.made[1]
+        XCTAssertTrue(retired.isCancelled)
+        XCTAssertFalse(live.isCancelled)
+
+        // The retired monitor's own callback, delivered late, and an epoch
+        // that never belonged to a monitor.
+        retired.deliver(satisfied: false, signature: "unsatisfied|")
         await engine.handlePathUpdate(satisfied: false, signature: "unsatisfied|", epoch: -1)
-        let waiting = await engine.isWaitingForNetwork
-        XCTAssertFalse(waiting)
+        // Let the Task the callback spawned run before reading.
+        try await Task.sleep(for: .milliseconds(100))
+        let afterStale = await engine.isWaitingForNetwork
+        XCTAssertFalse(afterStale, "stale callbacks say nothing about this run")
+
+        // Control: the live monitor's callback is honoured, so the check
+        // above is not passing for want of any callback getting through.
+        live.deliver(satisfied: false, signature: "unsatisfied|")
+        var waiting = false
+        let deadline = Date().addingTimeInterval(2)
+        while !waiting, Date() < deadline {
+            waiting = await engine.isWaitingForNetwork
+            if !waiting { try await Task.sleep(for: .milliseconds(10)) }
+        }
+        XCTAssertTrue(waiting, "the current monitor's callback does count")
         await engine.endSync()
     }
 
@@ -203,6 +226,74 @@ final class JournalSyncEngineRestartTests: XCTestCase {
         XCTAssertTrue(caughtUp, "the old loop must not flip the state to catching up")
         XCTAssertEqual(sendOps(second).count, 1, "the old loop must not reset the send bookkeeping and resend")
         XCTAssertEqual(connector.connectCount, 2)
+        await engine.endSync()
+    }
+
+    /// Waits (bounded) for the next value of a signal stream.
+    private func nextSignal(_ stream: AsyncStream<Void>, timeout: Duration) async -> Bool {
+        await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                for await _ in stream { return true }
+                return false
+            }
+            group.addTask {
+                try? await Task.sleep(for: timeout)
+                return false
+            }
+            let got = await group.next() ?? false
+            group.cancelAll()
+            return got
+        }
+    }
+
+    private func waitForObserver(_ engine: JournalSyncEngine) async {
+        let deadline = Date().addingTimeInterval(2)
+        while await engine.queuedWithoutConnectionObserverCount == 0, Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    /// A host that closed the socket must hear about a row queued after it
+    /// closed: the engine cannot flush it, and nothing else would tell the host.
+    func testMessageQueuedWithNoConnectionIsAnnounced() async throws {
+        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([]))
+        let signals = engine.queuedWithoutConnectionStream()
+        await waitForObserver(engine)
+
+        try await engine.sendMessage(convoID: "c1", body: "hi", localID: "L1")
+
+        let got = await nextSignal(signals, timeout: .seconds(2))
+        XCTAssertTrue(got, "a send queued with no live connection is announced")
+        let pending = await engine.hasPendingOutbox
+        XCTAssertTrue(pending)
+    }
+
+    func testRetryWithNoConnectionIsAnnounced() async throws {
+        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([]))
+        try await engine.sendMessage(convoID: "c1", body: "hi", localID: "L1")
+        let signals = engine.queuedWithoutConnectionStream()
+        await waitForObserver(engine)
+
+        await engine.retryOutboxItem(localID: "L1")
+
+        let got = await nextSignal(signals, timeout: .seconds(2))
+        XCTAssertTrue(got)
+    }
+
+    /// With a live connection the engine flushes the row itself: no signal.
+    func testMessageQueuedWithALiveConnectionIsNotAnnounced() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        let signals = engine.queuedWithoutConnectionStream()
+        await waitForObserver(engine)
+
+        try await engine.sendMessage(convoID: "c1", body: "hi", localID: "L1")
+
+        let got = await nextSignal(signals, timeout: .milliseconds(300))
+        XCTAssertFalse(got)
         await engine.endSync()
     }
 }

@@ -1,5 +1,4 @@
 import Foundation
-import Network
 import os
 import MatronModels
 import MatronSearch
@@ -100,7 +99,10 @@ public actor JournalSyncEngine {
     /// generation, so a newer loop's hello never excuses waiting for an older
     /// loop that is somewhere else.
     private var handshakingGenerations: Set<Int> = []
-    private var pathMonitor: NWPathMonitor?
+    private var pathMonitor: (any NetworkPathMonitoring)?
+    /// Builds the path monitor each `beginSync()` starts. The system monitor
+    /// by default; a test swaps in one it controls.
+    private let makePathMonitor: @Sendable () -> any NetworkPathMonitoring
     /// Status + sorted interface names of the last observed network path.
     /// macOS fires a burst of path callbacks at app startup (interface
     /// enumeration, VPN utuns coming up) that all describe the same usable
@@ -285,8 +287,10 @@ public actor JournalSyncEngine {
         databasesSuspended: @escaping @Sendable () -> Bool = { false },
         credentialSignals: (@Sendable (CredentialSignal) -> Void)? = nil,
         syncScope: SyncScope = .everything,
-        stats: SyncStatsRecorder? = nil
+        stats: SyncStatsRecorder? = nil,
+        pathMonitorFactory: @escaping @Sendable () -> any NetworkPathMonitoring = { SystemNetworkPathMonitor() }
     ) {
+        self.makePathMonitor = pathMonitorFactory
         self.credentialSignals = credentialSignals
         self.syncScope = syncScope
         self.stats = stats
@@ -533,15 +537,12 @@ public actor JournalSyncEngine {
     /// the offline banner and the backoff sleep.
     private func startPathMonitor() {
         guard pathMonitor == nil else { return }
-        let monitor = NWPathMonitor()
+        let monitor = makePathMonitor()
         pathMonitorEpoch &+= 1
         let epoch = pathMonitorEpoch
-        monitor.pathUpdateHandler = { [weak self] path in
-            let satisfied = path.status == .satisfied
-            let signature = "\(path.status)|\(path.availableInterfaces.map(\.name).sorted().joined(separator: ","))"
+        monitor.start { [weak self] satisfied, signature in
             Task { await self?.handlePathUpdate(satisfied: satisfied, signature: signature, epoch: epoch) }
         }
-        monitor.start(queue: DispatchQueue(label: "chat.matron.journal.path-monitor"))
         pathMonitor = monitor
     }
 
@@ -660,7 +661,41 @@ public actor JournalSyncEngine {
         }
         if liveConnection != nil {
             Task { await self.flushOutbox() }
+        } else {
+            announceQueuedWithoutConnection()
         }
+    }
+
+    /// Fires each time a row is queued (a new send, or a retry) while no
+    /// connection is live, so a host that closes the socket when idle can
+    /// open it again to deliver the row. Nothing is sent for a row queued
+    /// with a live connection: the engine flushes that itself. A host that
+    /// has not asked is not affected.
+    public nonisolated func queuedWithoutConnectionStream() -> AsyncStream<Void> {
+        AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            let id = UUID()
+            Task { await self.registerQueuedWithoutConnection(id: id, continuation: continuation) }
+            continuation.onTermination = { _ in
+                Task { await self.unregisterQueuedWithoutConnection(id: id) }
+            }
+        }
+    }
+
+    private var queuedWithoutConnectionContinuations: [UUID: AsyncStream<Void>.Continuation] = [:]
+
+    /// Observers currently registered on `queuedWithoutConnectionStream()`.
+    var queuedWithoutConnectionObserverCount: Int { queuedWithoutConnectionContinuations.count }
+
+    private func registerQueuedWithoutConnection(id: UUID, continuation: AsyncStream<Void>.Continuation) {
+        queuedWithoutConnectionContinuations[id] = continuation
+    }
+
+    private func unregisterQueuedWithoutConnection(id: UUID) {
+        queuedWithoutConnectionContinuations.removeValue(forKey: id)
+    }
+
+    private func announceQueuedWithoutConnection() {
+        for continuation in queuedWithoutConnectionContinuations.values { continuation.yield() }
     }
 
     /// The box a `/start` sent in `convoID` asks: the one that owns it.
@@ -690,6 +725,7 @@ public actor JournalSyncEngine {
         if liveConnection != nil {
             Task { await self.flushOutbox() }
         } else {
+            announceQueuedWithoutConnection()
             nudge()
         }
     }

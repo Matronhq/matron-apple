@@ -51,9 +51,13 @@ final class MacSyncLifecycle {
     private var deadlineTask: Task<Void, Never>?
     private var applyTask: Task<Void, Never>?
     private var stateTask: Task<Void, Never>?
+    private var queuedTask: Task<Void, Never>?
     private var voiceTailTask: Task<Void, Never>?
     private var voiceBusy = false
     private var probing = false
+    /// A probe was asked for while one was in flight: that one may have read
+    /// the outbox before the change that prompted this, so it runs again.
+    private var reprobe = false
     private var systemAsleep = false
     private var appActive = false
     private var stopped = false
@@ -107,6 +111,15 @@ final class MacSyncLifecycle {
             }
         }
 
+        // A message queued while the socket is closed (or down) would wait
+        // for the next window or app event: look at the outbox when it is.
+        queuedTask = Task { [weak self] in
+            for await _ in engine.queuedWithoutConnectionStream() {
+                guard let self, !self.stopped else { return }
+                self.probeOutboxThenRefresh()
+            }
+        }
+
         appActive = NSApp.isActive
         // Sync starts here and nowhere else on the Mac. The policy begins
         // with the socket open; the first refresh starts the grace if
@@ -124,6 +137,8 @@ final class MacSyncLifecycle {
         deadlineTask = nil
         stateTask?.cancel()
         stateTask = nil
+        queuedTask?.cancel()
+        queuedTask = nil
         voiceTailTask?.cancel()
         voiceTailTask = nil
         for (center, token) in observers { center.removeObserver(token) }
@@ -230,8 +245,12 @@ final class MacSyncLifecycle {
     /// Reads the engine's outbox into the policy, then decides with it. The
     /// assertion stays as it was meanwhile (the socket is still open).
     private func probeOutboxThenRefresh() {
-        guard !probing else { return }
+        guard !probing else {
+            reprobe = true
+            return
+        }
         probing = true
+        reprobe = false
         let engine = engine
         Task { [weak self] in
             let pending = await engine.hasPendingOutbox
@@ -239,6 +258,11 @@ final class MacSyncLifecycle {
             guard let self else { return }
             self.probing = false
             guard !self.stopped else { return }
+            // Asked again while reading: this answer may predate it.
+            if self.reprobe {
+                self.probeOutboxThenRefresh()
+                return
+            }
             self.policy.setOutboxPending(pending, at: self.now)
             self.policy.setNetworkUnavailable(offlineNoNetwork, at: self.now)
             self.refresh(probed: true)
@@ -290,6 +314,12 @@ final class MacSyncLifecycle {
                 await engine.beginSync()
             case .close:
                 await engine.endSync()
+                // A row queued while the socket was going down was missed by
+                // the probe that chose to close: look once more, and the
+                // probe's refresh opens the socket again for it.
+                if await engine.hasPendingOutbox, self?.stopped == false {
+                    self?.probeOutboxThenRefresh()
+                }
             case .reconnect:
                 await engine.beginSync()
                 guard self?.stopped == false else { return }
