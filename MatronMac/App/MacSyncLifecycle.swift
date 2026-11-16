@@ -1,6 +1,7 @@
 import AppKit
 import MatronJournal
 import MatronModels
+import Observation
 
 /// The only thing on the Mac that starts and stops sync.
 ///
@@ -19,13 +20,18 @@ import MatronModels
 ///   or sending, or a queued outbox, keeps (or opens) the socket until it is
 ///   delivered.
 /// - Quiet: a stop or reconnect made here is planned, so the connection
-///   banner stays hidden unless a reconnect takes more than about two
-///   seconds.
+///   banner stays hidden until a reconnect has taken two seconds. The chat
+///   list ends the quiet period itself, when its own state reaches
+///   `.running`.
 ///
 /// The process is held out of App Nap (an activity that still lets the Mac
 /// sleep) only while the socket is open and no window on screen keeps the
 /// app awake: during the grace, a voice note, or the user's "stay connected"
-/// choice. Never while the socket is closed.
+/// choice. Never while the socket is closed, and not while a queued outbox,
+/// voice note or the stay-connected choice is all that holds the socket and
+/// the engine is offline with no network path: the engine's path monitor
+/// wakes it when the network returns, and the state change then takes the
+/// assertion again.
 @MainActor
 final class MacSyncLifecycle {
     /// UserDefaults key of the Settings toggle "Stay connected in the
@@ -34,6 +40,10 @@ final class MacSyncLifecycle {
 
     let userID: String
     private let engine: JournalSyncEngine
+    /// Whether a voice note is recording, starting or sending. Read under
+    /// observation, so the lifecycle (which outlives every window) hears
+    /// about each change itself.
+    private let voiceNoteBusy: @MainActor () -> Bool
     private let quiet = QuietReconnect.shared
     private var policy = SocketLifecyclePolicy()
     private var activity: NSObjectProtocol?
@@ -42,6 +52,7 @@ final class MacSyncLifecycle {
     private var applyTask: Task<Void, Never>?
     private var stateTask: Task<Void, Never>?
     private var voiceTailTask: Task<Void, Never>?
+    private var voiceBusy = false
     private var probing = false
     private var systemAsleep = false
     private var appActive = false
@@ -49,9 +60,11 @@ final class MacSyncLifecycle {
 
     private enum Step { case begin, close, reconnect }
 
-    init(userID: String, engine: JournalSyncEngine) {
+    init(userID: String, engine: JournalSyncEngine,
+         voiceNoteBusy: @escaping @MainActor () -> Bool = { false }) {
         self.userID = userID
         self.engine = engine
+        self.voiceNoteBusy = voiceNoteBusy
     }
 
     func start() {
@@ -80,11 +93,17 @@ final class MacSyncLifecycle {
         observe(workspace, NSWorkspace.screensDidSleepNotification) { $0.policy.setDisplaysAsleep(true, at: $0.now) }
         observe(workspace, NSWorkspace.screensDidWakeNotification) { $0.policy.setDisplaysAsleep(false, at: $0.now) }
 
-        // The quiet period ends when the engine has caught up.
+        // The chat list ends the quiet period (on its own `.running`), so
+        // the banner never falls back to a state it has not caught up with.
+        // Here the engine's state only prompts a fresh look at the outbox and
+        // the network path, while the user's work holds the socket.
         let engine = engine
         stateTask = Task { [weak self] in
-            for await state in engine.stateStream() {
-                if state == .running { self?.quiet.settled() }
+            for await _ in engine.stateStream() {
+                guard let self, !self.stopped else { return }
+                if self.policy.held || self.policy.networkUnavailable {
+                    self.probeOutboxThenRefresh()
+                }
             }
         }
 
@@ -94,6 +113,7 @@ final class MacSyncLifecycle {
         // nothing is in front of the user.
         enqueue(.begin)
         refresh()
+        observeVoiceNotes()
     }
 
     func stop() {
@@ -112,11 +132,27 @@ final class MacSyncLifecycle {
         quiet.settled()
     }
 
+    /// Follows `voiceNoteBusy` for as long as the lifecycle lives, whether or
+    /// not a window is open: a note can finish after the last window closed,
+    /// and the socket must then be released.
+    private func observeVoiceNotes() {
+        guard !stopped else { return }
+        let busy = withObservationTracking {
+            voiceNoteBusy()
+        } onChange: { [weak self] in
+            // Fires before the change lands: look again once it has.
+            Task { @MainActor [weak self] in self?.observeVoiceNotes() }
+        }
+        guard busy != voiceBusy else { return }
+        voiceBusy = busy
+        setVoiceNoteActive(busy)
+    }
+
     /// A voice note is recording, starting or sending. It keeps the socket
     /// open, and opens it if it is closed, so the note is delivered with no
     /// window in front. The socket is released a few seconds after the last
     /// note settles, so the frame that carried it has left the machine.
-    func setVoiceNoteActive(_ active: Bool) {
+    private func setVoiceNoteActive(_ active: Bool) {
         guard !stopped else { return }
         voiceTailTask?.cancel()
         voiceTailTask = nil
@@ -199,10 +235,12 @@ final class MacSyncLifecycle {
         let engine = engine
         Task { [weak self] in
             let pending = await engine.hasPendingOutbox
+            let offlineNoNetwork = await engine.isWaitingForNetwork
             guard let self else { return }
             self.probing = false
             guard !self.stopped else { return }
             self.policy.setOutboxPending(pending, at: self.now)
+            self.policy.setNetworkUnavailable(offlineNoNetwork, at: self.now)
             self.refresh(probed: true)
         }
     }
@@ -219,7 +257,7 @@ final class MacSyncLifecycle {
         if let deadline = policy.nextDeadline {
             delay = max(0, deadline - now)
             probeOutbox = false
-        } else if policy.outboxPending {
+        } else if policy.outboxPending || policy.networkUnavailable {
             delay = 5
             probeOutbox = true
         } else {

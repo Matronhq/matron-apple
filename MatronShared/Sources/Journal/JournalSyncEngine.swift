@@ -107,6 +107,9 @@ public actor JournalSyncEngine {
     /// path; comparing signatures lets us ignore those instead of tearing
     /// down a healthy connection per callback.
     private var lastPathSignature: String?
+    /// Whether the last observed network path was usable. True until the
+    /// monitor says otherwise (and while it is not running).
+    private var pathSatisfied = true
     /// Set when the engine itself closes the socket because the network
     /// path changed. The run loop then goes straight back to `.connecting`
     /// (no `.offline` blip in the UI, no backoff sleep) — the network is
@@ -383,6 +386,7 @@ public actor JournalSyncEngine {
         pathMonitor?.cancel()
         pathMonitor = nil
         lastPathSignature = nil
+        pathSatisfied = true
         pathChangeReconnect = false
         pathDebounceTask?.cancel()
         pathDebounceTask = nil
@@ -535,7 +539,15 @@ public actor JournalSyncEngine {
         pathMonitor = monitor
     }
 
-    private func handlePathUpdate(satisfied: Bool, signature: String) {
+    /// True while the engine is not connected and the network path is down:
+    /// nothing it does can succeed until the path returns, and the monitor
+    /// then wakes it (`nudge()` below), so a host may stop holding the
+    /// process awake for it. Never true while running or after `endSync()`.
+    public var isWaitingForNetwork: Bool { !pathSatisfied && !isConnectedAndCaughtUp }
+
+    func handlePathUpdate(satisfied: Bool, signature: String) {
+        // A callback that was in flight when the monitor was cancelled.
+        if pathMonitor != nil { pathSatisfied = satisfied }
         let previous = lastPathSignature
         lastPathSignature = signature
         // First callback reports the current path (not a change), and
@@ -1822,6 +1834,9 @@ public actor JournalSyncEngine {
                     if (try? store.forYouSince()) != nil { throw MirrorResetFailed() }
                 }
                 try await coldStartIfNeeded()
+                // `endSync()` (or a restart) may have landed during the
+                // bootstrap; do not start a hello nobody will use.
+                guard !Task.isCancelled, isCurrent(generation) else { return }
                 // Every conversation is complete up to here. Idempotent, and
                 // also covers a scope that came from settings at launch.
                 if syncScope == .forYou { try? store.markForYouStart() }

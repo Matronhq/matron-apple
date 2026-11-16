@@ -6,9 +6,11 @@ import Observation
 /// again on return), as opposed to dropping on its own.
 ///
 /// While quiet the banner stays away: a planned stop never shows "offline",
-/// and a planned reconnect shows "Reconnecting…" only if it is still going
-/// after `delay` (or has failed by then). Real drops are not quiet and show
-/// at once, as they always did.
+/// and a planned reconnect shows "Reconnecting…" only once it has taken
+/// `delay`, whatever its outcome. The chat list ends the quiet period when
+/// its own connection state reaches `.running` (not the engine's, which it
+/// may not have heard yet), so the banner never falls back to a stale
+/// state. Real drops are not quiet and show at once, as they always did.
 @MainActor
 @Observable
 final class QuietReconnect {
@@ -41,5 +43,15 @@ final class QuietReconnect {
     func settled() {
         isQuiet = false
         episode = 0
+    }
+
+    /// The chat list's own connection state reached `.running`. Ends the
+    /// quiet period and says whether one was under way, that is, whether
+    /// the app just came back (the caller then rewrites the Dock badge).
+    @discardableResult
+    func runningReached() -> Bool {
+        let wasQuiet = isQuiet
+        settled()
+        return wasQuiet
     }
 }

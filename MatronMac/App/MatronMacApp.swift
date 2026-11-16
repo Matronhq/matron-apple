@@ -218,11 +218,16 @@ struct MatronMacApp: App {
                         // One per session, whichever window mounts first.
                         guard syncLifecycle?.userID != session.userID else { return }
                         syncLifecycle?.stop()
-                        let lifecycle = MacSyncLifecycle(userID: session.userID,
-                                                         engine: dependencies.syncEngine(for: session))
+                        // The lifecycle watches the voice notes itself, so a
+                        // note that ends with no window open still releases
+                        // the socket.
+                        let notes = voiceNotes
+                        let lifecycle = MacSyncLifecycle(
+                            userID: session.userID,
+                            engine: dependencies.syncEngine(for: session),
+                            voiceNoteBusy: { notes.isRecording || notes.isStarting || notes.isSending })
                         syncLifecycle = lifecycle
                         lifecycle.start()
-                        lifecycle.setVoiceNoteActive(voiceNotes.isRecording || voiceNotes.isStarting || voiceNotes.isSending)
                     }
                 } else {
                     let linkViewModel = LinkSignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron Mac")
@@ -292,11 +297,6 @@ struct MatronMacApp: App {
                 }
                 voiceHotkey = registrar
                 registrar.register(VoiceNoteHotkeyKey(rawValue: raw) ?? .default)
-            }
-            // A note in flight keeps the sync socket open with no window in
-            // front: it is delivered over the socket once uploaded.
-            .onChange(of: voiceNotes.isRecording || voiceNotes.isStarting || voiceNotes.isSending) { _, busy in
-                syncLifecycle?.setVoiceNoteActive(busy)
             }
             .onChange(of: voiceNotes.recordingStart) { _, start in
                 if let start {

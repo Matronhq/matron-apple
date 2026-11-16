@@ -1275,6 +1275,14 @@ struct MacChatListView: View {
                     // Catch-up counts: the socket IS established there, so a
                     // drop mid-replay should come back as "Reconnecting…".
                     if state == .running || state == .catchingUp { hasEverConnected = true }
+                    // This view's own state is what the banner falls back to,
+                    // so it ends the quiet period itself, after the state
+                    // above is set. Coming back: while hidden the Dock badge
+                    // followed pushes, so end on the app's own count even
+                    // when it has not changed since (no `onChange` fires).
+                    if state == .running, quietReconnect.runningReached() {
+                        NSApp.dockTile.badgeLabel = PushBadge.label(for: viewModel.totalUnread)
+                    }
                 }
             }
             // The delay a planned reconnect gets before the banner appears.
@@ -1344,8 +1352,8 @@ struct MacChatListView: View {
     }
 
     /// What the banner shows. A planned stop or reconnect shows nothing until
-    /// it has taken `QuietReconnect.delay` (or failed by then); a real drop is
-    /// shown at once.
+    /// it has taken `QuietReconnect.delay` (whatever its outcome) or this
+    /// view's own state is `.running`; a real drop is shown at once.
     private var bannerState: SyncBannerState {
         quietReconnect.isQuiet && !quietDelayPassed ? .running : connectionState
     }

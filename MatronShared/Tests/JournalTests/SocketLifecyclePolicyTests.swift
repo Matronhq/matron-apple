@@ -244,6 +244,44 @@ final class SocketLifecyclePolicyTests: XCTestCase {
         XCTAssertEqual(policy.decide(at: 501), .close)
     }
 
+    func testOutboxOfflineWithNoNetworkReleasesTheActivityButKeepsTheSocket() {
+        var policy = make()
+        policy.setWindowsVisible(false, at: 0)
+        policy.setOutboxPending(true, at: 10)
+        XCTAssertEqual(policy.decide(at: 100), .keep, "past the grace, the outbox holds the socket")
+        XCTAssertTrue(policy.holdsActivity, "connected or backing off with a network: keep the timers awake")
+
+        policy.setNetworkUnavailable(true, at: 101)
+        XCTAssertFalse(policy.holdsActivity, "an outage must not hold App Nap off for as long as it lasts")
+        XCTAssertEqual(policy.decide(at: 101), .keep, "the socket is still wanted: the engine retries on its own")
+        XCTAssertFalse(policy.socketClosed)
+
+        policy.setNetworkUnavailable(false, at: 400) // the path monitor saw the network return
+        XCTAssertTrue(policy.holdsActivity, "back to holding it while it reconnects")
+    }
+
+    func testNoNetworkDoesNotReleaseTheActivityDuringTheGrace() {
+        var policy = make()
+        policy.setWindowsVisible(false, at: 0)
+        policy.setNetworkUnavailable(true, at: 1)
+        XCTAssertTrue(policy.holdsActivity, "nothing holds the socket but the grace: its close timer needs the process awake")
+        XCTAssertEqual(policy.decide(at: 60), .close)
+        XCTAssertFalse(policy.holdsActivity)
+    }
+
+    func testNoNetworkWithAVoiceNoteOrStayConnectedAlsoReleasesTheActivity() {
+        var policy = make()
+        policy.setWindowsVisible(false, at: 0)
+        policy.setNetworkUnavailable(true, at: 1)
+        policy.setStayConnected(true, at: 2)
+        XCTAssertFalse(policy.holdsActivity)
+        policy.setStayConnected(false, at: 3)
+        policy.setVoiceNoteActive(true, at: 3)
+        XCTAssertFalse(policy.holdsActivity)
+        policy.setNetworkUnavailable(false, at: 4)
+        XCTAssertTrue(policy.holdsActivity)
+    }
+
     func testVoiceNoteTailDoesNotCloseOverAQueuedOutbox() {
         var policy = make()
         policy.setWindowsVisible(false, at: 0)
@@ -285,7 +323,8 @@ final class SocketLifecyclePolicyTests: XCTestCase {
 
     /// After any sequence of inputs and a `decide`, a wanted socket is one
     /// the host has told to open and, unless a window on screen keeps the app
-    /// awake by itself, one the host holds an activity assertion for.
+    /// awake by itself (or only the user's work holds it while the network is
+    /// down), one the host holds an activity assertion for.
     func testWantedSocketAlwaysHasActivityOrAVisibleWindow() {
         var rng = SeededGenerator(state: 0x5EED)
         for _ in 0..<200 {
@@ -294,7 +333,7 @@ final class SocketLifecyclePolicyTests: XCTestCase {
             for _ in 0..<60 {
                 now += TimeInterval(Int.random(in: 0...90, using: &rng))
                 let value = Bool.random(using: &rng)
-                switch Int.random(in: 0..<8, using: &rng) {
+                switch Int.random(in: 0..<9, using: &rng) {
                 case 0: policy.setWindowsVisible(value, at: now)
                 case 1: policy.setAppActive(value, at: now)
                 case 2: policy.setAsleep(value, at: now)
@@ -302,12 +341,16 @@ final class SocketLifecyclePolicyTests: XCTestCase {
                 case 4: policy.setVoiceNoteActive(value, at: now)
                 case 5: policy.setOutboxPending(value, at: now)
                 case 6: policy.setStayConnected(value, at: now)
+                case 7: policy.setNetworkUnavailable(value, at: now)
                 default: break // time passing alone (the grace deadline)
                 }
                 _ = policy.decide(at: now)
                 if policy.wantsSocket(at: now) {
                     XCTAssertFalse(policy.socketClosed, "wanted but closed after decide: \(policy)")
-                    XCTAssertTrue(policy.holdsActivity || policy.windowKeepsAwake,
+                    // With the network down, only the user's own work may hold
+                    // the socket without an assertion.
+                    XCTAssertTrue(policy.holdsActivity || policy.windowKeepsAwake
+                                    || (policy.held && policy.networkUnavailable),
                                   "wanted without an assertion or a visible window: \(policy)")
                 } else {
                     XCTAssertTrue(policy.socketClosed, "unwanted but open after decide: \(policy)")

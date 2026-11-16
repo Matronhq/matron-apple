@@ -29,6 +29,15 @@ import Foundation
 /// the host must hold an activity assertion. A window that can be seen keeps
 /// the app out of App Nap on its own, so no assertion is held then, and none
 /// once the socket is closed, which is what lets the Mac idle.
+///
+/// A socket held only by the user's work (a queued outbox, a voice note, the
+/// stay-connected choice) and a network that is down: the engine can only
+/// back off, and its path monitor (which the host reads as
+/// `networkUnavailable`) wakes it when the network returns, so the assertion
+/// is released for the length of the outage. The socket stays wanted; only
+/// the assertion is dropped. The close deadline of the grace period needs
+/// the process awake, so with nothing holding the socket the assertion stays
+/// through the grace.
 public struct SocketLifecyclePolicy: Equatable, Sendable {
     public enum Decision: Equatable, Sendable {
         /// Leave the socket as it is.
@@ -58,6 +67,8 @@ public struct SocketLifecyclePolicy: Equatable, Sendable {
     public private(set) var outboxPending: Bool
     /// The user's "stay connected in the background" choice.
     public private(set) var stayConnected: Bool
+    /// The engine is not connected and has no network path to connect over.
+    public private(set) var networkUnavailable: Bool
     /// When the foreground last ended; nil while it holds.
     public private(set) var hiddenSince: TimeInterval?
     /// True once a `.close` decision was handed out and no reconnect since.
@@ -76,6 +87,7 @@ public struct SocketLifecyclePolicy: Equatable, Sendable {
         self.voiceNoteActive = false
         self.outboxPending = false
         self.stayConnected = false
+        self.networkUnavailable = false
         self.socketClosed = false
         self.hiddenSince = nil
         self.hiddenSince = foreground ? nil : now
@@ -122,6 +134,10 @@ public struct SocketLifecyclePolicy: Equatable, Sendable {
         change(at: now) { $0.stayConnected = value }
     }
 
+    public mutating func setNetworkUnavailable(_ value: Bool, at now: TimeInterval) {
+        change(at: now) { $0.networkUnavailable = value }
+    }
+
     public mutating func setAsleep(_ value: Bool, at now: TimeInterval) {
         guard value != asleep else { return }
         asleep = value
@@ -153,8 +169,12 @@ public struct SocketLifecyclePolicy: Equatable, Sendable {
     public var windowKeepsAwake: Bool { windowsVisible && !displaysAsleep }
 
     /// Whether the host must hold an activity assertion: while the socket is
-    /// open (or about to be) and no window on screen keeps the app awake.
-    public var holdsActivity: Bool { !socketClosed && !windowKeepsAwake }
+    /// open (or about to be) and no window on screen keeps the app awake,
+    /// except while only the user's work holds the socket and the network is
+    /// down (nothing to keep awake for: the path monitor wakes the engine).
+    public var holdsActivity: Bool {
+        !socketClosed && !windowKeepsAwake && !(held && networkUnavailable)
+    }
 
     /// A `decide` would close the socket now. The host checks the outbox
     /// first, so a close never rests on a stale `outboxPending`.

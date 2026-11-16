@@ -40,7 +40,7 @@ struct MacGeneralSettingsPane: View {
             } header: {
                 Text("Connection")
             } footer: {
-                Text("Off by default. Matron closes its live connection a minute after nothing of it can be seen, which lets your Mac idle; push notifications and the Dock badge still update. Turn this on to keep the connection open all the time, at the cost of some battery.")
+                Text("When this is off, Matron disconnects a minute after its windows are hidden or covered, to save battery. Notifications and the Dock badge still update, though changes in muted chats can take a few minutes to show. Turn this on to stay connected all the time. This uses more battery.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

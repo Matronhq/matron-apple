@@ -36,6 +36,26 @@ final class JournalSyncEngineRestartTests: XCTestCase {
         }
     }
 
+    /// Waits (bounded) until the engine reports `.catchingUp`, so a test that
+    /// stops it "during catch-up" really does.
+    private func waitForCatchingUp(_ engine: JournalSyncEngine, timeout: Duration = .seconds(2)) async -> Bool {
+        await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                for await state in engine.stateStream() {
+                    if case .catchingUp = state { return true }
+                }
+                return false
+            }
+            group.addTask {
+                try? await Task.sleep(for: timeout)
+                return false
+            }
+            let reached = await group.next() ?? false
+            group.cancelAll()
+            return reached
+        }
+    }
+
     /// `endSync()` lands while the hello is out. The handshake cannot be
     /// cancelled, so the loop only learns it was stopped when the hello
     /// returns: it must drop that socket instead of publishing it.
@@ -102,6 +122,8 @@ final class JournalSyncEngineRestartTests: XCTestCase {
 
         await engine.beginSync()
         await waitUntil(connector.connectCount == 1 && !first.sent.isEmpty)
+        let catchingUp = await waitForCatchingUp(engine)
+        XCTAssertTrue(catchingUp, "the first loop is mid catch-up when it is stopped")
         await engine.endSync()
         await engine.beginSync()
         try await engine.waitUntilReady()
@@ -111,6 +133,17 @@ final class JournalSyncEngineRestartTests: XCTestCase {
         let caughtUp = await engine.isConnectedAndCaughtUp
         XCTAssertTrue(caughtUp)
         await engine.endSync()
+    }
+
+    /// A path callback that was in flight when the monitor was cancelled (or
+    /// before sync began) must not leave the engine waiting for a network.
+    func testStalePathCallbackDoesNotMarkTheEngineAsWaitingForNetwork() async throws {
+        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([]))
+        let before = await engine.isWaitingForNetwork
+        XCTAssertFalse(before)
+        await engine.handlePathUpdate(satisfied: false, signature: "unsatisfied|")
+        let after = await engine.isWaitingForNetwork
+        XCTAssertFalse(after, "no monitor is running, so the callback is stale")
     }
 
     private func sendOps(_ socket: FakeWebSocketConnection) -> [String] {

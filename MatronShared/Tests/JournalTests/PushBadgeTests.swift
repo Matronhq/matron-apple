@@ -35,4 +35,23 @@ final class PushBadgeTests: XCTestCase {
         XCTAssertNil(PushBadge.count(from: ["aps": ["badge": "many"]]))
         XCTAssertNil(PushBadge.count(from: ["aps": "nope"]))
     }
+
+    func testFractionalAndOutOfRangeNumbersAreIgnored() {
+        // -0.5 truncates to 0 and would clear the badge.
+        XCTAssertNil(PushBadge.count(from: ["aps": ["badge": NSNumber(value: -0.5)]]))
+        XCTAssertNil(PushBadge.count(from: ["aps": ["badge": NSNumber(value: 2.5)]]))
+        XCTAssertNil(PushBadge.count(from: ["aps": ["badge": NSNumber(value: 0.5)]]))
+        XCTAssertNil(PushBadge.count(from: ["aps": ["badge": NSNumber(value: -3)]]))
+        XCTAssertNil(PushBadge.count(from: ["aps": ["badge": NSNumber(value: Double.nan)]]))
+        XCTAssertNil(PushBadge.count(from: ["aps": ["badge": NSNumber(value: Double.infinity)]]))
+        XCTAssertNil(PushBadge.count(from: ["aps": ["badge": NSNumber(value: 1e30)]]))
+        XCTAssertNil(PushBadge.count(from: ["aps": ["badge": NSNumber(value: UInt64.max)]]))
+        XCTAssertNil(PushBadge.count(from: ["aps": ["badge": NSNumber(value: true)]]))
+    }
+
+    func testWholeNumbersStillCount() {
+        XCTAssertEqual(PushBadge.count(from: ["aps": ["badge": NSNumber(value: 4.0)]]), 4)
+        XCTAssertEqual(PushBadge.count(from: ["aps": ["badge": NSNumber(value: UInt8(9))]]), 9)
+        XCTAssertEqual(PushBadge.count(from: ["aps": ["badge": NSNumber(value: Int64(100_000))]]), 100_000)
+    }
 }
