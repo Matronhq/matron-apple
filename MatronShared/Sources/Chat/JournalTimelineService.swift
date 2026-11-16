@@ -20,12 +20,10 @@ private extension Duration {
 /// conversation.
 ///
 /// `items()` merges three inputs into a single snapshot stream:
-///  1. `store.eventsStream(convoID:sinceSeq:)` — a tail-anchored window, not
-///     the whole history; see `items()` — mapped through
-///     `JournalTimelineMapper`. With the store's `store.changeFeed` flag on,
-///     `store.eventTailStream(convoID:sinceSeq:)` delivers the same window
-///     from the change feed instead, reading only when this conversation's
-///     events change;
+///  1. `store.eventTailStream(convoID:sinceSeq:)` — a tail-anchored window,
+///     not the whole history; see `items()` — mapped through
+///     `JournalTimelineMapper`. It comes from the change feed, reading only
+///     when this conversation's events change;
 ///  2. streaming "ephemeral" overlay rows (assistant output arriving token
 ///     by token, before the finalize journal row lands);
 ///  3. local-echo rows for in-flight `sendText` calls, so the composer's
@@ -44,9 +42,7 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
     private let search: (any SearchService)?
     private let overlay: OverlayState
     private let sweepInterval: Duration
-    /// How many tail events the store observation fetches per re-run — see
-    /// `JournalStore.eventsStream(convoID:sinceSeq:)` for why the fetch is
-    /// windowed at all. Sized to comfortably out-cover the view models'
+    /// How many tail events the store's tail stream holds. Sized to comfortably out-cover the view models'
     /// largest render window (`ChatViewModel.maxWindowSize`, 360 rows), so
     /// window growth stays local until the user genuinely reads past it.
     private let fetchWindow: Int
@@ -112,8 +108,7 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         /// than `tailEvents.first`. Fed by `paginateBackward` (local mirror
         /// page or network backfill); immutable rows, so fetch-once is safe.
         private var olderEvents: [JournalEvent] = []
-        /// Latest row set from `JournalStore.eventsStream(convoID:sinceSeq:)`
-        /// (or `eventTailStream`, with the change feed on).
+        /// Latest row set from `JournalStore.eventTailStream(convoID:sinceSeq:)`.
         private var tailEvents: [JournalEvent] = []
         /// Mapped-item memo keyed by event seq. Journal events are
         /// immutable once written (streaming mutations ride the ephemeral
@@ -678,12 +673,10 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
             }
             let fetchWindow = fetchWindow
             let storeTask = Task {
-                // The observation is anchored: it fetches only the newest
+                // The tail is anchored: it holds only the newest
                 // `fetchWindow` rows (as of subscribe time) plus everything
-                // arriving after, because its non-key filter makes GRDB
-                // re-run the fetch on EVERY commit store-wide — an
-                // unanchored fetch re-decoded the whole history per commit
-                // (the 2026-08-26 lag). Rows below the anchor reach the
+                // arriving after, so a change re-reads a bounded window,
+                // never the whole history. Rows below the anchor reach the
                 // overlay through `paginateBackward`'s local reveal. The
                 // anchor is re-derived per subscription so a cached
                 // service re-opened days later still observes a bounded
@@ -694,20 +687,13 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                 // can't merge a stale delivery into the fresh state.
                 let anchor = (try? store.tailWindowStart(convoID: convoID, limit: fetchWindow)) ?? 0
                 let epoch = await overlay.rebaseForNewTailSubscription(anchor: anchor)
-                if store.usesChangeFeed {
-                    // The same tail from the change feed: fetched only when
-                    // a commit wrote this conversation's events, so a frame
-                    // in another conversation costs this chat nothing, and
-                    // a row rewritten in place is mapped again.
-                    for await tail in store.eventTailStream(convoID: convoID, sinceSeq: anchor) {
-                        await overlay.setTail(tail.events, epoch: epoch, rewritten: tail.rewrittenSeqs)
-                        signal()
-                    }
-                } else {
-                    for await tail in store.eventsStream(convoID: convoID, sinceSeq: anchor) {
-                        await overlay.setTail(tail, epoch: epoch)
-                        signal()
-                    }
+                // The tail from the change feed: fetched only when a commit
+                // wrote this conversation's events, so a frame in another
+                // conversation costs this chat nothing, and a row rewritten
+                // in place is mapped again.
+                for await tail in store.eventTailStream(convoID: convoID, sinceSeq: anchor) {
+                    await overlay.setTail(tail.events, epoch: epoch, rewritten: tail.rewrittenSeqs)
+                    signal()
                 }
                 // The store stream now self-heals observation errors, so a
                 // non-cancelled finish here should be impossible — log it

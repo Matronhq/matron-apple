@@ -11,9 +11,8 @@ class ConversationIndexTests: XCTestCase {
     /// `ConversationIndexPoolTests` runs the whole suite again on a pool.
     class var writerKind: StoreWriterKind { .queue }
 
-    private func makeStore(usesChangeFeed: Bool = true) throws -> JournalStore {
-        try makeTestStore(Self.writerKind, ownSender: RandomJournalWrites.ownSender,
-                          metrics: StoreMetrics(), usesChangeFeed: usesChangeFeed)
+    private func makeStore() throws -> JournalStore {
+        try makeTestStore(Self.writerKind, ownSender: RandomJournalWrites.ownSender, metrics: StoreMetrics())
     }
 
     private func event(_ seq: Int64, convo: String = "c1", ts: Date? = nil, sender: String = "agent:box-2",
@@ -56,7 +55,7 @@ class ConversationIndexTests: XCTestCase {
     func testProjectionsEqualTodaysFetchesAfterEveryCommit() throws {
         let parents = RandomJournalWrites.convoIDs + RandomJournalWrites.quietIDs
         for seed in UInt64(1)...6 {
-            let store = try makeStore(usesChangeFeed: false)
+            let store = try makeStore()
             var writes = RandomJournalWrites(store: store, seed: seed)
             for _ in 0..<20 { try writes.step() }
             let (fed, subscription) = try feedState(store)
@@ -286,7 +285,7 @@ class ConversationIndexTests: XCTestCase {
     /// SQLite sorts NULL lowest: last under `DESC`. Rows equal on activity
     /// and seq come out in rowid order.
     func testChatListOrderMatchesSQLiteForNullActivityAndTies() throws {
-        let store = try makeStore(usesChangeFeed: false)
+        let store = try makeStore()
         let (fed, subscription) = try feedState(store)
         defer { subscription.cancel() }
         try store.applyColdSnapshot([
@@ -308,7 +307,7 @@ class ConversationIndexTests: XCTestCase {
     /// a small commit still moves just its rows. Either way the order is
     /// SQLite's.
     func testALargeCommitRebuildsTheChatOrderOnceAndMatchesSQLite() throws {
-        let store = try makeStore(usesChangeFeed: false)
+        let store = try makeStore()
         let base: Int64 = 1_900_000_000_000
         let snapshot = (0..<2_300).map { (i: Int) -> ConvoSummaryDTO in
             let lastTS: Int64? = i % 5 == 0 ? nil : base + Int64(i % 13)
@@ -342,7 +341,7 @@ class ConversationIndexTests: XCTestCase {
     /// partitions pinned rows after this point, so the index carries them
     /// like any other row.)
     func testArchivedAndChildRowsAreOutOfTheChatListAndInTheProjections() throws {
-        let store = try makeStore(usesChangeFeed: false)
+        let store = try makeStore()
         let (fed, subscription) = try feedState(store)
         defer { subscription.cancel() }
         try store.applyJournal(event(1, convo: "parent"))
@@ -373,7 +372,7 @@ class ConversationIndexTests: XCTestCase {
     /// exactly the table's rows. (No store API deletes one conversation
     /// today, so this goes through SQL.)
     func testRowidReuseAndAMovedKeyLeaveExactlyTheTablesRows() throws {
-        let store = try makeStore(usesChangeFeed: false)
+        let store = try makeStore()
         try store.ensureConversation(id: "a", title: "A")
         try store.ensureConversation(id: "b", title: "B")
         let (fed, subscription) = try feedState(store)
@@ -461,18 +460,6 @@ class ConversationIndexTests: XCTestCase {
 
         try await waitUntil { list.finished && states.finished && rooms.finished && children.finished }
         XCTAssertNil(index, "the index goes with its store")
-    }
-
-    /// The flag off leaves the store exactly as before: no index, no feed
-    /// subscriber, the value observations.
-    func testFlagOffServesTheValueObservations() async throws {
-        let store = try makeStore(usesChangeFeed: false)
-        try store.applyJournal(event(1))
-        var list = store.conversationsStream().makeAsyncIterator()
-        let first = await list.next()
-        XCTAssertEqual(first?.map(\.id), ["c1"])
-        XCTAssertEqual(store.changeFeed.subscriberCount, 0)
-        XCTAssertNil(store.startedConversationIndex)
     }
 
     /// `removeDuplicates` semantics: a commit that leaves the chat list as

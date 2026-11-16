@@ -7,12 +7,9 @@ import XCTest
 /// events a consent item needs, and scanning a long conversation's every
 /// row for them would be the wrong shape. Live, because the card can sync
 /// after the item was opened.
-class ConsentEventsQueryTests: XCTestCase {
-    /// `ConsentEventsFeedQueryTests` runs it again from the change feed.
-    class var usesChangeFeed: Bool { false }
-
+final class ConsentEventsQueryTests: XCTestCase {
     private func makeStore() throws -> JournalStore {
-        try makeTestStore(Self.usesChangeFeed ? .pool : .memory, usesChangeFeed: Self.usesChangeFeed)
+        try makeTestStore(.pool)
     }
 
     private func event(_ seq: Int64, convo: String = "c1", sender: String = "agent:box-2",
@@ -68,8 +65,4 @@ class ConsentEventsQueryTests: XCTestCase {
         let after = await iterator.next()
         XCTAssertEqual(after?.map(\.seq), [2], "the card, once it is in the store")
     }
-}
-
-final class ConsentEventsFeedQueryTests: ConsentEventsQueryTests {
-    override class var usesChangeFeed: Bool { true }
 }

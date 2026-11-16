@@ -4,14 +4,14 @@ import MatronModels
 import XCTest
 @testable import MatronJournal
 
-/// `commentsStream(itemID:)` with `usesChangeFeed` on: the thread read
+/// `commentsStream(itemID:)` from the change feed: the thread read
 /// once, then kept current from the feed's comment rows.
 class CommentsFeedStreamTests: XCTestCase {
     /// `CommentsFeedStreamPoolTests` runs the whole suite again on a pool.
     class var writerKind: StoreWriterKind { .queue }
 
     private func makeStore(metrics: StoreMetrics = StoreMetrics()) throws -> JournalStore {
-        try makeTestStore(Self.writerKind, metrics: metrics, usesChangeFeed: true)
+        try makeTestStore(Self.writerKind, metrics: metrics)
     }
 
     private func comment(_ id: String, item: String = "i1", body: String = "hi", at seconds: TimeInterval = 1_900_000_000) -> TrackerComment {
@@ -131,18 +131,6 @@ class CommentsFeedStreamTests: XCTestCase {
         }
     }
 
-    /// With the flag off, `commentsStream` is still the value observation.
-    func testWithTheFlagOffTheStreamIsTheValueObservation() async throws {
-        let metrics = StoreMetrics()
-        let store = try makeTestStore(Self.writerKind, metrics: metrics, usesChangeFeed: false)
-        try store.replaceComments(itemID: "i1", [comment("a")])
-        let thread = ThreadRecorder(store.commentsStream(itemID: "i1"))
-        defer { thread.cancel() }
-        try await waitUntil { thread.count == 1 }
-        let report = metrics.drain().observations
-        XCTAssertNotNil(report.first { $0.name == "commentsStream" })
-        XCTAssertNil(report.first { $0.name == "commentsFeed" })
-    }
 }
 
 final class CommentsFeedStreamPoolTests: CommentsFeedStreamTests {

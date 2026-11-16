@@ -266,15 +266,10 @@ final class AppDependencies {
                              accountLocks: { [accountLock] lock in accountLock.note(lock: lock) })
         let dbURL = journalDirectory.appendingPathComponent("\(session.userID).sqlite")
         LaunchTimeline.shared.beginStoreOpen()
-        // `store.changeFeed` (on unless switched off in Settings → Storage;
-        // `-store.changeFeed NO` on the command line for one run) serves the
-        // conversation and item streams from change-fed indexes instead of
-        // whole-table re-reads per commit.
         // `store.pool` (off by default; `-store.pool YES`) opens the mirror
         // as a `DatabasePool`, so reads stop waiting behind sync writes.
         let store = try! JournalStore(
             databaseURL: dbURL, ownSender: "user:\(session.userID)",
-            usesChangeFeed: JournalStore.changeFeedEnabled(),
             usesPool: UserDefaults.standard.bool(forKey: JournalStore.poolFlagKey))
         LaunchTimeline.shared.endStoreOpen()
         // Un-gated, like MainThreadStallMonitor: a once-a-minute line per

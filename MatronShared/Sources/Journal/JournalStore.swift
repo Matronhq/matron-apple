@@ -363,16 +363,6 @@ public final class JournalStore: @unchecked Sendable {
     /// Held strongly here because GRDB holds its observers weakly.
     let changeFeed: StoreChangeFeed
 
-    /// The `UserDefaults` key of the `usesChangeFeed` flag. A launch
-    /// argument `-store.changeFeed NO` turns it off for one run.
-    public static let changeFeedFlagKey = "store.changeFeed"
-
-    /// Whether the apps open the store with `usesChangeFeed`: on unless the
-    /// user turned it off (Settings → Storage), so an unset key reads as on.
-    public static func changeFeedEnabled(in defaults: UserDefaults = .standard) -> Bool {
-        defaults.object(forKey: changeFeedFlagKey) as? Bool ?? true
-    }
-
     /// The `UserDefaults` key of `init`'s `usesPool`. A launch argument
     /// `-store.pool YES` sets it for one run.
     public static let poolFlagKey = "store.pool"
@@ -380,18 +370,13 @@ public final class JournalStore: @unchecked Sendable {
     /// Reader connections a pooled store may open; see `init`.
     static let maximumReaderCount = 12
 
-    /// Whether `conversationsStream()`, `sessionStatesStream()`,
-    /// `missionRoomsStream()` and `childrenStream(of:)` are served from one
-    /// shared `ConversationIndex` fed by the change feed, instead of each
-    /// re-reading the `conversation` table after every commit; and the item
-    /// streams (`needsUserCountsStream()`, `needsYouItemsByMissionStream()`,
-    /// the mission and project item streams) from one shared `ItemsIndex`,
-    /// which also serves `itemSectionsStream(scope:)` to the items panels.
-    /// `init` defaults it to off; the apps turn it on unless the user
-    /// switched it off (`changeFeedEnabled(in:)`). When off, the streams are
-    /// exactly the value observations, and the items panels read
-    /// `itemsStream(scope:)`.
-    public let usesChangeFeed: Bool
+    // `conversationsStream()`, `sessionStatesStream()`,
+    // `missionRoomsStream()` and `childrenStream(of:)` are served from one
+    // shared `ConversationIndex` fed by the change feed, instead of each
+    // re-reading the `conversation` table after every commit; and the item
+    // streams (`needsUserCountsStream()`, `needsYouItemsByMissionStream()`,
+    // the mission and project item streams) from one shared `ItemsIndex`,
+    // which also serves `itemSectionsStream(scope:)` to the items panels.
 
     private let conversationIndexHolder = OSAllocatedUnfairLock<ConversationIndex?>(initialState: nil)
     private let itemsIndexHolder = OSAllocatedUnfairLock<ItemsIndex?>(initialState: nil)
@@ -470,9 +455,6 @@ public final class JournalStore: @unchecked Sendable {
     ///   `Database.suspendNotification` / `resumeNotification`. Defaults to
     ///   the platform rule above; tests pass `true` to exercise suspension
     ///   on the macOS test host.
-    /// - Parameter usesChangeFeed: serve the conversation streams from a
-    ///   `ConversationIndex` (see `usesChangeFeed`). The apps pass the
-    ///   `store.changeFeed` user default.
     /// - Parameter usesPool: open a file-backed store as a `DatabasePool`,
     ///   whose reads run on reader connections beside the writer instead of
     ///   waiting for it, rather than a `DatabaseQueue`. An in-memory store
@@ -481,10 +463,8 @@ public final class JournalStore: @unchecked Sendable {
     public init(databaseURL: URL?, ownSender: String,
                 observesSuspension: Bool = JournalStore.observesSuspensionByDefault,
                 metrics: StoreMetrics = .shared,
-                usesChangeFeed: Bool = false,
                 usesPool: Bool = false) throws {
         self.metrics = metrics
-        self.usesChangeFeed = usesChangeFeed
         self.ownSender = ownSender
         self.databaseURL = databaseURL
         self.changeFeed = StoreChangeFeed(metrics: metrics)
@@ -2082,22 +2062,11 @@ public final class JournalStore: @unchecked Sendable {
     /// detail needs to draw a consent item's card and settle its state.
     /// Reads the full local history, like `attachmentEvents`:
     /// a card can be much older than the timeline's window. Live, so a card
-    /// that syncs after the item was opened still reaches it; the non-key
-    /// `convo_id` filter means every applied frame anywhere re-runs the
-    /// fetch (see `eventsStream`), which the type filter keeps cheap and
-    /// `removeDuplicates()` keeps quiet downstream. With `usesChangeFeed`
-    /// on it is served from the change feed (`convoEventsFeedStream`).
+    /// that syncs after the item was opened still reaches it. Served from
+    /// the change feed (`convoEventsFeedStream`): a commit in another
+    /// conversation reads nothing.
     public func consentEventsStream(convoID: String) -> AsyncStream<[JournalEvent]> {
-        if usesChangeFeed { return convoEventsFeedStream(convoID: convoID, query: Self.consentEventsQuery) }
-        let observation = ValueObservation.measuredTrackingConstantRegion("consentEventsStream", in: metrics) { db in
-            try EventRecord
-                .filter(Column("convo_id") == convoID)
-                .filter([JournalEventType.permissionRequest, JournalEventType.spawnOutcome].contains(Column("type")))
-                .order(Column("seq"))
-                .fetchAll(db)
-                .map(\.journalEvent)
-        }
-        return Self.stream(observation.removeDuplicates(), in: db)
+        convoEventsFeedStream(convoID: convoID, query: Self.consentEventsQuery)
     }
 
     /// `queued_release` cards (`prompt`) and their releases
@@ -2110,16 +2079,11 @@ public final class JournalStore: @unchecked Sendable {
     /// conversation, where `event_convo_type` seeks straight to its few
     /// prompts — and this re-runs on every event write.
     ///
-    /// With `usesChangeFeed` on it is served from the change feed
-    /// (`convoEventsFeedStream`): a commit in another conversation reads
-    /// nothing, and one in this conversation reads only the seqs it wrote.
+    /// Served from the change feed (`convoEventsFeedStream`): a commit in
+    /// another conversation reads nothing, and one in this conversation
+    /// reads only the seqs it wrote.
     public func queuedReleaseEventsStream(convoID: String) -> AsyncStream<[JournalEvent]> {
-        if usesChangeFeed { return convoEventsFeedStream(convoID: convoID, query: Self.queuedReleaseEventsQuery) }
-        let observation = ValueObservation.measuredTrackingConstantRegion("queuedReleaseEventsStream", in: metrics) {
-            [query = Self.queuedReleaseEventsQuery] db in
-            try query.fetch(db, convoID: convoID).sorted { $0.seq < $1.seq }
-        }
-        return Self.stream(observation.removeDuplicates(), in: db)
+        convoEventsFeedStream(convoID: convoID, query: Self.queuedReleaseEventsQuery)
     }
 
     static let queuedReleaseEventsQuery = ConvoEventsQuery(
@@ -2615,28 +2579,14 @@ public final class JournalStore: @unchecked Sendable {
     /// on the main queue. Applied in order, the updates reproduce the
     /// order `conversationsStream()` delivers, and each one's `rows` are
     /// the records it delivers. For a list host that edits only the rows
-    /// that changed; read it only while `usesChangeFeed` is on.
+    /// that changed.
     public func chatListUpdatesStream() -> AsyncStream<ListPublication<ConversationRecord, String>> {
         conversationIndex.chatListUpdatesStream()
     }
 
+    /// The chat list, served by the store's `ConversationIndex`.
     public func conversationsStream() -> AsyncStream<[ConversationRecord]> {
-        if usesChangeFeed { return conversationIndex.chatListStream() }
-        // Fresh `Date()` per re-run: the closure re-executes after each
-        // change GRDB observes for the tables it reads (on a pool, once for
-        // all the commits that landed while the last fetch ran), so a
-        // long-lived subscriber still gets the TTL re-evaluated against
-        // current wall time rather than "now" at subscribe time.
-        let observation = ValueObservation.measuredTrackingConstantRegion("conversationsStream", in: metrics) { db in
-            try Self.chatList(db, now: Date())
-        }
-        // This observation reads ONLY the `conversation` table: the TTL is
-        // pure column logic (see `applyReadTimeSnippetTTL`), so an applied
-        // journal frame re-runs the list fetch only when it actually touches
-        // a conversation row. `removeDuplicates()` stays as the guard
-        // against re-render churn from writes that change a row the list
-        // does not display.
-        return Self.stream(observation.removeDuplicates(), in: db)
+        conversationIndex.chatListStream()
     }
 
     /// Live id → name map of the user's agent boxes. Deliberately separate
@@ -2665,11 +2615,7 @@ public final class JournalStore: @unchecked Sendable {
     /// or transitions running→done, so the running-subagent strip and the
     /// switcher menu stay current without polling.
     public func childrenStream(of parentConvoID: String) -> AsyncStream<[ConversationRecord]> {
-        if usesChangeFeed { return conversationIndex.childrenStream(of: parentConvoID) }
-        let observation = ValueObservation.measuredTrackingConstantRegion("childrenStream", in: metrics) { db in
-            try Self.childRecords(db, of: parentConvoID)
-        }
-        return Self.stream(observation, in: db)
+        conversationIndex.childrenStream(of: parentConvoID)
     }
 
     /// Live stream of one conversation's `session_state` — "running" while
@@ -2735,9 +2681,7 @@ public final class JournalStore: @unchecked Sendable {
     /// room row draws, so a snippet-only write does not re-emit, and does
     /// no JSON work on the database connection (see `RoomRow`).
     public func missionRoomsStream() -> AsyncStream<[RoomRow]> {
-        if usesChangeFeed { return conversationIndex.roomsStream() }
-        let observation = ValueObservation.measuredTrackingConstantRegion("missionRoomsStream", in: metrics, Self.missionRoomRows)
-        return Self.stream(observation.removeDuplicates(), in: db)
+        conversationIndex.roomsStream()
     }
 
     /// The query behind `missionRoomsStream()`. No `ORDER BY`: rows come
@@ -2767,8 +2711,7 @@ public final class JournalStore: @unchecked Sendable {
     /// to what it renders), while a session-state consumer like the
     /// dashboard needs every conversation, including ones the list hides.
     public func sessionStatesStream() -> AsyncStream<[String: String]> {
-        if usesChangeFeed { return conversationIndex.sessionStatesStream() }
-        return Self.stream(ValueObservation.measuredTrackingConstantRegion("sessionStatesStream", in: metrics, Self.sessionStateMap).removeDuplicates(), in: db)
+        conversationIndex.sessionStatesStream()
     }
 
     static func sessionStateMap(_ db: Database) throws -> [String: String] {
@@ -2791,34 +2734,7 @@ public final class JournalStore: @unchecked Sendable {
         return Self.stream(observation, in: db)
     }
 
-    /// Live tail of one conversation's events: every row with
-    /// `seq >= sinceSeq`, ascending. Anchored — not the whole history —
-    /// because the `convo_id` filter is non-key, which makes GRDB observe
-    /// the ENTIRE event table: every applied journal frame in ANY
-    /// conversation re-runs this fetch. Unanchored, that re-fetched and
-    /// re-decoded the open chat's full history per commit — O(history) per
-    /// delta, quadratic over a streaming turn, and the dominant cost in the
-    /// 2026-08-26 lag captures. Callers pick the anchor via
-    /// `tailWindowStart(convoID:limit:)` and reveal older rows with the
-    /// one-shot `events(convoID:beforeSeq:limit:)`.
-    ///
-    /// `removeDuplicates()` matters for the same reason: the per-commit
-    /// re-runs can't be avoided (SQLite has no narrower region for this
-    /// filter), but a frame landing in another conversation yields an
-    /// identical tail, and dropping it here spares the whole downstream
-    /// pipeline (overlay reconcile → mapper → SwiftUI diff).
-    public func eventsStream(convoID: String, sinceSeq: Int64) -> AsyncStream<[JournalEvent]> {
-        let observation = ValueObservation.measuredTrackingConstantRegion("eventsStream", in: metrics) { db in
-            try EventRecord
-                .filter(Column("convo_id") == convoID && Column("seq") >= sinceSeq)
-                .order(Column("seq"))
-                .fetchAll(db)
-                .map(\.journalEvent)
-        }
-        return Self.stream(observation.removeDuplicates(), in: db)
-    }
-
-    /// The anchor for `eventsStream(convoID:sinceSeq:)`: the lowest seq
+    /// The anchor for `eventTailStream(convoID:sinceSeq:)`: the lowest seq
     /// within the newest `limit` events. A conversation with fewer rows
     /// than `limit` anchors at its oldest row, and one with no rows at all
     /// anchors at 0 — both mean "observe everything it has"; new live rows

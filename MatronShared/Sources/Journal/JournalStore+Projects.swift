@@ -225,13 +225,8 @@ extension JournalStore {
 
     /// Open items awaiting the user across every mission in the project.
     public func needsYouItemsStream(projectID: String) -> AsyncStream<[TrackerItem]> {
-        if usesChangeFeed {
-            let index = itemsIndex
-            return projectItemsStream(projectID: projectID) { index.needsYouItemsStream(missionIDs: $0) }
-        }
-        return Self.stream(ValueObservation.measuredTrackingConstantRegion("needsYouItemsStream", in: metrics) { db in
-            try Self.projectNeedsYouItems(db, projectID)
-        }.removeDuplicates(), in: db)
+        let index = itemsIndex
+        return projectItemsStream(projectID: projectID) { index.needsYouItemsStream(missionIDs: $0) }
     }
 
     static func projectNeedsYouItems(_ db: Database, _ projectID: String) throws -> [TrackerItem] {
@@ -246,13 +241,8 @@ extension JournalStore {
     /// the project page's "Other open items" list (it leaves out the ones
     /// Needs you already shows).
     public func openItemsStream(projectID: String) -> AsyncStream<[TrackerItem]> {
-        if usesChangeFeed {
-            let index = itemsIndex
-            return projectItemsStream(projectID: projectID) { index.openItemsStream(missionIDs: $0) }
-        }
-        return Self.stream(ValueObservation.measuredTrackingConstantRegion("openItemsStream", in: metrics) { db in
-            try Self.projectOpenItems(db, projectID)
-        }.removeDuplicates(), in: db)
+        let index = itemsIndex
+        return projectItemsStream(projectID: projectID) { index.openItemsStream(missionIDs: $0) }
     }
 
     static func projectOpenItems(_ db: Database, _ projectID: String) throws -> [TrackerItem] {

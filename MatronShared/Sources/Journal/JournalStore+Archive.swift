@@ -136,13 +136,9 @@ extension JournalStore {
     }
 
     /// Live Archived list. Like `conversationsStream()`, served from the
-    /// `ConversationIndex` when the change feed is on.
+    /// `ConversationIndex`.
     public func archivedConversationsStream() -> AsyncStream<[ConversationRecord]> {
-        if usesChangeFeed { return conversationIndex.archivedListStream() }
-        let observation = ValueObservation.measuredTrackingConstantRegion("archivedConversationsStream", in: metrics) { db in
-            try Self.archivedList(db, now: Date())
-        }
-        return Self.stream(observation.removeDuplicates(), in: db)
+        conversationIndex.archivedListStream()
     }
 
     // MARK: Purging long-archived history

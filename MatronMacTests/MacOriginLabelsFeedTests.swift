@@ -12,9 +12,10 @@ import MatronViewModels
 private final class OneItemStore: ItemsStoreReading, @unchecked Sendable {
     let items: [TrackerItem]
     init(_ items: [TrackerItem]) { self.items = items }
-    func itemsStream(scope: ItemsScope) -> AsyncStream<[TrackerItem]> {
-        let items = items
-        return AsyncStream { $0.yield(items) }
+    func itemSectionsStream(scope: ItemsScope) -> AsyncStream<ItemsIndexSections> {
+        let s = ItemsPanelViewModel.sections(from: items)
+        let sections = ItemsIndexSections(needsYou: s.needsYou, tasks: s.tasks, decisions: s.decisions, done: s.done, decided: s.decided)
+        return AsyncStream { $0.yield(sections) }
     }
     func itemStream(id: String) -> AsyncStream<TrackerItem?> { AsyncStream { _ in } }
     func commentsStream(itemID: String) -> AsyncStream<[TrackerComment]> { AsyncStream { _ in } }

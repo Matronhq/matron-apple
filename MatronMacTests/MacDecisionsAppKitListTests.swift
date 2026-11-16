@@ -12,26 +12,33 @@ import MatronViewModels
 /// items pane tests).
 final class SettableItemsStore: ItemsStoreReading, @unchecked Sendable {
     private let lock = NSLock()
-    private var continuations: [AsyncStream<[TrackerItem]>.Continuation] = []
+    private var continuations: [AsyncStream<ItemsIndexSections>.Continuation] = []
     private var items: [TrackerItem]
 
     init(_ items: [TrackerItem]) { self.items = items }
 
     func set(_ items: [TrackerItem]) {
-        let continuations = lock.withLock { () -> [AsyncStream<[TrackerItem]>.Continuation] in
+        let continuations = lock.withLock { () -> [AsyncStream<ItemsIndexSections>.Continuation] in
             self.items = items
             return self.continuations
         }
-        for continuation in continuations { continuation.yield(items) }
+        for continuation in continuations { continuation.yield(Self.sections(items)) }
     }
 
-    func itemsStream(scope: ItemsScope) -> AsyncStream<[TrackerItem]> {
-        let (stream, continuation) = AsyncStream<[TrackerItem]>.makeStream()
+    /// What the store's items index serves for `items`: the panel's own
+    /// sections rule, which the index keeps to.
+    private static func sections(_ items: [TrackerItem]) -> ItemsIndexSections {
+        let s = ItemsPanelViewModel.sections(from: items)
+        return ItemsIndexSections(needsYou: s.needsYou, tasks: s.tasks, decisions: s.decisions, done: s.done, decided: s.decided)
+    }
+
+    func itemSectionsStream(scope: ItemsScope) -> AsyncStream<ItemsIndexSections> {
+        let (stream, continuation) = AsyncStream<ItemsIndexSections>.makeStream()
         let items = lock.withLock { () -> [TrackerItem] in
             continuations.append(continuation)
             return self.items
         }
-        continuation.yield(items)
+        continuation.yield(Self.sections(items))
         return stream
     }
     func itemStream(id: String) -> AsyncStream<TrackerItem?> { AsyncStream { _ in } }

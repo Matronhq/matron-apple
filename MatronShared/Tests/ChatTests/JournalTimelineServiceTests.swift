@@ -5,17 +5,11 @@ import MatronModels
 import MatronSearch
 @testable import MatronChat
 
-class JournalTimelineServiceTests: XCTestCase {
-    /// Whether the stores read the open timeline's tail from the change
-    /// feed (`store.changeFeed`). `JournalTimelineServiceChangeFeedTests`
-    /// runs every test here again with it on.
-    class var usesChangeFeed: Bool { false }
-
+final class JournalTimelineServiceTests: XCTestCase {
     // MARK: Fixtures
 
     private func makeStore(convoID: String = "c1", metrics: StoreMetrics = .shared) throws -> JournalStore {
-        let store = try JournalStore(databaseURL: nil, ownSender: "user:alice", metrics: metrics,
-                                     usesChangeFeed: Self.usesChangeFeed)
+        let store = try JournalStore(databaseURL: nil, ownSender: "user:alice", metrics: metrics)
         try store.applyColdSnapshot([
             ConvoSummaryDTO(id: convoID, title: "", sessionState: "running",
                             lastSeq: 0, snippet: "", createdAt: 0),
@@ -627,7 +621,6 @@ class JournalTimelineServiceTests: XCTestCase {
     /// A frame in another conversation costs the open chat no event read
     /// at all; a frame in its own conversation costs one.
     func testAForeignConversationFrameCausesNoEventFetch() async throws {
-        try XCTSkipUnless(Self.usesChangeFeed, "the value observation re-fetches on every frame by design")
         let metrics = StoreMetrics()
         let store = try makeStore(metrics: metrics)
         try store.ensureConversation(id: "c2", title: "Other")
@@ -651,7 +644,6 @@ class JournalTimelineServiceTests: XCTestCase {
     /// again: the retention sweep tombstones a 30-day-old tool output, and
     /// the next snapshot shows the tombstone, not the memoised card.
     func testATombstoneOfASeenRowIsPickedUp() async throws {
-        try XCTSkipUnless(Self.usesChangeFeed, "the value observation's path memoises rows per seq")
         let store = try makeStore()
         let old = Date(timeIntervalSince1970: 1_800_000_000)
         try store.applyJournal(textEvent(1))
@@ -1420,12 +1412,6 @@ class JournalTimelineServiceTests: XCTestCase {
 // `WebSocketConnection` / `WebSocketConnecting` protocols.
 
 /// Scriptable fake socket. Push server frames with `serve(_:)`.
-/// Every `JournalTimelineServiceTests` test again, with the tail read from
-/// the change feed.
-final class JournalTimelineServiceChangeFeedTests: JournalTimelineServiceTests {
-    override class var usesChangeFeed: Bool { true }
-}
-
 private final class FakeJournalSocket: WebSocketConnection, @unchecked Sendable {
     private let lock = NSLock()
     private var incoming: [String] = []

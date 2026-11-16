@@ -13,8 +13,8 @@ class ItemsIndexTests: XCTestCase {
     /// `ItemsIndexPoolTests` runs the whole suite again on a pool.
     class var writerKind: StoreWriterKind { .queue }
 
-    private func makeStore(usesChangeFeed: Bool = true) throws -> JournalStore {
-        try makeTestStore(Self.writerKind, metrics: StoreMetrics(), usesChangeFeed: usesChangeFeed)
+    private func makeStore() throws -> JournalStore {
+        try makeTestStore(Self.writerKind, metrics: StoreMetrics())
     }
 
     private func item(_ id: String, num: Int, kind: ItemKind = .task, state: ItemState = .open,
@@ -119,7 +119,7 @@ class ItemsIndexTests: XCTestCase {
     /// the store's order.
     func testEveryProjectionEqualsTodaysFetchesAfterEveryCommit() throws {
         for seed in UInt64(1)...6 {
-            let store = try makeStore(usesChangeFeed: false)
+            let store = try makeStore()
             try seedMissions(store)
             var writes = RandomItemWrites(store: store, seed: seed)
             for _ in 0..<20 { try writes.step() }
@@ -173,8 +173,8 @@ class ItemsIndexTests: XCTestCase {
         }
     }
 
-    /// The gate again, through the live index and the public streams: with
-    /// the flag on, after every commit the counts and mission streams'
+    /// The gate again, through the live index and the public streams: after
+    /// every commit the counts and mission streams'
     /// latest values equal today's fetches, and the sections stream's
     /// needs-you list holds exactly the open items awaiting the user.
     func testLiveIndexStreamsEqualTodaysFetchesAfterEveryCommit() async throws {
@@ -299,7 +299,7 @@ class ItemsIndexTests: XCTestCase {
     /// touches only the lists its item was or is in, and every other
     /// section keeps the very storage it had.
     func testASingleItemWriteTouchesOnlyItsSections() throws {
-        let store = try makeStore(usesChangeFeed: false)
+        let store = try makeStore()
         var items: [TrackerItem] = []
         for n in 1...30 {
             switch n % 5 {
@@ -361,7 +361,7 @@ class ItemsIndexTests: XCTestCase {
     /// instead of moving each item; small commits stay incremental. Either
     /// way the lists are the store's.
     func testALargeCommitRebuildsOnceAndMatchesTheStore() throws {
-        let store = try makeStore(usesChangeFeed: false)
+        let store = try makeStore()
         try store.upsertItems((1...400).map { item("t\($0)", num: $0, rank: Double($0 % 7), origin: "c\($0 % 3)") })
         let (fed, subscription) = try feedState(store)
         defer { subscription.cancel() }
@@ -383,7 +383,7 @@ class ItemsIndexTests: XCTestCase {
     /// another item, or move an item to a new rowid. Either way the index
     /// ends up holding exactly the table's items.
     func testRowidReuseAndAMovedKeyLeaveExactlyTheTablesItems() throws {
-        let store = try makeStore(usesChangeFeed: false)
+        let store = try makeStore()
         try store.upsertItems([item("a", num: 1), item("b", num: 2, kind: .question, awaiting: .user)])
         let (fed, subscription) = try feedState(store)
         defer { subscription.cancel() }
@@ -464,21 +464,6 @@ class ItemsIndexTests: XCTestCase {
 
         try await waitUntil { counts.finished && byMission.finished && sections.finished }
         XCTAssertNil(index, "the index goes with its store")
-    }
-
-    /// The flag off leaves the store exactly as before: no index, no feed
-    /// subscriber, the value observations.
-    func testFlagOffServesTheValueObservations() async throws {
-        let store = try makeStore(usesChangeFeed: false)
-        try store.upsertItems([item("q", num: 1, kind: .question, awaiting: .user, mission: "m1")])
-        var counts = store.needsUserCountsStream().makeAsyncIterator()
-        var byMission = store.needsYouItemsByMissionStream().makeAsyncIterator()
-        let firstCounts = await counts.next()
-        let firstByMission = await byMission.next()
-        XCTAssertEqual(firstCounts, ["c1": 1])
-        XCTAssertEqual(firstByMission?.mapValues { $0.map(\.id) }, ["m1": ["q"]])
-        XCTAssertEqual(store.changeFeed.subscriberCount, 0)
-        XCTAssertNil(store.startedItemsIndex)
     }
 
     /// Each projection delivers only when its own value changes: a renamed

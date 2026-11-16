@@ -8,7 +8,6 @@ import MatronJournal
 /// conformance for the real store is declared here since `MatronJournal`
 /// cannot import this module).
 public protocol ItemsStoreReading: Sendable {
-    func itemsStream(scope: ItemsScope) -> AsyncStream<[TrackerItem]>
     func itemStream(id: String) -> AsyncStream<TrackerItem?>
     func commentsStream(itemID: String) -> AsyncStream<[TrackerComment]>
     /// Synchronous snapshot of `commentsStream`'s current value — read by
@@ -24,10 +23,6 @@ public protocol ItemsStoreReading: Sendable {
     func itemOutboxRows(itemID: String) throws -> [ItemOutboxRecord]
     /// Every queued "create" outbox row, feeding `ItemsPanelViewModel.pendingCreates`.
     func itemOutboxCreatesStream() -> AsyncStream<[ItemOutboxRecord]>
-    /// The store's `store.changeFeed` flag: whether the panel reads
-    /// `itemSectionsStream(scope:)` instead of sorting what
-    /// `itemsStream(scope:)` reads itself.
-    var usesChangeFeed: Bool { get }
     /// The sections for a scope, kept by the store's items index.
     func itemSectionsStream(scope: ItemsScope) -> AsyncStream<ItemsIndexSections>
     /// Only the open items that await the user, newest update first: the
@@ -38,8 +33,6 @@ public protocol ItemsStoreReading: Sendable {
 extension JournalStore: ItemsStoreReading {}
 
 public extension ItemsStoreReading {
-    /// Test doubles without an index serve the observation path.
-    var usesChangeFeed: Bool { false }
     func needsUserItems() throws -> [TrackerItem]? { nil }
     func itemSectionsStream(scope: ItemsScope) -> AsyncStream<ItemsIndexSections> { AsyncStream { $0.finish() } }
 }
@@ -332,17 +325,12 @@ public final class ItemsPanelViewModel {
     /// kind decision, open, `createdAt` desc. `done` = closed, `closedAt`
     /// desc, capped 200.
     ///
-    /// Off the main actor. Not on the change-feed path (`readsItemsIndex`),
-    /// where the store's items index keeps the sections in order as items
-    /// change; this goes with the flag.
-    /// Off the main actor, like the full read: at launch the store's queue
-    /// is busy and this must not hold up a frame.
+    /// The store's items index applies the same rule as items change.
+    ///
+    /// Off the main actor, like the index's first read: at launch the
+    /// store's queue is busy and this must not hold up a frame.
     private nonisolated static func readNeedsUser(from store: any ItemsStoreReading) async -> [TrackerItem]? {
         (try? store.needsUserItems()) ?? nil
-    }
-
-    private nonisolated static func deriveSections(from items: [TrackerItem]) async -> Sections {
-        sections(from: items)
     }
 
     private nonisolated static func applying(_ ranks: [String: Double], to tasks: [TrackerItem]) -> [TrackerItem] {
@@ -440,55 +428,39 @@ public final class ItemsPanelViewModel {
         refreshTask?.cancel(); refreshTask = nil
     }
 
-    /// Whether this instance reads the store's items index rather than
-    /// sorting what it reads itself: with the store's `store.changeFeed`
-    /// flag on, in either scope. A conversation's pane then gets its own
-    /// conversation's sections, which a write elsewhere does not touch, and
-    /// its All scope the app-wide ones.
-    var readsItemsIndex: Bool { store.usesChangeFeed }
-
     private func resubscribe() {
         itemsTask?.cancel()
         publishGeneration += 1
         let generation = publishGeneration
         let scope = scope
-        if readsItemsIndex {
-            // The index keeps every section in order as items change and
-            // hands over a value whose untouched sections are the arrays
-            // it handed over last time: nothing to sort, and comparing an
-            // untouched section in `publish` costs nothing.
-            itemsTask = Task { [weak self] in
-                guard let stream = self?.store.itemSectionsStream(scope: scope) else { return }
-                for await indexed in stream {
-                    guard let self, !Task.isCancelled else { return }
-                    self.submit(Sections(indexed), scope: scope, generation: generation)
+        // The app-wide list, nothing drawn yet: the rows that need the
+        // user first. The index's first read decodes every item the device
+        // holds, closed ones included, and For you would sit empty until
+        // it returned.
+        let needsYouFirst = convoID == nil && scope == .all && !hasPublished
+        // The index keeps every section in order as items change and hands
+        // over a value whose untouched sections are the arrays it handed
+        // over last time: nothing to sort, and comparing an untouched
+        // section in `publish` costs nothing. A conversation's pane gets
+        // its own conversation's sections, which a write elsewhere does
+        // not touch.
+        itemsTask = Task { [weak self] in
+            guard let store = self?.store else { return }
+            // Subscribing starts the index's first read now, beside the
+            // short needs-you read; what it delivers meanwhile waits in
+            // the stream's buffer.
+            let indexed = store.itemSectionsStream(scope: scope)
+            if needsYouFirst, let first = await Self.readNeedsUser(from: store), !first.isEmpty {
+                guard let self, !Task.isCancelled else { return }
+                if !self.hasPublished {
+                    var early = Sections()
+                    early.needsYou = first
+                    self.submit(early, scope: scope, generation: generation)
                 }
             }
-        } else {
-            // The app-wide list, nothing drawn yet: the rows that need the
-            // user first. The full read behind them decodes every item the
-            // device holds, closed ones included, and For you would sit
-            // empty until it returned.
-            let needsYouFirst = convoID == nil && scope == .all && !hasPublished
-            itemsTask = Task { [weak self] in
-                guard let store = self?.store else { return }
-                if needsYouFirst, let first = await Self.readNeedsUser(from: store), !first.isEmpty {
-                    guard let self, !Task.isCancelled else { return }
-                    if !self.hasPublished {
-                        var early = Sections()
-                        early.needsYou = first
-                        self.submit(early, scope: scope, generation: generation)
-                    }
-                }
-                let stream = store.itemsStream(scope: scope)
-                for await items in stream {
-                    // Every item write re-fires the `.all` stream with every
-                    // item ever synced (5,088 on one real store); the
-                    // filter-and-sort runs off the main actor.
-                    let sections = await Self.deriveSections(from: items)
-                    guard let self, !Task.isCancelled else { return }
-                    self.submit(sections, scope: scope, generation: generation)
-                }
+            for await sections in indexed {
+                guard let self, !Task.isCancelled else { return }
+                self.submit(Sections(sections), scope: scope, generation: generation)
             }
         }
         pendingCreatesTask?.cancel()

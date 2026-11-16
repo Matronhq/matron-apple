@@ -6,17 +6,14 @@ import GRDB
 /// one conversation's `queued_release` cards (`prompt`) and releases
 /// (`prompt_reply`), oldest first, and nothing else — not ordinary prompts
 /// and answers, not text that merely mentions the word.
-class QueuedReleaseEventsQueryTests: XCTestCase {
-    /// `QueuedReleaseEventsFeedQueryTests` runs it again from the change feed.
-    class var usesChangeFeed: Bool { false }
-
+final class QueuedReleaseEventsQueryTests: XCTestCase {
     private func event(_ seq: Int64, convo: String = "c1", type: String, payload: [String: Any]) -> JournalEvent {
         JournalEvent(seq: seq, convoID: convo, ts: Date(timeIntervalSince1970: Double(seq)), sender: "agent:box-2", type: type,
                      payloadData: try! JSONSerialization.data(withJSONObject: payload))
     }
 
     func testQueuedReleaseRowsOnlyThisConversationOldestFirstAndLive() async throws {
-        let store = try makeTestStore(Self.usesChangeFeed ? .pool : .memory, usesChangeFeed: Self.usesChangeFeed)
+        let store = try makeTestStore(.pool)
         try store.insertHistory([
             event(1, type: "prompt", payload: ["kind": "queued_release", "prompt_id": "pr_a", "item": ["item_id": "it_1", "comment_id": "ic_1"]]),
             event(2, type: "prompt", payload: ["question": "A or B?"]),
@@ -45,8 +42,4 @@ class QueuedReleaseEventsQueryTests: XCTestCase {
         }
         XCTAssertTrue(plan.contains("event_convo_type"), plan)
     }
-}
-
-final class QueuedReleaseEventsFeedQueryTests: QueuedReleaseEventsQueryTests {
-    override class var usesChangeFeed: Bool { true }
 }

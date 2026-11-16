@@ -3,13 +3,9 @@ import GRDB
 import MatronModels
 @testable import MatronJournal
 
-class JournalStoreProjectsTests: XCTestCase {
-    /// `JournalStoreProjectsChangeFeedTests` runs the suite again with the
-    /// project item streams served from the `ItemsIndex`.
-    class var usesChangeFeed: Bool { false }
-
+final class JournalStoreProjectsTests: XCTestCase {
     func makeStore() throws -> JournalStore {
-        try JournalStore(databaseURL: nil, ownSender: "user:alice", usesChangeFeed: Self.usesChangeFeed)
+        try JournalStore(databaseURL: nil, ownSender: "user:alice")
     }
 
     static func project(_ id: String, num: Int, state: MissionState = .open, title: String? = nil,
@@ -415,8 +411,4 @@ class JournalStoreProjectsTests: XCTestCase {
         for await value in stream { return value }
         throw XCTSkip("stream ended without a value")
     }
-}
-
-final class JournalStoreProjectsChangeFeedTests: JournalStoreProjectsTests {
-    override class var usesChangeFeed: Bool { true }
 }

@@ -511,20 +511,12 @@ extension JournalStore {
         }
     }
 
-    public func itemsStream(scope: ItemsScope) -> AsyncStream<[TrackerItem]> {
-        let name: StaticString = scope == .all ? "itemsStream.all" : "itemsStream.convo"
-        let observation = ValueObservation.measuredTrackingConstantRegion(name, in: metrics) { db in try Self.itemsRequest(scope).fetchAll(db).map(\.item) }
-        return Self.stream(observation, in: db)
-    }
-
     /// The items panel's sections (`ItemsIndexSections`) over every item
     /// (`.all`: the For you list) or over one conversation's (`.convo`: a
     /// chat's pane), served by the store's `ItemsIndex`: delivered on the
     /// main queue when first subscribed, then again each time an item
     /// write changes one of them. A write in another conversation does not
-    /// re-deliver a conversation's sections. The panels read it only while
-    /// `usesChangeFeed` is on; with the flag off they read
-    /// `itemsStream(scope:)` and sort the sections themselves.
+    /// re-deliver a conversation's sections.
     public func itemSectionsStream(scope: ItemsScope) -> AsyncStream<ItemsIndexSections> {
         switch scope {
         case .all: return itemsIndex.sectionsStream()
@@ -538,8 +530,7 @@ extension JournalStore {
     /// subscribed, then one update per change of either section, on the
     /// main queue. Applied in order, the updates reproduce those sections
     /// of `itemSectionsStream(scope: .all)`. For a list host that edits
-    /// only the rows that changed; read it only while `usesChangeFeed` is
-    /// on.
+    /// only the rows that changed.
     public func forYouUpdatesStream() -> AsyncStream<ListPublication<TrackerItem, String>> {
         itemsIndex.forYouUpdatesStream()
     }
@@ -559,19 +550,13 @@ extension JournalStore {
         }
     }
 
-    /// Live thread of one item, in `comments(itemID:)`'s order. With
-    /// `usesChangeFeed` on it is served from the change feed: the item's
-    /// comments are read once, on subscribing (and again after a reset),
-    /// and every later commit's comment rows are applied without a read,
-    /// so a comment on another item costs this thread nothing. With the
-    /// flag off it is a value observation over the whole `item_comment`
-    /// table, which re-reads the thread after any comment write.
+    /// Live thread of one item, in `comments(itemID:)`'s order, served
+    /// from the change feed: the item's comments are read once, on
+    /// subscribing (and again after a reset), and every later commit's
+    /// comment rows are applied without a read, so a comment on another
+    /// item costs this thread nothing.
     public func commentsStream(itemID: String) -> AsyncStream<[TrackerComment]> {
-        if usesChangeFeed { return feedCommentsStream(itemID: itemID) }
-        let observation = ValueObservation.measuredTrackingConstantRegion("commentsStream", in: metrics) { db in
-            try ItemCommentRecord.filter(Column("item_id") == itemID).order(Column("created_at"), Column("id")).fetchAll(db).map(\.comment)
-        }
-        return Self.stream(observation, in: db)
+        feedCommentsStream(itemID: itemID)
     }
 
     /// `commentsStream(itemID:)` from the change feed. The snapshot (the
@@ -674,8 +659,7 @@ extension JournalStore {
     public func needsUserCounts() throws -> [String: Int] { try db.read(Self.needsUserCountsQuery) }
 
     public func needsUserCountsStream() -> AsyncStream<[String: Int]> {
-        if usesChangeFeed { return itemsIndex.needsUserCountsStream() }
-        return Self.stream(ValueObservation.measuredTrackingConstantRegion("needsUserCountsStream", in: metrics, Self.needsUserCountsQuery), in: db)
+        itemsIndex.needsUserCountsStream()
     }
 
     /// `onConflict: .ignore` mirrors the text-message outbox
@@ -881,8 +865,7 @@ extension JournalStore {
     }
 
     public func itemsStream(missionID: String) -> AsyncStream<[TrackerItem]> {
-        if usesChangeFeed { return itemsIndex.openItemsStream(missionID: missionID) }
-        return Self.stream(ValueObservation.measuredTrackingConstantRegion("itemsStream.mission", in: metrics) { db in try Self.missionItemsRequest(missionID).fetchAll(db).map(\.item) }, in: db)
+        itemsIndex.openItemsStream(missionID: missionID)
     }
 
     /// A mission's closed items, most recently closed first, at most
@@ -906,10 +889,7 @@ extension JournalStore {
     /// How many closed items the mission has in this cache — the Done
     /// column's honest total, whatever `closedItemsStream`'s limit.
     public func closedItemsCountStream(missionID: String) -> AsyncStream<Int> {
-        if usesChangeFeed { return itemsIndex.closedItemsCountStream(missionID: missionID) }
-        return Self.stream(ValueObservation.measuredTrackingConstantRegion("closedItemsCountStream", in: metrics) { db in
-            try Self.missionClosedItemsCount(db, missionID)
-        }.removeDuplicates(), in: db)
+        itemsIndex.closedItemsCountStream(missionID: missionID)
     }
 
     static func missionClosedItemsCount(_ db: Database, _ missionID: String) throws -> Int {
@@ -918,10 +898,7 @@ extension JournalStore {
     }
 
     public func closedItemsStream(missionID: String, limit: Int) -> AsyncStream<[TrackerItem]> {
-        if usesChangeFeed { return itemsIndex.closedItemsStream(missionID: missionID, limit: limit) }
-        return Self.stream(ValueObservation.measuredTrackingConstantRegion("closedItemsStream", in: metrics) { db in
-            try Self.missionClosedItemsRequest(missionID, limit: limit).fetchAll(db).map(\.item)
-        }, in: db)
+        itemsIndex.closedItemsStream(missionID: missionID, limit: limit)
     }
 }
 

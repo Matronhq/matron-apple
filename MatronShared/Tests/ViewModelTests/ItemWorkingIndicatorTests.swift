@@ -192,7 +192,7 @@ final class ItemWorkingIndicatorTests: XCTestCase {
         func comments(itemID: String) throws -> [TrackerComment] { [] }
         func item(id: String) throws -> TrackerItem? { nil }
         func itemOutboxRows(itemID: String) throws -> [ItemOutboxRecord] { [] }
-        func itemsStream(scope: ItemsScope) -> AsyncStream<[TrackerItem]> { AsyncStream { _ in } }
+        func itemSectionsStream(scope: ItemsScope) -> AsyncStream<ItemsIndexSections> { AsyncStream { _ in } }
         func itemStream(id: String) -> AsyncStream<TrackerItem?> { AsyncStream { self.itemCont = $0 } }
         func commentsStream(itemID: String) -> AsyncStream<[TrackerComment]> { AsyncStream { _ in } }
         func itemOutboxStream(itemID: String) -> AsyncStream<[ItemOutboxRecord]> { AsyncStream { $0.yield([]) } }

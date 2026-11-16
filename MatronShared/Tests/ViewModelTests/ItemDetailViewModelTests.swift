@@ -17,7 +17,7 @@ final class ItemDetailViewModelTests: XCTestCase {
         var storedOutbox: [ItemOutboxRecord] = []
         func item(id: String) throws -> TrackerItem? { storedItem }
         func itemOutboxRows(itemID: String) throws -> [ItemOutboxRecord] { storedOutbox }
-        func itemsStream(scope: ItemsScope) -> AsyncStream<[TrackerItem]> { AsyncStream { _ in } }
+        func itemSectionsStream(scope: ItemsScope) -> AsyncStream<ItemsIndexSections> { AsyncStream { _ in } }
         func itemStream(id: String) -> AsyncStream<TrackerItem?> { AsyncStream { self.itemCont = $0 } }
         func commentsStream(itemID: String) -> AsyncStream<[TrackerComment]> { AsyncStream { self.commentsCont = $0 } }
         func itemOutboxStream(itemID: String) -> AsyncStream<[ItemOutboxRecord]> { AsyncStream { self.outboxCont = $0; $0.yield([]) } }

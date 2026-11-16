@@ -101,15 +101,15 @@ final class JournalStoreItemsTests: XCTestCase {
         XCTAssertEqual(afterCreate?.map(\.localID), ["L2"], "only the create row is yielded")
     }
 
-    func testItemsStreamFiresOnUpsert() async throws {
+    func testItemSectionsStreamFiresOnUpsert() async throws {
         let store = try makeStore()
-        let stream = store.itemsStream(scope: .convo("c1"))
+        let stream = store.itemSectionsStream(scope: .convo("c1"))
         var it = stream.makeAsyncIterator()
         let first = await it.next()
-        XCTAssertEqual(first?.count, 0)
+        XCTAssertEqual(first, ItemsIndexSections())
         try store.upsertItems([item("it_1", num: 1)])
         let second = await it.next()
-        XCTAssertEqual(second?.map(\.id), ["it_1"])
+        XCTAssertEqual(second?.tasks.map(\.id), ["it_1"])
     }
 
     func testCommitOutboxResultIsOneWrite() throws {

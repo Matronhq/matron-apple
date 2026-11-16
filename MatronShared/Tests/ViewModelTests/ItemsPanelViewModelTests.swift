@@ -6,12 +6,25 @@ import MatronModels
 private final class FakeItemsStore: ItemsStoreReading, @unchecked Sendable {
     var cont: AsyncStream<[TrackerItem]>.Continuation?
     var createsCont: AsyncStream<[ItemOutboxRecord]>.Continuation?
-    /// Every `itemsStream` subscription opened, in order: each one is a
-    /// whole-table observation the store re-fetches after every item write.
+    /// Every `itemSectionsStream` subscription opened, in order.
     var subscribedScopes: [ItemsScope] = []
-    func itemsStream(scope: ItemsScope) -> AsyncStream<[TrackerItem]> {
+    /// Serves the sections of each list of items yielded to `cont`, sorted
+    /// by the panel's own rule, which the store's index keeps to.
+    func itemSectionsStream(scope: ItemsScope) -> AsyncStream<ItemsIndexSections> {
         subscribedScopes.append(scope)
-        return AsyncStream { self.cont = $0 }
+        let (items, input) = AsyncStream<[TrackerItem]>.makeStream()
+        cont = input
+        return AsyncStream { output in
+            let task = Task {
+                for await list in items {
+                    let s = ItemsPanelViewModel.sections(from: list)
+                    output.yield(ItemsIndexSections(needsYou: s.needsYou, tasks: s.tasks, decisions: s.decisions,
+                                                    done: s.done, decided: s.decided))
+                }
+                output.finish()
+            }
+            output.onTermination = { _ in task.cancel() }
+        }
     }
     func itemStream(id: String) -> AsyncStream<TrackerItem?> { AsyncStream { _ in } }
     func commentsStream(itemID: String) -> AsyncStream<[TrackerComment]> { AsyncStream { _ in } }
@@ -753,7 +766,7 @@ final class ItemsPanelViewModelTests: XCTestCase {
     /// an `item` marker → `ItemsSync.refreshItem` → `store.upsertItems`
     /// produces — moves the item from `sections.needsYou` into `decided`,
     /// with no separate "marker" plumbing needed at the VM layer: it just
-    /// reacts to `itemsStream(scope:)`'s next emission like everything
+    /// reacts to `itemSectionsStream(scope:)`'s next emission like everything
     /// else in `sections`.
     func testDecidedMovesItemFromOpenToDecidedOnAFreshStoreEmission() async throws {
         let store = FakeItemsStore(); let sync = FakeSync()
@@ -974,14 +987,13 @@ final class ItemsPanelLiveUpdateTests: XCTestCase {
     }
 }
 
-/// The app-wide instance with the store's `store.changeFeed` flag on: it
-/// reads its sections from the store's items index instead of sorting every
-/// item after every item write, and shows exactly what the flag-off path
-/// shows.
+/// The panels read their sections from the store's items index instead of
+/// sorting every item after every item write, and show exactly what the
+/// panel's own rule makes of the store's items.
 @MainActor
 final class ItemsPanelItemsIndexTests: XCTestCase {
-    private func store(changeFeed: Bool) throws -> JournalStore {
-        try JournalStore(databaseURL: nil, ownSender: "user:alice", metrics: StoreMetrics(), usesChangeFeed: changeFeed)
+    private func makeStore() throws -> JournalStore {
+        try JournalStore(databaseURL: nil, ownSender: "user:alice", metrics: StoreMetrics())
     }
 
     /// For you draws the items that need the user from their own short
@@ -1028,18 +1040,14 @@ final class ItemsPanelItemsIndexTests: XCTestCase {
                     lastUserInputAt: input.map { Date(timeIntervalSince1970: $0) })
     }
 
-    /// The same writes to two stores, one with the flag on and one with it
-    /// off, and an app-wide instance on each: after every write both show
-    /// the same sections, awaiting list, Done tab and counts, and those are
-    /// `sections(from:)` over the store's items.
-    func testTheIndexPathShowsExactlyWhatTheObservationPathShows() async throws {
-        let indexed = try store(changeFeed: true), observed = try store(changeFeed: false)
-        let onIndex = ItemsPanelViewModel(convoID: nil, store: indexed, api: FakeAPI(), sync: FakeSync())
-        let onObservation = ItemsPanelViewModel(convoID: nil, store: observed, api: FakeAPI(), sync: FakeSync())
-        XCTAssertTrue(onIndex.readsItemsIndex)
-        XCTAssertFalse(onObservation.readsItemsIndex)
-        onIndex.start(); onObservation.start()
-        defer { onIndex.stop(); onObservation.stop() }
+    /// After every write the app-wide instance shows `sections(from:)`
+    /// over the store's items, and its awaiting list, Done tab and counts
+    /// follow from those sections.
+    func testTheIndexPathShowsWhatTheSectionsRuleMakesOfTheStoresItems() async throws {
+        let store = try makeStore()
+        let vm = ItemsPanelViewModel(convoID: nil, store: store, api: FakeAPI(), sync: FakeSync())
+        vm.start()
+        defer { vm.stop() }
 
         let writes: [(String, (JournalStore) throws -> Void)] = [
             ("file", { try $0.upsertItems([
@@ -1060,27 +1068,22 @@ final class ItemsPanelItemsIndexTests: XCTestCase {
             ("refill", { try $0.upsertItems([self.item("q9", num: 9, kind: .question, awaiting: .user, updated: 9)]) }),
         ]
         for (what, write) in writes {
-            try write(indexed); try write(observed)
-            let expected = ItemsPanelViewModel.sections(from: try observed.items(scope: .all))
-            try await waitUntil {
-                onIndex.sections == expected && onObservation.sections == expected
-                    && onIndex.awaitingYou == onObservation.awaitingYou && onIndex.decided == onObservation.decided
-            }
-            XCTAssertEqual(onIndex.awaitingYou, expected.needsYou, what)
-            XCTAssertEqual(onIndex.awaitingYouCount, onObservation.awaitingYouCount, what)
-            XCTAssertEqual(onIndex.awaitingOriginConvoIDs, onObservation.awaitingOriginConvoIDs, what)
-            XCTAssertEqual(onIndex.decidedOriginConvoIDs, onObservation.decidedOriginConvoIDs, what)
-            XCTAssertEqual(onIndex.decidedVisibleCount, onObservation.decidedVisibleCount, what)
+            try write(store)
+            let expected = ItemsPanelViewModel.sections(from: try store.items(scope: .all))
+            try await waitUntil { vm.sections == expected && vm.decided == expected.decided }
+            XCTAssertEqual(vm.awaitingYou, expected.needsYou, what)
+            XCTAssertEqual(vm.awaitingYouCount, expected.needsYou.count, what)
+            XCTAssertEqual(vm.awaitingOriginConvoIDs, Set(expected.needsYou.map(\.originConvoID)), what)
+            XCTAssertEqual(vm.decidedOriginConvoIDs, Set(expected.decided.map(\.originConvoID)), what)
+            XCTAssertEqual(vm.decidedVisibleCount, ItemsPanelViewModel.defaultDecidedWindow(expected.decided), what)
         }
-        XCTAssertEqual(onIndex.awaitingYou.map(\.id), ["q9"], "the wipe reloaded the index, and it went on from there")
-        XCTAssertNil(observed.startedItemsIndex, "the flag off runs no index")
-        XCTAssertEqual(observed.changeFeed.subscriberCount, 0)
+        XCTAssertEqual(vm.awaitingYou.map(\.id), ["q9"], "the wipe reloaded the index, and it went on from there")
     }
 
     /// A drag staged on the index path still wins over item writes that
     /// land while the journal has not confirmed it.
     func testStagedRanksStillOverlayTheIndexSections() async throws {
-        let store = try store(changeFeed: true)
+        let store = try makeStore()
         try store.upsertItems([item("a", num: 1, rank: 1), item("b", num: 2, rank: 2), item("c", num: 3, rank: 3)])
         let api = FakeAPI()
         let vm = ItemsPanelViewModel(convoID: nil, store: store, api: api, sync: FakeSync())
@@ -1109,7 +1112,7 @@ final class ItemsPanelItemsIndexTests: XCTestCase {
     /// awaiting list and the Done tab, which the shells and For you read,
     /// unnotified.
     func testATaskWriteLeavesTheAwaitingListAndDoneTabAlone() async throws {
-        let store = try store(changeFeed: true)
+        let store = try makeStore()
         try store.upsertItems([item("t", num: 1), item("q", num: 2, kind: .question, awaiting: .user),
                                item("x", num: 3, kind: .question, state: .closed, awaiting: nil)])
         let vm = ItemsPanelViewModel(convoID: nil, store: store, api: FakeAPI(), sync: FakeSync())
@@ -1130,15 +1133,14 @@ final class ItemsPanelItemsIndexTests: XCTestCase {
         XCTAssertFalse(listsChanged.value, "nothing the shells or For you read was written")
     }
 
-    /// A chat's pane on two stores, flag on and off, through the same
-    /// writes: the same sections, badge and pending rows after every write,
-    /// in its own scope and then with its picker on All.
-    func testAChatsPaneShowsExactlyWhatTheObservationPathShows() async throws {
-        let indexed = try store(changeFeed: true), observed = try store(changeFeed: false)
-        let onIndex = ItemsPanelViewModel(convoID: "c1", store: indexed, api: FakeAPI(), sync: FakeSync())
-        let onObservation = ItemsPanelViewModel(convoID: "c1", store: observed, api: FakeAPI(), sync: FakeSync())
-        onIndex.start(); onObservation.start()
-        defer { onIndex.stop(); onObservation.stop() }
+    /// A chat's pane, through a series of writes: after every write it
+    /// shows `sections(from:)` over the store's items for its scope, in its
+    /// own scope and then with its picker on All.
+    func testAChatsPaneShowsWhatTheSectionsRuleMakesOfTheStoresItems() async throws {
+        let store = try makeStore()
+        let vm = ItemsPanelViewModel(convoID: "c1", store: store, api: FakeAPI(), sync: FakeSync())
+        vm.start()
+        defer { vm.stop() }
 
         let writes: [(String, (JournalStore) throws -> Void)] = [
             ("file", { try $0.upsertItems([
@@ -1154,21 +1156,21 @@ final class ItemsPanelItemsIndexTests: XCTestCase {
             ("delete", { try $0.db.write { db in try db.execute(sql: "DELETE FROM item WHERE id = 'd5'") } }),
         ]
         for scope in [ItemsScope.convo("c1"), .all] {
-            onIndex.scope = scope; onObservation.scope = scope
+            vm.scope = scope
             for (what, write) in writes {
-                try write(indexed); try write(observed)
-                let expected = ItemsPanelViewModel.sections(from: try observed.items(scope: scope))
-                try await waitUntil { onIndex.sections == expected && onObservation.sections == expected }
-                XCTAssertEqual(onIndex.needsYouCount, onObservation.needsYouCount, "\(scope) \(what)")
-                XCTAssertEqual(onIndex.pendingCreates, onObservation.pendingCreates, "\(scope) \(what)")
+                try write(store)
+                let expected = ItemsPanelViewModel.sections(from: try store.items(scope: scope))
+                try await waitUntil { vm.sections == expected }
+                XCTAssertEqual(vm.needsYouCount, expected.needsYou.filter { $0.originConvoID == "c1" }.count,
+                               "\(scope) \(what)")
+                XCTAssertEqual(vm.pendingCreates, [], "\(scope) \(what)")
             }
         }
-        XCTAssertNil(observed.startedItemsIndex)
     }
 
     /// A write in another conversation leaves a chat's pane unnotified.
     func testAWriteInAnotherConversationLeavesAChatsPaneAlone() async throws {
-        let store = try store(changeFeed: true)
+        let store = try makeStore()
         try store.upsertItems([item("a", num: 1), item("b", num: 2, origin: "c2")])
         let vm = ItemsPanelViewModel(convoID: "c1", store: store, api: FakeAPI(), sync: FakeSync())
         vm.start()
@@ -1184,16 +1186,5 @@ final class ItemsPanelItemsIndexTests: XCTestCase {
         try store.upsertItems([item("a", num: 1, title: "Renamed", updated: 3)])
         try await waitUntil { vm.sections.tasks.first?.title == "Renamed" }
         XCTAssertTrue(changed.value)
-    }
-
-    /// With the flag on every panel reads the index, a conversation's pane
-    /// included; with it off, none does.
-    func testEveryPanelReadsTheIndexWithTheFlagOnAndNoneWithItOff() throws {
-        let on = try store(changeFeed: true), off = try store(changeFeed: false)
-        XCTAssertTrue(ItemsPanelViewModel(convoID: "c1", store: on, api: FakeAPI(), sync: FakeSync()).readsItemsIndex)
-        XCTAssertTrue(ItemsPanelViewModel(convoID: nil, store: on, api: FakeAPI(), sync: FakeSync()).readsItemsIndex)
-        XCTAssertFalse(ItemsPanelViewModel(convoID: "c1", store: off, api: FakeAPI(), sync: FakeSync()).readsItemsIndex)
-        XCTAssertFalse(ItemsPanelViewModel(convoID: nil, store: off, api: FakeAPI(), sync: FakeSync()).readsItemsIndex)
-        XCTAssertFalse(ItemsPanelViewModel(convoID: nil, store: FakeItemsStore(), api: FakeAPI(), sync: FakeSync()).readsItemsIndex)
     }
 }

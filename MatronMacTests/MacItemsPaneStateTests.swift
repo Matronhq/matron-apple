@@ -12,7 +12,7 @@ import MatronViewModels
 /// that text lives. One slot per item on the stack is the fix; these pin
 /// both halves of it (keep while reachable, release when not).
 private final class NoopItemsStore: ItemsStoreReading, @unchecked Sendable {
-    func itemsStream(scope: ItemsScope) -> AsyncStream<[TrackerItem]> { AsyncStream { _ in } }
+    func itemSectionsStream(scope: ItemsScope) -> AsyncStream<ItemsIndexSections> { AsyncStream { _ in } }
     func itemStream(id: String) -> AsyncStream<TrackerItem?> { AsyncStream { _ in } }
     func commentsStream(itemID: String) -> AsyncStream<[TrackerComment]> { AsyncStream { _ in } }
     func comments(itemID: String) throws -> [TrackerComment] { [] }

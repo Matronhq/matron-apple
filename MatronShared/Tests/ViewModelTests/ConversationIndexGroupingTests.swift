@@ -4,10 +4,9 @@ import MatronJournal
 import MatronModels
 @testable import MatronViewModels
 
-/// The chat list a store serves from its `ConversationIndex` (the
-/// `store.changeFeed` flag) sorts and groups exactly as the one it serves
-/// from the value observation, through the same summary mapping and
-/// `ChatListViewModel.group` the app uses.
+/// The chat list a store serves from its `ConversationIndex` sorts and
+/// groups exactly as the store's SQL read of the table, through the same
+/// summary mapping and `ChatListViewModel.group` the app uses.
 final class ConversationIndexGroupingTests: XCTestCase {
     private func event(_ seq: Int64, convo: String, ts: Date, type: String = "text",
                        payload: [String: Any] = ["body": "hi"]) -> JournalEvent {
@@ -35,22 +34,22 @@ final class ConversationIndexGroupingTests: XCTestCase {
                                      payload: ["parent_convo_id": "today-a", "title": "Child"]))
     }
 
-    private func groups(usesChangeFeed: Bool, now: Date) async throws -> [ChatListViewModel.GroupedSummaries] {
-        let store = try JournalStore(databaseURL: nil, ownSender: "user:alice", metrics: StoreMetrics(),
-                                     usesChangeFeed: usesChangeFeed)
-        try seed(store, now: now)
-        var iterator = store.conversationsStream().makeAsyncIterator()
-        let recordsNext = await iterator.next()
-        let records = try XCTUnwrap(recordsNext)
+    private func groups(_ records: [ConversationRecord], now: Date) -> [ChatListViewModel.GroupedSummaries] {
         let summaries = records.map { JournalChatService.summary(from: $0, boxNames: [:]) }
         return ChatListViewModel.group(summaries: summaries, now: now)
     }
 
-    func testIndexChatListGroupsExactlyAsTheObservationDoes() async throws {
+    /// The chat list the index serves groups exactly as the store's own
+    /// SQL read of the same rows does.
+    func testIndexChatListGroupsExactlyAsTheTableRead() async throws {
         let now = Date()
-        let fromIndex = try await groups(usesChangeFeed: true, now: now)
-        let fromObservation = try await groups(usesChangeFeed: false, now: now)
-        XCTAssertEqual(fromIndex, fromObservation)
+        let store = try JournalStore(databaseURL: nil, ownSender: "user:alice", metrics: StoreMetrics())
+        try seed(store, now: now)
+        var iterator = store.conversationsStream().makeAsyncIterator()
+        let recordsNext = await iterator.next()
+        let fromIndex = groups(try XCTUnwrap(recordsNext), now: now)
+        let fromTable = groups(try store.conversations(now: now), now: now)
+        XCTAssertEqual(fromIndex, fromTable)
         XCTAssertGreaterThanOrEqual(fromIndex.count, 3, "the fixture spans several recency groups")
         XCTAssertFalse(fromIndex.flatMap(\.summaries).contains { $0.id == "hidden" || $0.id == "child" })
     }

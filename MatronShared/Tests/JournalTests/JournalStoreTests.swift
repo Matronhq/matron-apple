@@ -513,41 +513,6 @@ class JournalStoreTests: XCTestCase {
         XCTAssertEqual(try store.ownMessages(convoID: "c1", limit: 5).map(\.seq), [1])
     }
 
-    func testEventsStreamAnchoredAtSinceSeq() async throws {
-        let store = try makeStore()
-        for seq in 1...4 { try store.applyJournal(event(Int64(seq))) }
-
-        var iterator = store.eventsStream(convoID: "c1", sinceSeq: 3).makeAsyncIterator()
-        let initial = await iterator.next()
-        XCTAssertEqual(initial?.map(\.seq), [3, 4],
-                       "rows below the anchor never ride the observation")
-
-        try store.applyJournal(event(5))
-        let updated = await iterator.next()
-        XCTAssertEqual(updated?.map(\.seq), [3, 4, 5])
-    }
-
-    func testEventsStreamSuppressesOtherConversationCommits() async throws {
-        let store = try makeStore()
-        try store.applyJournal(event(1))
-
-        var iterator = store.eventsStream(convoID: "c1", sinceSeq: 0).makeAsyncIterator()
-        let initial = await iterator.next()
-        XCTAssertEqual(initial?.map(\.seq), [1])
-
-        // A frame landing in another conversation re-runs the fetch (the
-        // convo_id filter observes the whole table) but must not deliver a
-        // duplicate — the next delivered value has to be the c1 change.
-        // Sleep so the two commits can't coalesce into one notification
-        // (which would mask a dedup regression).
-        try store.applyJournal(event(2, convo: "c2"))
-        try await Task.sleep(for: .milliseconds(150))
-        try store.applyJournal(event(3))
-        let updated = await iterator.next()
-        XCTAssertEqual(updated?.map(\.seq), [1, 3],
-                       "other-convo commit delivered a duplicate snapshot")
-    }
-
     func testWipe() throws {
         let store = try makeStore()
         try store.applyJournal(event(1))
