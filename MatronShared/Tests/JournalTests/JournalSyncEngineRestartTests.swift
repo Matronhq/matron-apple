@@ -141,9 +141,24 @@ final class JournalSyncEngineRestartTests: XCTestCase {
         let engine = makeEngine(store: try seededStore(), connector: FakeConnector([]))
         let before = await engine.isWaitingForNetwork
         XCTAssertFalse(before)
-        await engine.handlePathUpdate(satisfied: false, signature: "unsatisfied|")
+        await engine.handlePathUpdate(satisfied: false, signature: "unsatisfied|", epoch: 0)
         let after = await engine.isWaitingForNetwork
         XCTAssertFalse(after, "no monitor is running, so the callback is stale")
+    }
+
+    /// A callback from a monitor that a restart replaced arrives late.
+    func testRetiredMonitorCallbackDoesNotMarkARestartedEngineAsWaitingForNetwork() async throws {
+        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([]))
+        await engine.beginSync()
+        await engine.endSync()
+        await engine.beginSync()
+        // Epochs count up from 1 and the live monitor is the second one:
+        // any other value belongs to a retired monitor.
+        await engine.handlePathUpdate(satisfied: false, signature: "unsatisfied|", epoch: 1)
+        await engine.handlePathUpdate(satisfied: false, signature: "unsatisfied|", epoch: -1)
+        let waiting = await engine.isWaitingForNetwork
+        XCTAssertFalse(waiting)
+        await engine.endSync()
     }
 
     private func sendOps(_ socket: FakeWebSocketConnection) -> [String] {

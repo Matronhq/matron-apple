@@ -1279,7 +1279,10 @@ struct MacChatListView: View {
                     // so it ends the quiet period itself, after the state
                     // above is set. Coming back: while hidden the Dock badge
                     // followed pushes, so end on the app's own count even
-                    // when it has not changed since (no `onChange` fires).
+                    // when it has not changed since (no `onChange` fires). The
+                    // count can still be catching up with the replay: if it is
+                    // then different, its own `onChange` writes it, so the tile
+                    // always ends on the app's count.
                     if state == .running, quietReconnect.runningReached() {
                         NSApp.dockTile.badgeLabel = PushBadge.label(for: viewModel.totalUnread)
                     }

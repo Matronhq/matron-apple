@@ -110,6 +110,10 @@ public actor JournalSyncEngine {
     /// Whether the last observed network path was usable. True until the
     /// monitor says otherwise (and while it is not running).
     private var pathSatisfied = true
+    /// Identifies the running path monitor. Bumped by every
+    /// `startPathMonitor()`; a callback from a monitor that has since been
+    /// cancelled and replaced carries the old value and is dropped.
+    private var pathMonitorEpoch = 0
     /// Set when the engine itself closes the socket because the network
     /// path changed. The run loop then goes straight back to `.connecting`
     /// (no `.offline` blip in the UI, no backoff sleep) — the network is
@@ -530,10 +534,12 @@ public actor JournalSyncEngine {
     private func startPathMonitor() {
         guard pathMonitor == nil else { return }
         let monitor = NWPathMonitor()
+        pathMonitorEpoch &+= 1
+        let epoch = pathMonitorEpoch
         monitor.pathUpdateHandler = { [weak self] path in
             let satisfied = path.status == .satisfied
             let signature = "\(path.status)|\(path.availableInterfaces.map(\.name).sorted().joined(separator: ","))"
-            Task { await self?.handlePathUpdate(satisfied: satisfied, signature: signature) }
+            Task { await self?.handlePathUpdate(satisfied: satisfied, signature: signature, epoch: epoch) }
         }
         monitor.start(queue: DispatchQueue(label: "chat.matron.journal.path-monitor"))
         pathMonitor = monitor
@@ -545,9 +551,11 @@ public actor JournalSyncEngine {
     /// process awake for it. Never true while running or after `endSync()`.
     public var isWaitingForNetwork: Bool { !pathSatisfied && !isConnectedAndCaughtUp }
 
-    func handlePathUpdate(satisfied: Bool, signature: String) {
-        // A callback that was in flight when the monitor was cancelled.
-        if pathMonitor != nil { pathSatisfied = satisfied }
+    func handlePathUpdate(satisfied: Bool, signature: String, epoch: Int) {
+        // A callback that was in flight when its monitor was cancelled (and
+        // maybe replaced by a restart's) says nothing about this run.
+        guard pathMonitor != nil, epoch == pathMonitorEpoch else { return }
+        pathSatisfied = satisfied
         let previous = lastPathSignature
         lastPathSignature = signature
         // First callback reports the current path (not a change), and
