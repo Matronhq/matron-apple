@@ -342,18 +342,6 @@ final class ObservationRegionTests: XCTestCase {
 
     // MARK: JournalStore
 
-    func testConsentEventsStream() async throws {
-        try await assertConstantRegion("consentEventsStream", reads: [.event]) { $0.consentEventsStream(convoID: "c1") }
-    }
-
-    func testQueuedReleaseEventsStream() async throws {
-        try await assertConstantRegion("queuedReleaseEventsStream", reads: [.event]) { $0.queuedReleaseEventsStream(convoID: "c1") }
-    }
-
-    func testConversationsStream() async throws {
-        try await assertConstantRegion("conversationsStream", reads: [.conversation]) { $0.conversationsStream() }
-    }
-
     func testAgentNamesStream() async throws {
         try await assertConstantRegion("agentNamesStream", reads: [.agent]) { $0.agentNamesStream() }
     }
@@ -362,36 +350,16 @@ final class ObservationRegionTests: XCTestCase {
         try await assertConstantRegion("agentRosterStream", reads: [.agent]) { $0.agentRosterStream() }
     }
 
-    func testChildrenStream() async throws {
-        try await assertConstantRegion("childrenStream", reads: [.conversation]) { $0.childrenStream(of: "c1") }
-    }
-
     func testSessionStateStream() async throws {
         try await assertConstantRegion("sessionStateStream", reads: [.conversation]) { $0.sessionStateStream(convoID: "c1") }
-    }
-
-    func testMissionRoomsStream() async throws {
-        try await assertConstantRegion("missionRoomsStream", reads: [.conversation]) { $0.missionRoomsStream() }
-    }
-
-    func testSessionStatesStream() async throws {
-        try await assertConstantRegion("sessionStatesStream", reads: [.conversation]) { $0.sessionStatesStream() }
     }
 
     func testOutboxStream() async throws {
         try await assertConstantRegion("outboxStream", reads: [.outbox]) { $0.outboxStream(convoID: "c1") }
     }
 
-    func testEventsStream() async throws {
-        try await assertConstantRegion("eventsStream", reads: [.event]) { $0.eventsStream(convoID: "c1", sinceSeq: 0) }
-    }
-
     func testSummaryEntriesStream() async throws {
         try await assertConstantRegion("summaryEntriesStream", reads: [.summaryEntry]) { $0.summaryEntriesStream(convoID: "c1") }
-    }
-
-    func testArchivedConversationsStream() async throws {
-        try await assertConstantRegion("archivedConversationsStream", reads: [.conversation]) { $0.archivedConversationsStream() }
     }
 
     // MARK: JournalStore+Items
@@ -404,24 +372,8 @@ final class ObservationRegionTests: XCTestCase {
         try await assertConstantRegion("knownConversationIDsStream", reads: [.conversation]) { $0.knownConversationIDsStream(among: ["c1", "c2"]) }
     }
 
-    func testItemsStreamAll() async throws {
-        try await assertConstantRegion("itemsStream.all", reads: [.item]) { $0.itemsStream(scope: .all) }
-    }
-
-    func testItemsStreamConvo() async throws {
-        try await assertConstantRegion("itemsStream.convo", reads: [.item]) { $0.itemsStream(scope: .convo("c1")) }
-    }
-
     func testItemStream() async throws {
         try await assertConstantRegion("itemStream", reads: [.item]) { $0.itemStream(id: "i1") }
-    }
-
-    func testCommentsStream() async throws {
-        try await assertConstantRegion("commentsStream", reads: [.itemComment]) { $0.commentsStream(itemID: "i1") }
-    }
-
-    func testNeedsUserCountsStream() async throws {
-        try await assertConstantRegion("needsUserCountsStream", reads: [.item]) { $0.needsUserCountsStream() }
     }
 
     func testItemOutboxStream() async throws {
@@ -430,18 +382,6 @@ final class ObservationRegionTests: XCTestCase {
 
     func testItemOutboxCreatesStream() async throws {
         try await assertConstantRegion("itemOutboxCreatesStream", reads: [.itemOutbox]) { $0.itemOutboxCreatesStream() }
-    }
-
-    func testItemsStreamMission() async throws {
-        try await assertConstantRegion("itemsStream.mission", reads: [.item]) { $0.itemsStream(missionID: "m1") }
-    }
-
-    func testClosedItemsCountStream() async throws {
-        try await assertConstantRegion("closedItemsCountStream", reads: [.item]) { $0.closedItemsCountStream(missionID: "m1") }
-    }
-
-    func testClosedItemsStream() async throws {
-        try await assertConstantRegion("closedItemsStream", reads: [.item]) { $0.closedItemsStream(missionID: "m1", limit: 50) }
     }
 
     // MARK: JournalStore+Missions
@@ -470,10 +410,6 @@ final class ObservationRegionTests: XCTestCase {
 
     func testLatestMilestonesStream() async throws {
         try await assertConstantRegion("latestMilestonesStream", reads: [.milestone]) { $0.latestMilestonesStream() }
-    }
-
-    func testNeedsYouItemsByMissionStream() async throws {
-        try await assertConstantRegion("needsYouItemsByMissionStream", reads: [.item]) { $0.needsYouItemsByMissionStream() }
     }
 
     func testLatestSummaryTOCsStream() async throws {
@@ -506,12 +442,8 @@ final class ObservationRegionTests: XCTestCase {
         try await assertConstantRegion("unfiledOpenMissionsStream", reads: [.mission]) { $0.unfiledOpenMissionsStream() }
     }
 
-    func testNeedsYouItemsStream() async throws {
-        try await assertConstantRegion("needsYouItemsStream", reads: [.item, .mission]) { $0.needsYouItemsStream(projectID: "p1") }
-    }
-
-    func testOpenItemsStream() async throws {
-        try await assertConstantRegion("openItemsStream", reads: [.item, .mission]) { $0.openItemsStream(projectID: "p1") }
+    func testProjectMissionIDsStream() async throws {
+        try await assertConstantRegion("projectMissionIDsStream", reads: [.mission]) { $0.projectMissionIDsStream(projectID: "p1") }
     }
 
     func testRecentMilestonesStream() async throws {

@@ -6,8 +6,7 @@ import MatronModels
 /// The store's items index keeps the For you sections in order as items
 /// change. Its sections must be exactly `ItemsPanelViewModel.sections(from:)`
 /// over the same items in the store's read order (`rank`, then `num`):
-/// that is what the app-wide items panel computes with the
-/// `store.changeFeed` flag off.
+/// the panel's own sections rule.
 final class ItemsIndexSectionsTests: XCTestCase {
     private static let ids = (1...40).map { "i\($0)" }
     private static let origins = ["c1", "c2", "c3"]
@@ -124,8 +123,8 @@ final class ItemsIndexSectionsTests: XCTestCase {
                 XCTAssertEqual(actual.done, expected.done, context)
                 XCTAssertEqual(actual.decided, expected.decided, context)
                 for origin in Self.origins {
-                    // What a chat's pane computes with the flag off: the
-                    // rule over `itemsStream(scope: .convo(origin))`.
+                    // A chat's pane: the rule over that conversation's
+                    // items.
                     let own = ItemsPanelViewModel.sections(from: items.filter { $0.originConvoID == origin })
                     XCTAssertEqual(state.slice(origin: origin), Self.indexed(own), "\(context): sections of \(origin)")
                 }

@@ -109,7 +109,7 @@ final class ItemQueuedRepliesTests: XCTestCase {
         func comments(itemID: String) throws -> [TrackerComment] { thread }
         func item(id: String) throws -> TrackerItem? { nil }
         func itemOutboxRows(itemID: String) throws -> [ItemOutboxRecord] { outbox }
-        func itemsStream(scope: ItemsScope) -> AsyncStream<[TrackerItem]> { AsyncStream { _ in } }
+        func itemSectionsStream(scope: ItemsScope) -> AsyncStream<ItemsIndexSections> { AsyncStream { _ in } }
         func itemStream(id: String) -> AsyncStream<TrackerItem?> { AsyncStream { self.itemCont = $0 } }
         func commentsStream(itemID: String) -> AsyncStream<[TrackerComment]> { AsyncStream { $0.yield(self.thread) } }
         func itemOutboxStream(itemID: String) -> AsyncStream<[ItemOutboxRecord]> { AsyncStream { $0.yield(self.outbox) } }

@@ -287,13 +287,13 @@ struct ConversationIndexState {
 
 /// The live `ConversationIndexState` for one store, fed by the change
 /// feed, serving `conversationsStream()`, `sessionStatesStream()`,
-/// `missionRoomsStream()` and `childrenStream(of:)` when the store's
-/// `usesChangeFeed` flag is on.
+/// `missionRoomsStream()`, `childrenStream(of:)` and
+/// `archivedConversationsStream()`.
 ///
-/// Today each of those is a `ValueObservation` that re-reads the whole
-/// `conversation` table on the writer after every commit that touches it,
-/// which is every journal frame: on a Mac with about 2,300 conversations
-/// the chat list's fetch alone took about 180 ms a time. Here the writer
+/// A `ValueObservation` would re-read the whole `conversation` table on
+/// the writer after every commit that touches it, which is every journal
+/// frame: on a Mac with about 2,300 conversations the chat list's fetch
+/// alone took about 180 ms a time. Here the writer
 /// only reads back the rows a commit changed (`StoreChangeFeed`), and the
 /// index applies them on its own serial queue.
 ///

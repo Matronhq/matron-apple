@@ -5,8 +5,8 @@ import XCTest
 @testable import MatronJournal
 
 /// `JournalStore.eventTailStream(convoID:sinceSeq:)`: the open timeline's
-/// tail from the change feed. The same rows as `eventsStream`, read only
-/// when a commit wrote this conversation's events.
+/// tail from the change feed: every row of the conversation at or above
+/// the anchor, read only when a commit wrote this conversation's events.
 class EventTailStreamTests: XCTestCase {
     /// `EventTailStreamPoolTests` runs the whole suite again on a pool.
     class var writerKind: StoreWriterKind { .queue }

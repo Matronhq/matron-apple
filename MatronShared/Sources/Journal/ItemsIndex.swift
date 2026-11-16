@@ -504,7 +504,7 @@ struct ItemsIndexState {
 }
 
 /// The live `ItemsIndexState` for one store, fed by the change feed,
-/// serving, when the store's `usesChangeFeed` flag is on:
+/// serving:
 ///
 /// - the items panel's sections, app-wide (the For you list) and for one
 ///   conversation (a chat's pane): `itemSectionsStream(scope:)`;
@@ -514,9 +514,9 @@ struct ItemsIndexState {
 /// - a set of missions' needs-you and open items, which the store's
 ///   project item streams follow for the project's missions.
 ///
-/// Each of those is otherwise a `ValueObservation` that re-reads the
-/// `item` table on the writer after every item write, and the items panel
-/// then filters and sorts what it read. Here the writer reads back only
+/// A `ValueObservation` would re-read the `item` table on the writer after
+/// every item write, and the items panel would then filter and sort what
+/// it read. Here the writer reads back only
 /// the rows a commit changed (`StoreChangeFeed`), and the index moves them
 /// in and out of its sorted lists on its own serial queue.
 ///

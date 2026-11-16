@@ -4,8 +4,7 @@ import os
 
 /// One delivery of `JournalStore.eventTailStream(convoID:sinceSeq:)`.
 public struct EventTail: Sendable, Equatable {
-    /// Every event of the conversation with `seq >= sinceSeq`, ascending:
-    /// the same rows `eventsStream(convoID:sinceSeq:)` delivers.
+    /// Every event of the conversation with `seq >= sinceSeq`, ascending.
     public var events: [JournalEvent]
     /// Seqs that were in the previous delivery and whose row has changed
     /// since: a tombstone sweep or retention rewrote it in place. A reader
@@ -19,13 +18,16 @@ public struct EventTail: Sendable, Equatable {
 }
 
 extension JournalStore {
-    /// `eventsStream(convoID:sinceSeq:)` from the change feed: the same
-    /// tail, fetched only when a commit touched this conversation's events.
+    /// Live tail of one conversation's events from the change feed: every
+    /// row with `seq >= sinceSeq`, fetched only when a commit touched this
+    /// conversation's events. Callers pick the anchor via
+    /// `tailWindowStart(convoID:limit:)` and reveal older rows with the
+    /// one-shot `events(convoID:beforeSeq:limit:)`.
     ///
-    /// The value observation re-runs its fetch after every commit that
+    /// A value observation would re-run its fetch after every commit that
     /// touches `event` anywhere, because a `convo_id` filter is no
-    /// narrower region to SQLite, so a frame in any conversation cost the
-    /// open chat a fetch of its whole tail. Here a commit reaches this
+    /// narrower region to SQLite, so a frame in any conversation would cost
+    /// the open chat a fetch of its whole tail. Here a commit reaches this
     /// stream as the conversation ids and seqs it wrote (`StoreChangeSet.
     /// events`); one in another conversation is dropped without a read.
     /// One in this conversation costs one indexed fetch of the rows with

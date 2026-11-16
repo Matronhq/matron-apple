@@ -19,8 +19,7 @@ extension XCTestCase {
     /// temporary directory, removed when the test ends.
     func makeTestStore(_ kind: StoreWriterKind, ownSender: String = "user:alice",
                        observesSuspension: Bool = JournalStore.observesSuspensionByDefault,
-                       metrics: StoreMetrics = .shared,
-                       usesChangeFeed: Bool = false) throws -> JournalStore {
+                       metrics: StoreMetrics = .shared) throws -> JournalStore {
         var url: URL?
         if kind != .memory {
             let dir = FileManager.default.temporaryDirectory
@@ -30,7 +29,7 @@ extension XCTestCase {
         }
         return try JournalStore(databaseURL: url, ownSender: ownSender,
                                 observesSuspension: observesSuspension,
-                                metrics: metrics, usesChangeFeed: usesChangeFeed,
+                                metrics: metrics,
                                 usesPool: kind.usesPool)
     }
 }

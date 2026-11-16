@@ -13,7 +13,7 @@ class ConvoEventsFeedTests: XCTestCase {
     private let query = JournalStore.queuedReleaseEventsQuery
 
     private func makeStore(metrics: StoreMetrics = StoreMetrics()) throws -> JournalStore {
-        try makeTestStore(Self.writerKind, metrics: metrics, usesChangeFeed: true)
+        try makeTestStore(Self.writerKind, metrics: metrics)
     }
 
     private func card(_ seq: Int64, convo: String = "c1") -> JournalEvent {
