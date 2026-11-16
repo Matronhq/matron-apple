@@ -713,21 +713,41 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
         // pasteboard.
         guard range.length > 0, let storage = textStorage else { return }
 
-        let markdown: String
+        let plain: String
         if let code = MarkdownReconstruction.soleCodeBlockText(from: storage, in: range) {
-            // Selection entirely inside one code block: bare code beats both
-            // paths below — the user sees only code and expects to paste it
+            // Selection entirely inside one code block: bare code beats every
+            // path below — the user sees only code and expects to paste it
             // runnable, not wrapped in ``` fences.
-            markdown = code
-        } else if range == NSRange(location: 0, length: storage.length), !markdownSource.isEmpty {
-            markdown = markdownSource
+            plain = code
+        } else if let text = MarkdownReconstruction.singleBlockPlainText(from: storage, in: range) {
+            // Within one paragraph, list item or cell: the text as it reads,
+            // so a bold number pastes as `16343`, not `**16343**`. "Copy as
+            // Markdown" is there for the rare time the delimiters are wanted.
+            plain = text
         } else {
-            markdown = MarkdownReconstruction.markdown(from: storage, in: range)
+            plain = markdown(in: range, of: storage)
         }
+        write(plain: plain, rendered: storage.attributedSubstring(from: range))
+    }
 
-        // Plain text carries the markdown; RTF carries the rendered look so
-        // rich-text targets keep formatting.
-        let selected = storage.attributedSubstring(from: range)
+    /// "Copy as Markdown": the selection's markdown whatever its extent —
+    /// the source verbatim for a whole message, else a reconstruction.
+    @objc func copyAsMarkdown(_ sender: Any?) {
+        let range = selectedRange()
+        guard range.length > 0, let storage = textStorage else { return }
+        write(plain: markdown(in: range, of: storage), rendered: storage.attributedSubstring(from: range))
+    }
+
+    private func markdown(in range: NSRange, of storage: NSTextStorage) -> String {
+        if range == NSRange(location: 0, length: storage.length), !markdownSource.isEmpty {
+            return markdownSource
+        }
+        return MarkdownReconstruction.markdown(from: storage, in: range)
+    }
+
+    /// Plain text for plain targets; RTF carries the rendered look so
+    /// rich-text targets keep formatting.
+    private func write(plain markdown: String, rendered selected: NSAttributedString) {
         pasteboard.clearContents()
         pasteboard.declareTypes([.rtf, .string], owner: nil)
         if let rtf = selected.rtf(
@@ -751,10 +771,13 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
         if item.action == #selector(copyCrossSelection(_:)) {
             return selectionController?.hasSelection == true
         }
+        if item.action == #selector(copyAsMarkdown(_:)) {
+            return selectedRange().length > 0
+        }
         return super.validateUserInterfaceItem(item)
     }
 
-    /// Two additions to AppKit's menu, in order.
+    /// Three additions to AppKit's menu, in order.
     ///
     /// 1. AppKit builds its own "Open Link" item and that item hands the URL
     ///    straight to the Launch Services opener — it never reaches
@@ -763,7 +786,9 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
     ///    "no application can open this URL" sheet instead of the tracker
     ///    item. Swap it for one that goes through
     ///    the very same delegate call a left-click does.
-    /// 2. The cross-message "Copy N Messages" entry, when a finished
+    /// 2. "Copy as Markdown" under AppKit's Copy, when this view has a
+    ///    selection: ⌘C copies a short selection as the text you see.
+    /// 3. The cross-message "Copy N Messages" entry, when a finished
     ///    selection exists.
     override func menu(for event: NSEvent) -> NSMenu? {
         // Exactly what super returned when there is nothing to add — an empty
@@ -772,6 +797,9 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
         var base = super.menu(for: event)
         if let menu = base, let (url, charIndex) = link(under: event) {
             base = Self.rewritingLinkItems(in: menu, for: url, charIndex: charIndex, target: self)
+        }
+        if let menu = base, selectedRange().length > 0 {
+            Self.addCopyAsMarkdown(to: menu, target: self)
         }
         guard let selectionController, selectionController.hasSelection,
               // The FINISHED snapshot, not the live provider: the title and
@@ -792,6 +820,18 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
         base.insertItem(.separator(), at: 0)
         base.insertItem(item, at: 0)
         return base
+    }
+
+    static let copyAsMarkdownTitle = "Copy as Markdown"
+
+    /// Puts "Copy as Markdown" straight after AppKit's Copy (or first, if
+    /// this OS's menu has no Copy item we can find).
+    static func addCopyAsMarkdown(to menu: NSMenu, target: MessageCopyTextView?) {
+        guard !menu.items.contains(where: { $0.action == #selector(copyAsMarkdown(_:)) }) else { return }
+        let item = NSMenuItem(title: copyAsMarkdownTitle, action: #selector(copyAsMarkdown(_:)), keyEquivalent: "")
+        item.target = target
+        let copyIndex = menu.items.firstIndex { $0.action == #selector(NSText.copy(_:)) }
+        menu.insertItem(item, at: copyIndex.map { $0 + 1 } ?? 0)
     }
 
     // MARK: - Right-click → "Open Link"

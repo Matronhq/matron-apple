@@ -103,6 +103,42 @@ enum MarkdownReconstruction {
         return trimmed.isEmpty ? raw : trimmed
     }
 
+    /// The selected text as it reads on screen when `range` lies within ONE
+    /// block (a paragraph, heading, list item, quote line or table cell),
+    /// else `nil`. A short selection is almost always a value someone wants
+    /// to paste somewhere plain (a number, an id, a command, an address),
+    /// and markdown delimiters around it (`**16343**`, `` `abc` ``,
+    /// `[docs](https://…)`) are noise there. A selection across blocks keeps
+    /// the markdown reconstruction, so a longer paste keeps its structure.
+    ///
+    /// Renderer-added annotations (a tracker link's chip) are left out, as
+    /// the markdown path leaves them out. Trailing newlines are trimmed: a
+    /// triple-click grabs the paragraph's terminator. Code blocks are
+    /// `soleCodeBlockText`'s, which the caller consults first.
+    static func singleBlockPlainText(from attributed: NSAttributedString, in range: NSRange) -> String? {
+        guard range.length > 0 else { return nil }
+        var identity: Int?
+        var isSingleBlock = true
+        var text = ""
+        let string = attributed.string as NSString
+        attributed.enumerateAttribute(MarkdownAttributed.semanticsKey, in: range) { value, subrange, stop in
+            let blockIdentity = (value as? MarkdownRunSemantics)?.blockIdentity ?? Block.verbatimIdentity
+            if let identity, identity != blockIdentity {
+                isSingleBlock = false
+                stop.pointee = true
+                return
+            }
+            identity = blockIdentity
+            if (value as? MarkdownRunSemantics)?.isAnnotation == true { return }
+            text += string.substring(with: subrange)
+        }
+        guard isSingleBlock, identity != nil else { return nil }
+        let trimmed = trimTrailingNewlines(text)
+        // Never "" — see `soleCodeBlockText`: an empty string would wipe the
+        // clipboard's plain-text flavour.
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
     // MARK: - Model
 
     private struct Segment {

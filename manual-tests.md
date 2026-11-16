@@ -137,6 +137,9 @@ Run before every TestFlight build (iOS) and every Mac App Store build.
 
 - [ ] Scroll to the top of the timeline → older messages page in.
 - [ ] Right-click a message → menu shows Copy / Share / **View source**.
+- [ ] In a reply with a **bold number**, `inline code` and a [link](https://example.com), select just the number and press ⌘C; paste into Terminal → the bare number, no asterisks. Same for the inline code (no backticks) and the link text (no URL). Paste into TextEdit → the bold is kept.
+- [ ] Select across two paragraphs and press ⌘C; paste into Terminal → markdown (`**`, list markers, fences) as before.
+- [ ] Select the bold number, right-click → **Copy as Markdown** sits under Copy; paste → `**16343**`-style markdown. Edit ▸ Copy as Markdown (⌥⇧⌘C) does the same.
 - [ ] "View source" opens a sheet with the event printed as pretty JSON; click **Done** (or press Esc / ⏎) to dismiss.
 
 ### Read state (Mac)

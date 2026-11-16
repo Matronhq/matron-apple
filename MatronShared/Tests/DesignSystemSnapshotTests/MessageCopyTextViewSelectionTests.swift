@@ -170,11 +170,12 @@ final class MessageCopyTextViewSelectionTests: XCTestCase {
         XCTAssertEqual(written, ["[t] Me: hi"])
     }
 
-    func test_copy_fallsBackToMarkdownCopy_withoutCrossSelection() {
+    func test_copy_fallsBackToOwnCopy_withoutCrossSelection() {
         NSPasteboard.general.clearContents()
         textView.setSelectedRange(NSRange(location: 0, length: textView.textStorage!.length))
         textView.copy(nil)
-        XCTAssertEqual(NSPasteboard.general.string(forType: .string), "plain **bold** text")
+        // One paragraph: the view's own copy gives the text as it reads.
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), "plain bold text")
     }
 
     func test_validateCopy_trueWhileSelected_evenWithEmptyTextSelection() {
