@@ -87,6 +87,10 @@ public actor MissionsSync {
     private var foregroundTask: Task<Void, Never>?
     /// Whether the socket is replaying what this device missed.
     private var catchingUp = false
+    /// Tests wait on this rather than on time: a state and a marker reach
+    /// the sync on separate tasks.
+    var isCatchingUpForTesting: Bool { catchingUp }
+    var hasDeferredChangesForTesting: Bool { listChanged }
     /// A mission changed while the list was not being kept current one
     /// mission at a time (during a catch-up, or in the background): the
     /// next re-read of the list goes out whatever the pacer's interval.
@@ -230,7 +234,9 @@ public actor MissionsSync {
     /// read has covered them. An open mission page whose id is in one
     /// refetches its mission, milestones included.
     public func deferredMissionsRead() -> AsyncStream<Set<String>> {
-        AsyncStream(bufferingPolicy: .bufferingNewest(4)) { c in
+        // Unbounded: each set is the only record of the missions it names, and a
+        // page busy refetching must still see every one of them afterwards.
+        AsyncStream(bufferingPolicy: .unbounded) { c in
             let id = UUID()
             deferredWatchers[id] = c
             c.onTermination = { _ in Task { await self.dropDeferredWatcher(id) } }

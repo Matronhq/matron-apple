@@ -135,6 +135,7 @@ public actor ItemsSync {
     /// Tests wait on this rather than on time: a state and a marker reach
     /// the sync on separate tasks.
     var isCatchingUpForTesting: Bool { catchingUp }
+    var hasDeferredChangesForTesting: Bool { listChanged }
     /// An item changed while the cache was not being kept current item by
     /// item (during a catch-up, or in the background): the list is re-read
     /// once the catch-up ends.
@@ -733,7 +734,9 @@ public actor ItemsSync {
     /// time a list read has covered them. An open item page whose id is in
     /// one refetches its thread.
     public func deferredItemsRead() -> AsyncStream<Set<String>> {
-        AsyncStream(bufferingPolicy: .bufferingNewest(4)) { c in
+        // Unbounded: each set is the only record of the items it names, and a
+        // page busy refetching must still see every one of them afterwards.
+        AsyncStream(bufferingPolicy: .unbounded) { c in
             let id = UUID()
             deferredWatchers[id] = c
             c.onTermination = { _ in Task { await self.dropDeferredWatcher(id) } }

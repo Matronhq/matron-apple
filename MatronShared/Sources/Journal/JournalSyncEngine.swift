@@ -1355,7 +1355,11 @@ public actor JournalSyncEngine {
         let invalidations = summaryInvalidations
         guard let snapshot = try? await api.snapshot() else { return }
         guard epoch == storeEpoch else { return } // store wiped mid-flight; stale
-        if invalidations == summaryInvalidations { lastSummaryRefresh = .now }
+        // A connect since this fetch started left the summaries behind, and a
+        // fetch started after it may already have written newer ones: this
+        // answer is dropped, and the list's next appearance fetches again.
+        guard invalidations == summaryInvalidations else { return }
+        lastSummaryRefresh = .now
         try? store.refreshSummaries(snapshot.conversations, adoptUnread: syncScope == .forYou)
         try? store.replaceAgents(snapshot.agents)
     }

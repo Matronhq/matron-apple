@@ -126,13 +126,14 @@ final class MissionsSyncTests: XCTestCase {
         api.list = [mission("ms_1", num: 61)]
         let (sync, _, markers, states) = try make(api: api, pacer: RefreshPacer(interval: .seconds(600), activity: AppActivity()))
         await sync.start()
-        var deferred = await sync.deferredMissionsRead().makeAsyncIterator()
+        let stream = await sync.deferredMissionsRead()
+        let deferred = Task { await firstValue(of: stream) }
         states.yield(.catchingUp)
-        try? await Task.sleep(nanoseconds: 50_000_000)
+        try await waitUntil { await sync.isCatchingUpForTesting }
         markers.yield(milestoneMarker())
-        try? await Task.sleep(nanoseconds: 50_000_000)
+        try await waitUntil { await sync.hasDeferredChangesForTesting }
         states.yield(.running)
-        let ids = await deferred.next()
+        let ids = await deferred.value
         XCTAssertEqual(ids, ["ms_1"])
         await sync.stop()
     }

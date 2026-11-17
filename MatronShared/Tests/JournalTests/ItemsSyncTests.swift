@@ -339,14 +339,16 @@ class ItemsSyncTests: XCTestCase {
         let api = FakeItems()
         let (sync, _, markers, states) = try make(api: api, reconcileInterval: nil)
         await sync.start()
-        var deferred = await sync.deferredItemsRead().makeAsyncIterator()
+        let stream = await sync.deferredItemsRead()
+        let deferred = Task { await firstValue(of: stream) }
         states.yield(.catchingUp)
         try await waitUntil { api.listQueries.count == 1 }
         markers.yield(marker("it_1"))
         markers.yield(marker("it_2"))
         try? await Task.sleep(nanoseconds: 50_000_000)
+        try await waitUntilAsync { await sync.hasDeferredChangesForTesting }
         states.yield(.running)
-        let ids = await deferred.next()
+        let ids = await deferred.value
         XCTAssertEqual(ids, ["it_1", "it_2"])
         XCTAssertEqual(api.listQueries.count, 2)
     }
