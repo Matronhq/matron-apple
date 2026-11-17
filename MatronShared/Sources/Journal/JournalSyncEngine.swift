@@ -245,6 +245,16 @@ public actor JournalSyncEngine {
     /// on their title: the first frame was neither the `convo_meta` that
     /// carries it nor a message (see `considerAutoOpen`).
     private var pendingAutoOpen: Set<String> = []
+    /// Live frames waiting to be written together (`bufferLiveFrame`).
+    private var liveBuffer: [JournalEvent] = []
+    /// Writes `liveBuffer` once its first frame has waited `liveFlushDelay`.
+    private var liveFlushTask: Task<Void, Never>?
+    /// A batch write failed part-way (a timed write of `liveBuffer`, or a
+    /// salvage in `applyReplayBatch`). Set before anything awaits, and
+    /// checked before every write: no later frame may move the cursor past
+    /// the frames that did not land. The frame loop throws it; the next
+    /// socket clears it.
+    private var writeFailure: (any Error)?
     /// Session starts this device asked for and has not yet seen born —
     /// the only thing that lets a live-born conversation open itself.
     private var localStartIntents: LocalStartIntents
@@ -924,6 +934,10 @@ public actor JournalSyncEngine {
         if retiredViewerTokens.remove(token) != nil { return }
         viewers.removeAll { $0.token == token }
         viewers.append((token, convoID))
+        // Its frames from now on are written as they arrive; the ones
+        // already waiting for the next group are written now, so the chat
+        // that just opened (an auto-open included) shows them at once.
+        if liveBuffer.contains(where: { $0.convoID == convoID }) { await flushLiveBufferOffLoop() }
         await sendViewing()
         startConversationCatchUp(convoID)
     }
@@ -981,6 +995,8 @@ public actor JournalSyncEngine {
         // must not replay pre-wipe meters to post-wipe subscribers.
         lastSessionStatus.removeAll()
         caughtUpViewed.removeAll()
+        // Pre-wipe frames must never land on the wiped store.
+        dropLiveBuffer()
         try? store.wipe()
     }
 
@@ -1962,6 +1978,7 @@ public actor JournalSyncEngine {
                     return
                 }
                 liveConnection = connection
+                writeFailure = nil
                 // Fetched over the last socket; this one starts behind them.
                 caughtUpViewed.removeAll()
                 // Nothing is carried until this socket's own `viewing` op.
@@ -2056,6 +2073,9 @@ public actor JournalSyncEngine {
                 var lastReplayFlush = ContinuousClock.now
                 frameLoop: for try await frame in connection.frames() {
                     lastFrameAt = ContinuousClock.now
+                    // Kept set: the teardown must not write later frames
+                    // either. The next socket clears it.
+                    if let failure = writeFailure { throw failure }
                     switch frame {
                     case .journal(let event):
                         // Backlog frame mid-catch-up: buffer it. The
@@ -2113,6 +2133,16 @@ public actor JournalSyncEngine {
                         // first-ever frame of a convo sees `false`, so this
                         // is true exactly once per new conversation.
                         let isNewConvo = (try? store.conversationExists(event.convoID)) == false
+                        if case .running = state, !isNewConvo, !appliesLiveFrameAtOnce(event) {
+                            try await bufferLiveFrame(event, connection: connection)
+                            continue
+                        }
+                        // Whatever is applied on its own lands after the
+                        // frames buffered before it, in journal order.
+                        try await flushLiveBuffer(connection: connection)
+                        // A timed write may have failed while that flush
+                        // waited on its ack.
+                        if let failure = writeFailure { throw failure }
                         // Note: delivery-confirmed outbox deletion happens
                         // INSIDE applyJournal's transaction (atomic with the
                         // row insert) — see JournalStore.applyJournal.
@@ -2294,6 +2324,13 @@ public actor JournalSyncEngine {
                             replayBuffer.removeAll(keepingCapacity: true)
                             lastReplayFlush = ContinuousClock.now
                         }
+                        // The head can be past `headSeq` (the bridge wrote
+                        // while the replay ran), so frames after `headSeq`
+                        // may be waiting as live ones: land them before the
+                        // cursor passes them, or they would read as already
+                        // written and be lost.
+                        try await flushLiveBuffer(connection: connection)
+                        if let failure = writeFailure { throw failure }
                         try store.advanceCursor(to: seq)
                         scopedReplayDone = true
                         try? await connection.send(.ack(cursor: store.cursor))
@@ -2423,6 +2460,7 @@ public actor JournalSyncEngine {
     /// and is acked-able, the cursor stops right before the failure, and the
     /// throw still escapes to the reconnect path.
     private func applyReplayBatch(_ batch: [JournalEvent], connection: JournalConnection) async throws -> Int64 {
+        if let writeFailure { throw writeFailure }
         var applied: [JournalEvent]
         do {
             applied = try store.applyJournalBatch(batch)
@@ -2433,6 +2471,10 @@ public actor JournalSyncEngine {
                     if try store.applyJournal(event) { applied.append(event) }
                 }
             } catch let salvageError {
+                // Recorded before the ack suspends: a write that runs
+                // meanwhile (a frame written at once, a timed write) must
+                // not land past the frame that failed.
+                writeFailure = salvageError
                 didApplyBatch(applied)
                 try? await connection.send(.ack(cursor: store.cursor))
                 throw salvageError
@@ -2451,11 +2493,102 @@ public actor JournalSyncEngine {
     /// failed apply here just leaves the cursor where it was; the reconnect
     /// replays the same frames.
     private func flushReplayBufferOnTeardown(_ buffer: inout [JournalEvent]) {
-        guard !buffer.isEmpty else { return }
-        if let applied = try? store.applyJournalBatch(buffer) {
-            didApplyBatch(applied)
+        if !buffer.isEmpty {
+            if let applied = try? store.applyJournalBatch(buffer) {
+                didApplyBatch(applied)
+            }
+            buffer.removeAll()
         }
-        buffer.removeAll()
+        // Live frames come after the replay's, so they land second, unless
+        // a timed write of earlier ones failed: then none may land, or the
+        // cursor would pass the lost ones. The journal replays them all.
+        let live = liveBuffer
+        dropLiveBuffer()
+        if writeFailure == nil, !live.isEmpty, let applied = try? store.applyJournalBatch(live) {
+            didApplyBatch(applied)
+            stats?.noteEvents(applied.count)
+        }
+    }
+
+    // MARK: Live frames written together
+
+    /// How long a live frame may wait to be written with the ones after it.
+    /// A phone that only follows the tracker takes in thousands of frames a
+    /// day while it is open; written one transaction each, every frame cost
+    /// over ten times the disk writes of the same frames written together.
+    static let liveFlushDelay: Duration = .seconds(1)
+    /// A buffer this full is written at once.
+    static let liveBatchMax = 200
+
+    /// Whether a live frame is written as it arrives rather than with the
+    /// next group: one the user is looking at (an open conversation), one
+    /// this device sent (its echo confirms the send and clears the outbox),
+    /// and one a pending auto-open is waiting on. The rest (tracker and
+    /// mission markers, status and titles of conversations not on screen)
+    /// shows nowhere a second's delay can be seen.
+    private func appliesLiveFrameAtOnce(_ event: JournalEvent) -> Bool {
+        event.sender == ownSender
+            || viewers.contains(where: { $0.convoID == event.convoID })
+            || pendingAutoOpen.contains(event.convoID)
+    }
+
+    private func bufferLiveFrame(_ event: JournalEvent, connection: JournalConnection) async throws {
+        liveBuffer.append(event)
+        if liveBuffer.count >= Self.liveBatchMax {
+            try await flushLiveBuffer(connection: connection)
+            return
+        }
+        guard liveFlushTask == nil else { return }
+        liveFlushTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.liveFlushDelay)
+            guard !Task.isCancelled else { return }
+            await self?.flushLiveBufferOnTimer()
+        }
+    }
+
+    /// The timer's flush, on the socket that is live now (a teardown writes
+    /// or drops the buffer and cancels the timer, so a buffer is always the
+    /// live socket's). A failed write closes the socket: the frame loop
+    /// then takes the same reconnect path as a failed single write, and the
+    /// journal replays the frames from the unchanged cursor.
+    private func flushLiveBufferOnTimer() async {
+        liveFlushTask = nil
+        await flushLiveBufferOffLoop()
+    }
+
+    /// Writes the buffer outside the frame loop (the timer, a chat coming
+    /// on screen) on the socket that is live now.
+    private func flushLiveBufferOffLoop() async {
+        guard let connection = liveConnection else { return }
+        do {
+            try await flushLiveBuffer(connection: connection)
+        } catch {
+            // The salvage's ack can outlast the socket: once the next one is
+            // up, its replay starts from the unchanged cursor, and a failure
+            // recorded now would refuse it.
+            guard liveConnection?.id == connection.id else { return }
+            Self.logger.warning("live batch write failed, reconnecting: \(error.localizedDescription, privacy: .public)")
+            writeFailure = error
+            connection.close()
+        }
+    }
+
+    /// Writes the buffered live frames in one transaction, runs their side
+    /// effects, and acks the cursor they reached.
+    private func flushLiveBuffer(connection: JournalConnection) async throws {
+        guard !liveBuffer.isEmpty else { return }
+        let batch = liveBuffer
+        dropLiveBuffer()
+        let applied = try await applyReplayBatch(batch, connection: connection)
+        if applied > 0 {
+            try? await connection.send(.ack(cursor: store.cursor))
+        }
+    }
+
+    private func dropLiveBuffer() {
+        liveBuffer.removeAll()
+        liveFlushTask?.cancel()
+        liveFlushTask = nil
     }
 
     /// Side effects owed to every frame that actually wrote (apply returned
