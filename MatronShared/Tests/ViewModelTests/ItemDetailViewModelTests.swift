@@ -1055,7 +1055,7 @@ final class ItemDetailViewModelTests: XCTestCase {
         let session = VoiceNoteSession(recorder: VoiceRecorder(
             requestPermission: { true },
             makeRecorder: { _ in Silent() },
-            observeInterruptions: { _ in {} }))
+            observeInterruptions: { _ in {} }), measureAudio: { _ in 5 })
         let api = API()
         api.failUpload = true
         let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: Sync())

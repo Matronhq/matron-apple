@@ -23,13 +23,16 @@ public struct VoiceNoteIndicator: View {
     let onOpen: () -> Void
     let onCancel: () -> Void
     let onSend: () -> Void
+    /// The input the note records from, shown while it starts and records.
+    let microphone: String?
 
-    public init(mode: Mode, title: String,
+    public init(mode: Mode, title: String, microphone: String? = nil,
                 onOpen: @escaping () -> Void,
                 onCancel: @escaping () -> Void,
                 onSend: @escaping () -> Void) {
         self.mode = mode
         self.title = title
+        self.microphone = microphone
         self.onOpen = onOpen
         self.onCancel = onCancel
         self.onSend = onSend
@@ -45,7 +48,17 @@ public struct VoiceNoteIndicator: View {
                         Text(subtitle)
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                            .lineLimit(isFailed ? 2 : 1)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if let microphoneLine {
+                            Label(microphoneLine, systemImage: "mic.fill")
+                                .labelStyle(.titleAndIcon)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .accessibilityIdentifier("voiceNoteIndicator.microphone")
+                        }
                     }
                     Spacer(minLength: 0)
                 }
@@ -130,6 +143,18 @@ public struct VoiceNoteIndicator: View {
             Text("Sending voice note…").font(.subheadline.weight(.semibold))
         case .failed:
             Text("Voice note didn't send").font(.subheadline.weight(.semibold))
+        }
+    }
+
+    private var isFailed: Bool {
+        if case .failed = mode { return true }
+        return false
+    }
+
+    private var microphoneLine: String? {
+        switch mode {
+        case .starting, .recording: return microphone.map { "Recording from: \($0)" }
+        case .sending, .failed: return nil
         }
     }
 

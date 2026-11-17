@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import AVFoundation
 
 /// The app's one voice-note recording, owned above every page (a note used to die the moment you moved to another page
 /// inside Matron, because each composer owned its own `VoiceRecorder` and
@@ -102,12 +103,66 @@ public final class VoiceNoteSession {
     /// screen rather than doubling up the controls.
     private var ownerSurfaces: [UUID: Target.Kind] = [:]
 
-    public init(recorder: VoiceRecorder) {
+    /// Shortest note worth sending, in seconds of audio in the file.
+    public static let minimumAudio: TimeInterval = 1
+    public static let nothingRecordedMessage = "Nothing was recorded, try again"
+
+    /// Seconds of audio in a finished file; `nil` when it can't be read
+    /// as audio at all. Injectable so tests can send placeholder files.
+    private let measureAudio: @Sendable (URL) async -> TimeInterval?
+
+    public init(recorder: VoiceRecorder,
+                measureAudio: @escaping @Sendable (URL) async -> TimeInterval? = VoiceNoteSession.audioDuration) {
         self.recorder = recorder
+        self.measureAudio = measureAudio
+        recorder.onCaptureLost = { [weak self] lost in self?.captureLost(lost) }
     }
 
     public convenience init() {
         self.init(recorder: VoiceRecorder())
+    }
+
+    /// The length of the audio actually in `url`, read from the file.
+    public static func audioDuration(of url: URL) async -> TimeInterval? {
+        await Task.detached(priority: .userInitiated) {
+            guard let file = try? AVAudioFile(forReading: url), file.processingFormat.sampleRate > 0 else { return nil }
+            return Double(file.length) / file.processingFormat.sampleRate
+        }.value
+    }
+
+    /// The microphone stopped delivering while the note showed as
+    /// recording: the recorder has stopped it. What did reach the file
+    /// is kept as a failure row, so the user sees what happened and can
+    /// still send it; a note with nothing in it is just reported.
+    private func captureLost(_ lost: VoiceRecorder.CaptureLost) {
+        guard let target, let deliver else { return }
+        self.target = nil
+        self.deliver = nil
+        let generation = self.generation
+        let micName = lost.microphone?.name
+        Task { @MainActor in
+            await lost.stopped.finished()
+            guard generation == self.generation else {
+                try? FileManager.default.removeItem(at: lost.stopped.url)
+                return
+            }
+            let url = lost.stopped.url
+            let seconds = await measureAudio(url) ?? 0
+            let id = UUID()
+            let mic = micName ?? "The microphone"
+            if seconds >= Self.minimumAudio {
+                failedNotes[id] = (url, seconds, deliver)
+                let length = Duration.seconds(seconds.rounded()).formatted(.time(pattern: .minuteSecond))
+                failures.append(Failure(id: id, target: target,
+                                        message: "\(mic) stopped at \(length). Retry sends what was recorded.",
+                                        canRetry: true))
+            } else {
+                try? FileManager.default.removeItem(at: url)
+                failures.append(Failure(id: id, target: target,
+                                        message: "\(mic) stopped. \(Self.nothingRecordedMessage).",
+                                        canRetry: false))
+            }
+        }
     }
 
     /// When the live note began, for the elapsed-time display.
@@ -272,7 +327,14 @@ public final class VoiceNoteSession {
             // Cancelled by `reset()` before it began: never reaches the
             // signed-out account's upload at all.
             await waitForFile()
-            let error = Task.isCancelled ? "Cancelled" : await deliver(url, duration)
+            // A file with (almost) no audio in it is never sent: it would
+            // arrive as a note nobody can play or transcribe.
+            let audio = Task.isCancelled ? nil : await measureAudio(url)
+            let empty = !Task.isCancelled && (audio ?? 0) < Self.minimumAudio
+            if empty { try? FileManager.default.removeItem(at: url) }
+            let error = Task.isCancelled ? "Cancelled"
+                : empty ? Self.nothingRecordedMessage
+                : await deliver(url, duration)
             guard generation == self.generation, !Task.isCancelled else {
                 // Signed out meanwhile: the old account's note is dropped.
                 try? FileManager.default.removeItem(at: url)

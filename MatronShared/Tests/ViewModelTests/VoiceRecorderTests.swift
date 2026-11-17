@@ -492,12 +492,143 @@ final class VoiceRecorderTests: XCTestCase {
     func test_start_goesLiveAfterTheCap_whenTheMicStaysSilent() async throws {
         let fake = FakeAudioRecorder()
         fake.capturing = false
+        // The file is growing, with silence in it.
+        fake.elapsed = 4
         var pauses = 0
         let rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in fake },
                                 pause: { pauses += 1 })
         try await rec.start()
         XCTAssertEqual(pauses, VoiceRecorder.maxLiveChecks)
         guard case .recording = rec.state else { return XCTFail("expected .recording after the cap") }
+    }
+
+    /// The bug: an input that never delivered anything went live after the
+    /// cap, and the bar showed "Recording" for 30 s over an empty file.
+    /// With nothing in the file the start fails instead.
+    @MainActor
+    func test_start_failsWithNoAudio_whenNothingReachesTheFile() async {
+        let fake = FakeAudioRecorder()
+        fake.capturing = false
+        fake.elapsed = 0
+        let rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in fake }, pause: {})
+        do {
+            try await rec.start()
+            XCTFail("expected .noAudio")
+        } catch {
+            XCTAssertEqual(error as? VoiceRecorder.RecorderError, .noAudio)
+            XCTAssertEqual(error.localizedDescription.hasPrefix("Nothing was recorded"), true)
+        }
+        XCTAssertEqual(rec.state, .idle, "never left looking live")
+        XCTAssertEqual(fake.stopCalls, 1)
+    }
+
+    // MARK: Watchdog (capture dying while the note shows as recording)
+
+    @MainActor
+    private func watchedRecorder(_ fake: FakeAudioRecorder, onCheck: @escaping (Int) -> Void)
+        -> (VoiceRecorder, () -> [VoiceRecorder.CaptureLost]) {
+        var checks = 0
+        var lost: [VoiceRecorder.CaptureLost] = []
+        let rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in fake }, pause: {},
+                                watchPause: {
+                                    await Task.yield()
+                                    checks += 1
+                                    onCheck(checks)
+                                })
+        rec.onCaptureLost = { lost.append($0) }
+        return (rec, { lost })
+    }
+
+    @MainActor
+    private func waitUntil(_ condition: () -> Bool) async {
+        for _ in 0..<2_000 where !condition() { await Task.yield() }
+    }
+
+    /// A note whose file stops growing (the input went away mid-note) is
+    /// stopped and reported, rather than ticking on over nothing.
+    @MainActor
+    func test_recording_whoseFileStopsGrowing_isStoppedAndReported() async throws {
+        let fake = FakeAudioRecorder()
+        fake.elapsed = 1
+        let (rec, lost) = watchedRecorder(fake) { check in
+            // Grows for five checks, then stalls at 5 s.
+            if check <= 5 { fake.elapsed += 1 }
+        }
+        try await rec.start()
+        await waitUntil { !lost().isEmpty }
+
+        XCTAssertEqual(lost().count, 1)
+        XCTAssertEqual(rec.state, .finished)
+        XCTAssertEqual(fake.stopCalls, 1)
+        XCTAssertNil(rec.stop(), "already stopped")
+    }
+
+    @MainActor
+    func test_recording_whoseRecorderFails_isStoppedAndReported() async throws {
+        let fake = FailingMidNoteRecorder()
+        var lost: [VoiceRecorder.CaptureLost] = []
+        let rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in fake }, pause: {},
+                                watchPause: { await Task.yield(); fake.failed = true })
+        rec.onCaptureLost = { lost.append($0) }
+        try await rec.start()
+        await waitUntil { !lost.isEmpty }
+        XCTAssertEqual(lost.count, 1)
+        XCTAssertEqual(rec.state, .finished)
+    }
+
+    @MainActor
+    func test_recording_thatKeepsGrowing_isLeftAlone() async throws {
+        let fake = FakeAudioRecorder()
+        var done = false
+        let (rec, lost) = watchedRecorder(fake) { check in
+            fake.elapsed += 0.5
+            if check == 30 { done = true }
+        }
+        try await rec.start()
+        await waitUntil { done }
+        XCTAssertTrue(done)
+        XCTAssertTrue(lost().isEmpty)
+        guard case .recording = rec.state else { return XCTFail("expected .recording") }
+        XCTAssertNotNil(rec.stop())
+    }
+
+    /// An interruption is not a stall: the recorder is paused on purpose.
+    @MainActor
+    func test_recording_pausedByAnInterruption_isLeftAlone() async throws {
+        let fake = FakeAudioRecorder()
+        fake.elapsed = 2
+        let interruptions = FakeInterruptions()
+        var checks = 0
+        var lost: [VoiceRecorder.CaptureLost] = []
+        let rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in fake },
+                                observeInterruptions: interruptions.source, pause: {},
+                                watchPause: { await Task.yield(); checks += 1 })
+        rec.onCaptureLost = { lost.append($0) }
+        try await rec.start()
+        interruptions.handler?(.began)
+        await waitUntil { checks > 50 }
+        XCTAssertGreaterThan(checks, VoiceRecorder.maxStalledChecks * 2, "the watchdog kept checking")
+        XCTAssertTrue(lost.isEmpty)
+        XCTAssertNotNil(rec.stop())
+    }
+
+    // MARK: Files older decoders reject
+
+    func test_versionedChannelLayout_isFoundInsideMoov() {
+        func box(_ type: String, _ body: [UInt8]) -> [UInt8] {
+            let size = UInt32(8 + body.count)
+            return withUnsafeBytes(of: size.bigEndian, Array.init) + Array(type.utf8) + body
+        }
+        let chnl1 = box("chnl", [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0])
+        let chnl0 = box("chnl", [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0])
+        let ftyp = box("ftyp", Array("M4A ".utf8) + [0, 0, 0, 0])
+        func file(_ chnl: [UInt8]) -> Data {
+            Data(ftyp + box("mdat", Array("chnl".utf8) + [1, 1, 1, 1]) + box("moov", box("trak", box("mdia", chnl))))
+        }
+        XCTAssertTrue(MP4Boxes.hasVersionedChannelLayout(file(chnl1)))
+        XCTAssertFalse(MP4Boxes.hasVersionedChannelLayout(file(chnl0)))
+        XCTAssertFalse(MP4Boxes.hasVersionedChannelLayout(Data(ftyp + box("moov", box("trak", [])))))
+        XCTAssertFalse(MP4Boxes.hasVersionedChannelLayout(Data("AUDIO".utf8)))
     }
 
     /// A call during the warm-up holds the start (it doesn't use up the
@@ -869,4 +1000,12 @@ private final class FailingRecorder: AudioRecording {
     func stop() {}
     var isCapturingAudio: Bool { false }
     var hasFailed: Bool { true }
+}
+
+private final class FailingMidNoteRecorder: AudioRecording {
+    var failed = false
+    func record() -> Bool { true }
+    func stop() {}
+    var hasFailed: Bool { failed }
+    var elapsed: TimeInterval { 1 }
 }
