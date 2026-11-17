@@ -146,6 +146,13 @@ Run before every TestFlight build (iOS) and every Mac App Store build.
 
 - [ ] Click into a conversation with unread messages → the unread badge clears.
 
+## Items — Mac
+
+- [ ] Open a tracker item with a comment containing markdown and attachments. Right-click blank space inside its card → **Copy** (`doc.on.doc`) → paste into a plain-text editor: the markdown is as written, each text part trimmed and joined by a blank line, with attachments excluded. The menu dismisses with no separate confirmation.
+- [ ] Select part of a comment's text and right-click it: the text selection menu still copies the selected text.
+- [ ] Right-click blank space inside an attachment-only comment card: no whole-comment **Copy** appears.
+- [ ] Right-click a comment's code block and table: their existing menus and copy actions work unchanged.
+
 ## Chat experience — cross-platform
 
 - [ ] Sign in to the same account on iOS and macOS. Send a message from iOS → it appears on Mac within a few seconds.

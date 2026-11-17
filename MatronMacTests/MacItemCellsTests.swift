@@ -40,7 +40,7 @@ final class MacItemCellsTests: XCTestCase {
         let cell = MacItemCardCell(frame: .zero)
         let window = host(cell, height: layout.height)
         defer { window.close() }
-        cell.configure(rowID: "comment:c1", layout: layout, mine: false, dimmed: false, factory: factory,
+        cell.configure(rowID: "comment:c1", layout: layout, copyText: "First part\n\nSecond", mine: false, dimmed: false, factory: factory,
                        selection: MessageSelectionController(), routing: MacTimelineLinkRouting())
         cell.layoutSubtreeIfNeeded()
         let bodies = cell.visibleBodies
@@ -57,13 +57,59 @@ final class MacItemCellsTests: XCTestCase {
         let window = host(cell, height: two.height)
         defer { window.close() }
         let selection = MessageSelectionController()
-        cell.configure(rowID: "comment:c1", layout: two, mine: false, dimmed: false, factory: factory,
+        cell.configure(rowID: "comment:c1", layout: two, copyText: "First part\n\nSecond", mine: false, dimmed: false, factory: factory,
                        selection: selection, routing: MacTimelineLinkRouting())
         let one = layout([.markdown("Only")])
-        cell.configure(rowID: "comment:c1", layout: one, mine: true, dimmed: false, factory: factory,
+        cell.configure(rowID: "comment:c1", layout: one, copyText: "Only", mine: true, dimmed: false, factory: factory,
                        selection: selection, routing: MacTimelineLinkRouting())
         XCTAssertEqual(cell.visibleBodies.count, 1)
         XCTAssertEqual(cell.visibleHostFrames.count, 1)
+    }
+
+    private func rightClick(_ cell: MacItemCardCell, at point: NSPoint) throws -> NSEvent {
+        try XCTUnwrap(NSEvent.mouseEvent(with: .rightMouseDown, location: cell.convert(point, to: nil),
+                                        modifierFlags: [], timestamp: 0, windowNumber: cell.window!.windowNumber,
+                                        context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+    }
+
+    func test_cardGroundMenuCopiesWholeMarkdown_andClearsOnReuse() throws {
+        let source = "**First** with [link](https://example.com).\n\n```swift\nlet x = 1\n```"
+        let attachment = MacItemThreadFixtures.image("b1")
+        let content = ItemCardContent(row: .comment("c1"), mine: false,
+                                      parts: [.markdown("  " + source + "\n"), .attachment(attachment), .markdown(" Second. ")],
+                                      hasDelivery: false, hasActions: false, hostedSignature: 0)
+        let layout = layout(content.parts)
+        let cell = MacItemCardCell(frame: .zero)
+        let window = host(cell, height: layout.height)
+        defer { window.close() }
+        cell.configure(rowID: "comment:c1", layout: layout, copyText: content.copyText, mine: false, dimmed: false,
+                       factory: factory, selection: MessageSelectionController(), routing: MacTimelineLinkRouting())
+        let groundPoint = NSPoint(x: layout.cardFrame.minX + 2, y: layout.cardFrame.midY)
+        let event = try rightClick(cell, at: groundPoint)
+        let menu = try XCTUnwrap(cell.menu(for: event))
+        XCTAssertEqual(menu.items.map(\.title), ["Copy"])
+        let copy = try XCTUnwrap(menu.items.first)
+        XCTAssertTrue(copy.isEnabled)
+        let action = try XCTUnwrap(copy.action)
+        XCTAssertTrue(NSApplication.shared.sendAction(action, to: copy.target, from: copy))
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), source + "\n\nSecond.")
+
+        // A fallback from a text/code/table or hosted piece must not offer the card menu.
+        for frame in layout.frames {
+            XCTAssertNil(cell.menu(for: try rightClick(cell, at: NSPoint(x: frame.midX, y: frame.midY))))
+        }
+        XCTAssertNil(cell.menu(for: try rightClick(cell, at: NSPoint(x: layout.cardFrame.minX - 2, y: groundPoint.y))))
+        cell.prepareForReuse()
+        XCTAssertNil(cell.menu(for: event))
+
+        let picturesOnly = ItemCardContent(row: .comment("c2"), mine: false, parts: [.attachment(attachment)],
+                                           hasDelivery: false, hasActions: false, hostedSignature: 0)
+        let pictureLayout = self.layout(picturesOnly.parts)
+        cell.configure(rowID: "comment:c2", layout: pictureLayout, copyText: picturesOnly.copyText,
+                       mine: false, dimmed: false, factory: factory,
+                       selection: MessageSelectionController(), routing: MacTimelineLinkRouting())
+        let pictureGround = NSPoint(x: pictureLayout.cardFrame.minX + 2, y: pictureLayout.cardFrame.midY)
+        XCTAssertNil(cell.menu(for: try rightClick(cell, at: pictureGround)))
     }
 
     func test_hostedCell_reportsAHeightOtherThanExpected() {

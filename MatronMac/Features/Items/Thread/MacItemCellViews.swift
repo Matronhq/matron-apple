@@ -97,6 +97,7 @@ final class MacItemCardCell: NSTableCellView {
     /// The piece each in-use host shows, and the height it was laid out at.
     private var hostedPieces: [(piece: ItemDetailView.Piece, height: CGFloat)] = []
     private(set) var rowID = ""
+    private var copyText: String?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -113,10 +114,11 @@ final class MacItemCardCell: NSTableCellView {
     var visibleHostFrames: [CGRect] { hosts.filter { !$0.isHidden }.map(\.frame) }
     var groundFrame: CGRect { ground.frame }
 
-    func configure(rowID: String, layout: MacItemCardLayout, mine: Bool, dimmed: Bool,
+    func configure(rowID: String, layout: MacItemCardLayout, copyText: String?, mine: Bool, dimmed: Bool,
                    factory: MacItemPieceFactory, selection: MessageSelectionController,
                    routing: MacTimelineLinkRouting) {
         self.rowID = rowID
+        self.copyText = copyText
         ground.frame = layout.cardFrame
         ground.isOwn = mine
         var bodyCount = 0
@@ -182,6 +184,27 @@ final class MacItemCardCell: NSTableCellView {
         needsLayout = true
     }
 
+    /// Only the card ground offers whole-card Copy. Text, code, tables
+    /// and hosted pieces keep their own right-click handling.
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let point = convert(event.locationInWindow, from: nil)
+        guard let copyText, ground.frame.contains(point),
+              !bodies.contains(where: { !$0.isHidden && $0.frame.contains(point) }),
+              !hosts.contains(where: { !$0.isHidden && $0.frame.contains(point) }) else { return nil }
+        let menu = NSMenu()
+        let copy = NSMenuItem(title: "Copy", action: #selector(copyCard(_:)), keyEquivalent: "")
+        copy.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: nil)
+        copy.target = self
+        copy.representedObject = copyText
+        menu.addItem(copy)
+        return menu
+    }
+
+    @objc private func copyCard(_ sender: NSMenuItem) {
+        guard let text = sender.representedObject as? String else { return }
+        Pasteboard.copy(text)
+    }
+
     override func layout() {
         super.layout()
         guard !rowID.isEmpty else { return }
@@ -197,5 +220,6 @@ final class MacItemCardCell: NSTableCellView {
     override func prepareForReuse() {
         super.prepareForReuse()
         rowID = ""
+        copyText = nil
     }
 }
