@@ -43,11 +43,39 @@ public final class VoiceRecorder {
         case finished
     }
 
-    public enum RecorderError: Error, Equatable {
+    public enum RecorderError: LocalizedError, Equatable {
         case permissionDenied
         case alreadyRecording
         case recordFailed
+        /// The recorder started but no audio reached the file before the
+        /// warm-up ran out: the microphone never delivered anything.
+        case noAudio
+
+        public var errorDescription: String? {
+            switch self {
+            case .permissionDenied:
+                return "Matron isn't allowed to use the microphone. Turn it on in Settings, then try again."
+            case .alreadyRecording:
+                return "A voice note is already recording."
+            case .recordFailed:
+                return "The microphone wouldn't start. Try again."
+            case .noAudio:
+                return "Nothing was recorded: the microphone didn't send any sound. Try again, or pick another microphone."
+            }
+        }
     }
+
+    /// A note whose capture died while it showed as recording: the input
+    /// went away or stopped delivering audio. The recorder has already
+    /// stopped it; `stopped` holds whatever reached the file.
+    public struct CaptureLost {
+        public let stopped: Stopped
+        public let microphone: Microphone?
+    }
+
+    /// Called on the main actor when a recording note's capture dies.
+    /// `VoiceNoteSession` sets it to stop the note and tell the user.
+    public var onCaptureLost: ((CaptureLost) -> Void)?
 
     public private(set) var state: State = .idle
 
@@ -96,6 +124,12 @@ public final class VoiceRecorder {
     /// How `start()` waits between checks that the microphone is live.
     /// Injectable so tests drive the warm-up without real time passing.
     private let pause: () async -> Void
+    /// How the recording watchdog waits between checks; `nil` turns the
+    /// watchdog off (most tests, whose fakes never advance).
+    private let watchPause: (() async -> Void)?
+    /// Bytes on disk for a file, `nil` when there is none (test fakes).
+    private let fileSize: (URL) -> Int?
+    private var watchdog: Task<Void, Never>?
     private let listMicrophones: () -> [Microphone]
     private let defaults: UserDefaults
     static let preferredMicrophoneKey = "voiceNote.preferredMicrophoneID"
@@ -136,6 +170,8 @@ public final class VoiceRecorder {
          observeInterruptions: @escaping (@escaping @MainActor (AudioInterruption) -> Void) -> () -> Void = { _ in {} },
          now: @escaping () -> Date = Date.init,
          pause: @escaping () async -> Void = { try? await Task.sleep(for: VoiceRecorder.liveCheckInterval) },
+         watchPause: (() async -> Void)? = nil,
+         fileSize: @escaping (URL) -> Int? = VoiceRecorder.bytesOnDisk,
          listMicrophones: @escaping () -> [Microphone] = { [] },
          joinSegments: @escaping @Sendable ([AudioSegment], URL) throws -> Void = joinAudioSegments,
          defaults: UserDefaults = .standard) {
@@ -145,6 +181,8 @@ public final class VoiceRecorder {
         self.observeInterruptions = observeInterruptions
         self.now = now
         self.pause = pause
+        self.watchPause = watchPause
+        self.fileSize = fileSize
         self.listMicrophones = listMicrophones
         self.joinSegments = joinSegments
         self.defaults = defaults
@@ -197,7 +235,7 @@ public final class VoiceRecorder {
         }
         microphone = displayedRecorder?.microphone
         refreshMicrophoneSoon()
-        Self.logger.info("microphone: now \(self.microphone?.name ?? "unknown", privacy: .public)")
+        Self.logger.notice("microphone: now \(self.microphone?.name ?? "unknown", privacy: .public)")
     }
 
     /// Recording, on a recorder that can't move (the Mac's): a second
@@ -254,7 +292,7 @@ public final class VoiceRecorder {
         self.incoming = nil
         currentTrimStart = leadIn
         microphone = fresh.microphone
-        Self.logger.info("microphone: handed over to \(self.microphone?.name ?? "unknown", privacy: .public) leadIn=\(leadIn, format: .fixed(precision: 2))s after=\(checks) checks")
+        Self.logger.notice("microphone: handed over to \(self.microphone?.name ?? "unknown", privacy: .public) leadIn=\(leadIn, format: .fixed(precision: 2))s after=\(checks) checks")
     }
 
     /// Drops a hand-over still waiting for sound: its part holds nothing.
@@ -272,6 +310,23 @@ public final class VoiceRecorder {
     /// and a note that never starts is worse than one with a quiet lead-in.
     static let maxLiveChecks = 200
 
+    static let watchInterval: Duration = .milliseconds(500)
+    /// Watchdog checks with the file not growing before a recording note
+    /// counts as lost (about 3 s). Interrupted time doesn't count.
+    static let maxStalledChecks = 6
+    /// Watchdog checks with the clock running but the file on disk not
+    /// growing (about 10 s). Writers flush every second or so; one that
+    /// holds nothing back for this long has stopped writing.
+    static let maxUnwrittenChecks = 20
+
+    static func bytesOnDisk(_ url: URL) -> Int? {
+        (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? nil
+    }
+
+    private static func systemWatchPause() async {
+        try? await Task.sleep(for: watchInterval)
+    }
+
     public convenience init() {
         #if targetEnvironment(simulator)
         if ProcessInfo.processInfo.arguments.contains(SyntheticToneRecording.launchArgument) {
@@ -279,6 +334,7 @@ public final class VoiceRecorder {
                       makeRecorder: { SyntheticToneRecording(url: $0) },
                       setKeepScreenAwake: VoiceRecorder.setSystemKeepScreenAwake,
                       observeInterruptions: VoiceRecorder.observeSystemInterruptions,
+                      watchPause: VoiceRecorder.systemWatchPause,
                       listMicrophones: { SyntheticToneRecording.microphones })
             return
         }
@@ -287,6 +343,7 @@ public final class VoiceRecorder {
                   makeRecorder: VoiceRecorder.makeSystemRecorder,
                   setKeepScreenAwake: VoiceRecorder.setSystemKeepScreenAwake,
                   observeInterruptions: VoiceRecorder.observeSystemInterruptions,
+                  watchPause: VoiceRecorder.systemWatchPause,
                   listMicrophones: VoiceRecorder.systemMicrophones)
     }
 
@@ -383,18 +440,118 @@ public final class VoiceRecorder {
         if warmUpRefused {
             // Another app took the microphone before anything was
             // captured: there is no note, so none is left looking live.
-            Self.logger.info("live: refused, interruption ended without resume during warm-up")
+            Self.logger.notice("live: refused, interruption ended without resume during warm-up")
             cancel()
             throw RecorderError.recordFailed
         }
+        if checks >= Self.maxLiveChecks, (recorder?.elapsed ?? 0) <= 0 {
+            // The cap lets a muted microphone go live on its silence, but
+            // here nothing at all has reached the file: the input never
+            // delivered. Going live would show "Recording" over an empty
+            // file for as long as the user talks.
+            Self.logger.error("live: no audio reached the file after the warm-up, microphone=\(self.microphone?.name ?? "unknown", privacy: .public)")
+            cancel()
+            throw RecorderError.noAudio
+        }
         let started = now()
         microphone = recorder?.microphone
-        Self.logger.info("live: after=\(started.timeIntervalSince(requested), format: .fixed(precision: 2))s timedOut=\(checks >= Self.maxLiveChecks) microphone=\(self.microphone?.name ?? "unknown", privacy: .public)")
+        Self.logger.notice("live: after=\(started.timeIntervalSince(requested), format: .fixed(precision: 2))s timedOut=\(checks >= Self.maxLiveChecks) microphone=\(self.microphone?.name ?? "unknown", privacy: .public)")
         #if os(iOS)
         Self.logSessionState(AVAudioSession.sharedInstance(), at: "live")
         #endif
         self.startedAt = started
         state = .recording(start: started)
+        startWatchdog()
+    }
+
+    /// While a note records, checks that its file keeps growing. A
+    /// capture that fails, or whose file stops growing for about 3 s
+    /// outside an interruption, stops the note and reports it through
+    /// `onCaptureLost`, so the bar never keeps ticking over nothing.
+    private func startWatchdog() {
+        guard let watchPause else { return }
+        watchdog?.cancel()
+        watchdog = Task { [weak self] in
+            var lastElapsed: TimeInterval = -1
+            var stalled = 0
+            var lastBytes: Int?
+            var unwritten = 0
+            var growths = 0
+            var checks = 0
+            var watchedURL: URL?
+            while !Task.isCancelled {
+                await watchPause()
+                guard let self, !Task.isCancelled, self.isRecordingState, let recorder = self.recorder else { return }
+                if self.isInterrupted || self.pausedSince != nil || self.incoming != nil {
+                    stalled = 0
+                    lastElapsed = -1
+                    unwritten = 0
+                    lastBytes = nil
+                    growths = 0
+                    continue
+                }
+                let elapsed = recorder.elapsed
+                checks += 1
+                if self.fileURL != watchedURL {
+                    // A hand-over moved the note to a new file: its writer
+                    // has to show it writes as it goes all over again.
+                    // Its clock starts again from near zero, too.
+                    watchedURL = self.fileURL
+                    lastBytes = nil
+                    unwritten = 0
+                    growths = 0
+                    lastElapsed = -1
+                    stalled = 0
+                }
+                if let url = self.fileURL, let bytes = self.fileSize(url) {
+                    if checks % 10 == 0 {
+                        Self.logger.notice("watch: elapsed=\(elapsed, format: .fixed(precision: 1))s bytes=\(bytes)")
+                    }
+                    if let lastBytes, bytes <= lastBytes {
+                        unwritten += 1
+                    } else {
+                        if lastBytes != nil { growths += 1 }
+                        unwritten = 0
+                    }
+                    lastBytes = bytes
+                    // Only a writer seen writing as it goes: one that holds
+                    // the audio until Stop would look stalled all along.
+                    if growths >= 2, unwritten >= Self.maxUnwrittenChecks {
+                        self.loseCapture(reason: "the file stayed at \(bytes) bytes while the clock ran to \(String(format: "%.1f", elapsed))s")
+                        return
+                    }
+                }
+                if recorder.hasFailed {
+                    self.loseCapture(reason: "the recorder failed")
+                    return
+                }
+                if elapsed > lastElapsed {
+                    stalled = 0
+                    lastElapsed = elapsed
+                    continue
+                }
+                stalled += 1
+                if stalled >= Self.maxStalledChecks {
+                    self.loseCapture(reason: "the file stopped growing at \(String(format: "%.1f", elapsed))s")
+                    return
+                }
+            }
+        }
+    }
+
+    private func loseCapture(reason: String) {
+        let microphone = microphone
+        Self.logger.error("lost: \(reason, privacy: .public) microphone=\(microphone?.name ?? "unknown", privacy: .public)")
+        watchdog = nil
+        guard let stopped = stop() else { return }
+        if let onCaptureLost {
+            onCaptureLost(CaptureLost(stopped: stopped, microphone: microphone))
+        } else {
+            Task { @MainActor in
+                await stopped.finished()
+                try? FileManager.default.removeItem(at: stopped.url)
+            }
+        }
     }
 
     /// A stopped note: its file and its elapsed duration. The file may
@@ -405,9 +562,9 @@ public final class VoiceRecorder {
     public struct Stopped {
         public let url: URL
         public let duration: TimeInterval
-        private let waitForFile: @MainActor () async -> Void
+        private let waitForFile: @MainActor () async -> Bool
 
-        init(url: URL, duration: TimeInterval, waitForFile: @escaping @MainActor () async -> Void) {
+        init(url: URL, duration: TimeInterval, waitForFile: @escaping @MainActor () async -> Bool) {
             self.url = url
             self.duration = duration
             self.waitForFile = waitForFile
@@ -415,7 +572,13 @@ public final class VoiceRecorder {
 
         /// Returns once the file is complete on disk.
         @MainActor
-        public func finished() async { await waitForFile() }
+        public func finished() async { _ = await waitForFile() }
+
+        /// Returns once the file is complete on disk: `false` when a
+        /// recorder reported an error finishing it (an encoder error, or
+        /// a finish it didn't ask for), so the file may be incomplete.
+        @MainActor
+        public func finishedCleanly() async -> Bool { await waitForFile() }
     }
 
     /// Stops recording and hands back the note's file plus its elapsed
@@ -424,6 +587,8 @@ public final class VoiceRecorder {
     /// recording.
     public func stop() -> Stopped? {
         guard case .recording = state, let recorder, let currentURL = fileURL, let startedAt else { return nil }
+        watchdog?.cancel()
+        watchdog = nil
         // A microphone still coming up has recorded only silence.
         abandonHandover()
         recorder.stop()
@@ -434,7 +599,7 @@ public final class VoiceRecorder {
         let stoppedAt = now()
         let stillPaused = pausedSince.map { stoppedAt.timeIntervalSince($0) } ?? 0
         let duration = stoppedAt.timeIntervalSince(startedAt) - pausedTotal - stillPaused
-        Self.logger.info("stop: duration=\(duration, format: .fixed(precision: 2))s paused=\(self.pausedTotal + stillPaused, format: .fixed(precision: 2))s parts=\(parts.count)")
+        Self.logger.notice("stop: duration=\(duration, format: .fixed(precision: 2))s paused=\(self.pausedTotal + stillPaused, format: .fixed(precision: 2))s parts=\(parts.count)")
         #if os(iOS)
         Self.logSessionState(AVAudioSession.sharedInstance(), at: "stop")
         #endif
@@ -453,9 +618,13 @@ public final class VoiceRecorder {
             for part in parts { await part.recorder.finished() }
             if parts.count > 1 {
                 await Self.join(parts.map(\.segment), into: noteURL, using: join)
+            } else {
+                await Self.rewriteForOlderDecoders(noteURL, using: join)
             }
             let bytes = (try? FileManager.default.attributesOfItem(atPath: noteURL.path)[.size] as? Int) ?? -1
-            Self.logger.info("finished: after=\(Date().timeIntervalSince(began), format: .fixed(precision: 3))s bytes=\(bytes)")
+            let clean = !parts.contains { $0.recorder.hasFailed }
+            Self.logger.notice("finished: after=\(Date().timeIntervalSince(began), format: .fixed(precision: 3))s bytes=\(bytes) clean=\(clean)")
+            return clean
         }
     }
 
@@ -480,10 +649,36 @@ public final class VoiceRecorder {
         }.value
     }
 
+    /// A file whose channel layout is in a version-1 `chnl` box (written
+    /// by recent macOS capture) can't be opened by older ffmpeg builds,
+    /// so the server can't transcribe it. Re-encoding it through
+    /// `AVAudioFile` writes a plain layout instead. Off the main thread;
+    /// a failed rewrite keeps the original.
+    private static func rewriteForOlderDecoders(_ url: URL,
+                                                using join: @escaping @Sendable ([AudioSegment], URL) throws -> Void) async {
+        let logger = Self.logger
+        await Task.detached(priority: .userInitiated) {
+            guard let data = try? Data(contentsOf: url, options: .mappedIfSafe),
+                  MP4Boxes.hasVersionedChannelLayout(data) else { return }
+            let rewritten = url.deletingLastPathComponent()
+                .appendingPathComponent("voice-note-\(UUID().uuidString).m4a")
+            do {
+                try join([AudioSegment(url: url, trimStart: 0)], rewritten)
+                _ = try FileManager.default.replaceItemAt(url, withItemAt: rewritten)
+                logger.notice("finished: rewrote a version-1 chnl box for older decoders")
+            } catch {
+                try? FileManager.default.removeItem(at: rewritten)
+                logger.error("finished: couldn't rewrite the chnl box: \(error.localizedDescription, privacy: .public)")
+            }
+        }.value
+    }
+
     /// Aborts recording, discards the temp file, and returns to `.idle`.
     /// Also invalidates any start() suspended at its permission prompt.
     public func cancel() {
         cancelGeneration &+= 1
+        watchdog?.cancel()
+        watchdog = nil
         abandonHandover()
         if let recorder, let fileURL {
             discard(recorder, file: fileURL)
@@ -528,7 +723,7 @@ public final class VoiceRecorder {
     /// paused, and a later `stop()` still delivers what was captured. A
     /// failed resume is left alone for the same reason.
     private func handle(interruption: AudioInterruption) {
-        Self.logger.info("interruption: \(String(describing: interruption), privacy: .public) state=\(String(describing: self.state), privacy: .public) wasInterrupted=\(self.isInterrupted)")
+        Self.logger.notice("interruption: \(String(describing: interruption), privacy: .public) state=\(String(describing: self.state), privacy: .public) wasInterrupted=\(self.isInterrupted)")
         let warmingUp = state == .starting
         guard warmingUp || isRecordingState, let recorder else { return }
         switch interruption {
@@ -595,7 +790,7 @@ public final class VoiceRecorder {
             .map { "\($0.portType.rawValue):\($0.portName)" }
             .joined(separator: ",")
         let outputs = session.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
-        logger.info("\(milestone, privacy: .public): inputs=[\(inputs, privacy: .public)] outputs=[\(outputs, privacy: .public)] inputAvailable=\(session.isInputAvailable) gain=\(session.inputGain, format: .fixed(precision: 2)) channels=\(session.inputNumberOfChannels) sampleRate=\(session.sampleRate, format: .fixed(precision: 0)) permission=\(AVAudioApplication.shared.recordPermission.rawValue) otherAudio=\(session.isOtherAudioPlaying)")
+        logger.notice("\(milestone, privacy: .public): inputs=[\(inputs, privacy: .public)] outputs=[\(outputs, privacy: .public)] inputAvailable=\(session.isInputAvailable) gain=\(session.inputGain, format: .fixed(precision: 2)) channels=\(session.inputNumberOfChannels) sampleRate=\(session.sampleRate, format: .fixed(precision: 0)) permission=\(AVAudioApplication.shared.recordPermission.rawValue) otherAudio=\(session.isOtherAudioPlaying)")
     }
     #endif
 
@@ -669,11 +864,7 @@ public final class VoiceRecorder {
             AVEncoderBitRateKey: 64_000,
             AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
         ]
-        let recorder = try AVAudioRecorder(url: url, settings: settings)
-        // Metering is how `isCapturingAudio` tells real input from the
-        // digital silence an input still coming up delivers.
-        recorder.isMeteringEnabled = true
-        return recorder
+        return try SystemAudioRecorder(url: url, settings: settings)
     }
 
     /// Every input a note can record from right now.
@@ -713,7 +904,7 @@ protocol AudioRecording: AnyObject {
 }
 
 extension AudioRecording {
-    /// `AVAudioRecorder.stop()` finishes the file before it returns.
+    /// Fakes have nothing to finish.
     func finished() async {}
     var isCapturingAudio: Bool { true }
     var hasFailed: Bool { false }
@@ -723,7 +914,60 @@ extension AudioRecording {
     var elapsed: TimeInterval { 0 }
 }
 
-extension AVAudioRecorder: AudioRecording {
+/// `AVAudioRecorder` behind the `AudioRecording` seam, with its delegate:
+/// `stop()` may hand the file's last write to the encoder in the
+/// background, so `finished()` waits for the recorder to say it is done
+/// before anyone reads the file. An encoder error fails the recording.
+final class SystemAudioRecorder: NSObject, AudioRecording, AVAudioRecorderDelegate, @unchecked Sendable {
+    private static let logger = os.Logger(subsystem: "chat.matron", category: "voice-recorder")
+    let recorder: AVAudioRecorder
+    private let finish = RecordingFinishSignal()
+    private let lock = NSLock()
+    private var _failed = false
+    private var stopped = false
+
+    init(url: URL, settings: [String: Any]) throws {
+        recorder = try AVAudioRecorder(url: url, settings: settings)
+        super.init()
+        recorder.delegate = self
+        // Metering is how `isCapturingAudio` tells real input from the
+        // digital silence an input still coming up delivers.
+        recorder.isMeteringEnabled = true
+    }
+
+    @discardableResult func record() -> Bool { recorder.record() }
+
+    func stop() {
+        guard !stopped else { return }
+        stopped = true
+        let elapsed = recorder.currentTime
+        recorder.stop()
+        Self.logger.notice("recorder: stop at \(elapsed, format: .fixed(precision: 2))s")
+    }
+
+    /// Waits for `audioRecorderDidFinishRecording`, up to 3 s.
+    func finished() async {
+        guard stopped else { return }
+        if await !finish.wait(timeout: 3) {
+            Self.logger.error("recorder: no finish from AVAudioRecorder within 3 s")
+        }
+    }
+
+    var hasFailed: Bool { lock.withLock { _failed } }
+    var elapsed: TimeInterval { recorder.currentTime }
+
+    /// Live once the file has advanced and the meter reads above digital
+    /// silence. Any real microphone has a noise floor far above
+    /// `liveFloor`; an input that is still switching on delivers exact
+    /// zeros (the meter's −160 dB floor) or nothing at all.
+    var isCapturingAudio: Bool {
+        guard recorder.currentTime > 0 else { return false }
+        recorder.updateMeters()
+        return recorder.peakPower(forChannel: 0) > Self.liveFloor
+    }
+
+    static let liveFloor: Float = -120
+
     #if os(iOS)
     /// The input the shared audio session is routed from.
     var microphone: Microphone? {
@@ -741,8 +985,7 @@ extension AVAudioRecorder: AudioRecording {
         do {
             try session.setPreferredInput(port)
         } catch {
-            os.Logger(subsystem: "chat.matron", category: "voice-recorder")
-                .error("microphone: setPreferredInput failed: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("microphone: setPreferredInput failed: \(error.localizedDescription, privacy: .public)")
         }
     }
     #else
@@ -757,19 +1000,23 @@ extension AVAudioRecorder: AudioRecording {
     var canSwitchMicrophoneLive: Bool { false }
     #endif
 
-    var elapsed: TimeInterval { currentTime }
+    // MARK: AVAudioRecorderDelegate
 
-    /// Live once the file has advanced and the meter reads above digital
-    /// silence. Any real microphone has a noise floor far above
-    /// `liveFloor`; an input that is still switching on delivers exact
-    /// zeros (the meter's −160 dB floor) or nothing at all.
-    var isCapturingAudio: Bool {
-        guard currentTime > 0 else { return false }
-        updateMeters()
-        return peakPower(forChannel: 0) > Self.liveFloor
+    func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
+        let bytes = (try? FileManager.default.attributesOfItem(atPath: recorder.url.path)[.size] as? Int) ?? -1
+        if flag {
+            Self.logger.notice("recorder: finished bytes=\(bytes)")
+        } else {
+            Self.logger.error("recorder: finished unsuccessfully bytes=\(bytes) requested=\(self.stopped)")
+        }
+        if !flag || !stopped { lock.withLock { _failed = true } }
+        finish.signal()
     }
 
-    static let liveFloor: Float = -120
+    func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
+        Self.logger.error("recorder: encode error: \(error?.localizedDescription ?? "unknown", privacy: .public)")
+        lock.withLock { _failed = true }
+    }
 }
 
 #if targetEnvironment(simulator)
@@ -788,6 +1035,9 @@ final class SyntheticToneRecording: AudioRecording {
 
     private let url: URL
     private var startedAt: Date?
+
+    /// The tone runs as long as the note, so the watchdog sees it grow.
+    var elapsed: TimeInterval { startedAt.map { Date().timeIntervalSince($0) } ?? 0 }
 
     init(url: URL) {
         self.url = url

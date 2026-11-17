@@ -12,8 +12,8 @@ import SwiftUI
 final class VoiceNoteRecordingPanel {
     private var panel: NSPanel?
 
-    func show(start: Date, hotkey: VoiceNoteHotkeyKey) {
-        let content = VoiceNoteRecordingIndicator(start: start, hotkey: hotkey)
+    func show(start: Date, hotkey: VoiceNoteHotkeyKey, microphone: String? = nil) {
+        let content = VoiceNoteRecordingIndicator(start: start, hotkey: hotkey, microphone: microphone)
         let hosting = NSHostingView(rootView: content)
         hosting.frame.size = hosting.fittingSize
         let panel = self.panel ?? Self.makePanel()
@@ -57,20 +57,29 @@ final class VoiceNoteRecordingPanel {
 struct VoiceNoteRecordingIndicator: View {
     let start: Date
     let hotkey: VoiceNoteHotkeyKey
+    var microphone: String?
 
     var body: some View {
-        HStack(spacing: 10) {
-            Circle()
-                .fill(Color.red)
-                .frame(width: 10, height: 10)
-            Text("Recording")
-                .font(.headline)
-            Text(start, style: .timer)
-                .font(.headline.monospacedDigit())
-            if hotkey != .off {
-                Text("\(hotkey.label) to send")
-                    .font(.subheadline)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(Color.red)
+                    .frame(width: 10, height: 10)
+                Text("Recording")
+                    .font(.headline)
+                Text(start, style: .timer)
+                    .font(.headline.monospacedDigit())
+                if hotkey != .off {
+                    Text("\(hotkey.label) to send")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if let microphone {
+                Label("Recording from: \(microphone)", systemImage: "mic.fill")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
         }
         .padding(.horizontal, 14)

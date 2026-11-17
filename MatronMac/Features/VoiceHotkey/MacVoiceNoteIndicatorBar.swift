@@ -19,11 +19,13 @@ struct MacVoiceNoteIndicatorBar: ViewModifier {
                 VStack(spacing: 6) {
                     if session.showsIndicator, let target = session.target, let start = session.recordingStart {
                         VoiceNoteIndicator(mode: .recording(start: start), title: target.title,
+                                       microphone: session.recorder.microphone?.name,
                                            onOpen: { onOpen(target.kind) },
                                            onCancel: { session.cancel() },
                                            onSend: { session.stopAndSend() })
                     } else if session.showsIndicator, let target = session.startingTarget {
                         VoiceNoteIndicator(mode: .starting, title: target.title,
+                                       microphone: session.recorder.microphone?.name,
                                            onOpen: { onOpen(target.kind) },
                                            onCancel: { session.cancel() }, onSend: {})
                     } else if let target = session.sendingTarget {

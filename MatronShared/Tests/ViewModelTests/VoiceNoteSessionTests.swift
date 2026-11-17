@@ -1,4 +1,6 @@
 import XCTest
+import AVFoundation
+import MatronModels
 @testable import MatronViewModels
 
 private final class FakeRecording: AudioRecording {
@@ -66,7 +68,7 @@ final class VoiceNoteSessionTests: XCTestCase {
         let recorder = VoiceRecorder(requestPermission: permission,
                                      makeRecorder: { _ in FakeRecording() },
                                      observeInterruptions: interruptions.source)
-        return VoiceNoteSession(recorder: recorder)
+        return VoiceNoteSession(recorder: recorder, measureAudio: { _ in 5 })
     }
 
     /// Records what each delivery received, answering with `result`.
@@ -107,7 +109,7 @@ final class VoiceNoteSessionTests: XCTestCase {
                                          indicator.append(session.showsIndicator)
                                          fake.capturing = true
                                      })
-        session = VoiceNoteSession(recorder: recorder)
+        session = VoiceNoteSession(recorder: recorder, measureAudio: { _ in 5 })
         try await session.start(chatA) { _, _ in nil }
 
         XCTAssertEqual(seen.count, 1)
@@ -154,7 +156,7 @@ final class VoiceNoteSessionTests: XCTestCase {
         let fake = LateFinishingRecording()
         let recorder = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in fake },
                                      observeInterruptions: interruptions.source)
-        let session = VoiceNoteSession(recorder: recorder)
+        let session = VoiceNoteSession(recorder: recorder, measureAudio: { _ in 5 })
         let inbox = Inbox()
         try await session.start(chatA, deliver: inbox.deliver)
 
@@ -431,7 +433,7 @@ final class VoiceNoteSessionTests: XCTestCase {
         let fake = LateFinishingRecording()
         let recorder = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in fake },
                                      observeInterruptions: interruptions.source)
-        let session = VoiceNoteSession(recorder: recorder)
+        let session = VoiceNoteSession(recorder: recorder, measureAudio: { _ in 5 })
         let inbox = Inbox()
         try await session.start(chatA, deliver: inbox.deliver)
         let task = try XCTUnwrap(session.stopAndSend())
@@ -537,4 +539,181 @@ final class VoiceNoteSessionTests: XCTestCase {
         XCTAssertTrue(session.isRecording(for: chatA.kind))
         session.cancel()
     }
+
+    // MARK: Empty recordings
+
+    /// A note with under a second of audio in its file is never sent.
+    func test_aNoteWithUnderASecondOfAudio_isRefused() async throws {
+        let recorder = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in FakeRecording() },
+                                     observeInterruptions: interruptions.source)
+        let session = VoiceNoteSession(recorder: recorder, measureAudio: { _ in 0.2 })
+        let inbox = Inbox()
+        try await session.start(chatA, deliver: inbox.deliver)
+        await session.stopAndSend()?.value
+
+        XCTAssertTrue(inbox.delivered.isEmpty, "nothing reaches the upload")
+        let failure = try XCTUnwrap(session.failures.first)
+        XCTAssertEqual(failure.message, "Nothing was recorded, try again")
+        XCTAssertFalse(failure.canRetry)
+    }
+
+    /// An unreadable file counts as empty too.
+    func test_aNoteWhoseFileIsNotAudio_isRefused() async throws {
+        let recorder = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in FakeRecording() },
+                                     observeInterruptions: interruptions.source)
+        let session = VoiceNoteSession(recorder: recorder)
+        let inbox = Inbox()
+        try await session.start(chatA, deliver: inbox.deliver)
+        await session.stopAndSend()?.value
+        XCTAssertTrue(inbox.delivered.isEmpty)
+        XCTAssertEqual(session.failures.first?.message, "Nothing was recorded, try again")
+    }
+
+    func test_audioDuration_readsTheFile() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("tone-\(UUID()).m4a")
+        defer { try? FileManager.default.removeItem(at: url) }
+        do {
+            let file = try AVAudioFile(forWriting: url, settings: [AVFormatIDKey: kAudioFormatMPEG4AAC,
+                                                                   AVSampleRateKey: 44_100.0,
+                                                                   AVNumberOfChannelsKey: 1])
+            let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 88_200))
+            buffer.frameLength = buffer.frameCapacity
+            try file.write(from: buffer)
+        }
+        let measured = await VoiceNoteSession.audioDuration(of: url)
+        let seconds = try XCTUnwrap(measured)
+        XCTAssertEqual(seconds, 2, accuracy: 0.1)
+    }
+
+    /// The capture died mid-note: the note stops, and what was recorded
+    /// waits in a failure row whose Retry sends it.
+    func test_captureLost_keepsWhatWasRecordedForRetry() async throws {
+        let fake = StallingRecording()
+        var stall = false
+        let recorder = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in fake },
+                                     pause: {}, watchPause: {
+                                         await Task.yield()
+                                         if !stall { fake.seconds += 1 }
+                                         if fake.seconds >= 4 { stall = true }
+                                     })
+        let session = VoiceNoteSession(recorder: recorder, measureAudio: { _ in 4 })
+        let inbox = Inbox()
+        try await session.start(chatA, deliver: inbox.deliver)
+        for _ in 0..<5_000 where session.failures.isEmpty { await Task.yield() }
+
+        XCTAssertFalse(session.isRecording)
+        XCTAssertNil(session.target)
+        let failure = try XCTUnwrap(session.failures.first)
+        XCTAssertTrue(failure.canRetry)
+        XCTAssertTrue(failure.message.hasPrefix("Desk mic stopped at 0:04."), failure.message)
+        XCTAssertTrue(inbox.delivered.isEmpty, "not sent without the user asking")
+        await session.retry(failure.id)?.value
+        XCTAssertEqual(inbox.delivered.count, 1)
+    }
+
+    func test_captureLost_withNothingRecorded_onlyReportsIt() async throws {
+        let fake = StallingRecording()
+        let recorder = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in fake },
+                                     pause: {}, watchPause: { await Task.yield() })
+        let session = VoiceNoteSession(recorder: recorder, measureAudio: { _ in 0 })
+        try await session.start(chatA) { _, _ in nil }
+        for _ in 0..<5_000 where session.failures.isEmpty { await Task.yield() }
+
+        let failure = try XCTUnwrap(session.failures.first)
+        XCTAssertFalse(failure.canRetry)
+        XCTAssertTrue(failure.message.hasSuffix("Nothing was recorded, try again."), failure.message)
+    }
+
+    /// The writer saved much less than the clock showed: the note isn't
+    /// sent as if it were whole. The row says so, and Retry sends what
+    /// was saved.
+    func test_aFileMuchShorterThanTheClock_waitsThenAsks() async throws {
+        var now = Date(timeIntervalSince1970: 0)
+        let recorder = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in FakeRecording() },
+                                     observeInterruptions: interruptions.source, now: { now })
+        let measured = Counter()
+        let session = VoiceNoteSession(recorder: recorder,
+                                       measureAudio: { url in
+                                           // Stands in for the recorder's short file.
+                                           try? Data("AUDIO".utf8).write(to: url)
+                                           await measured.bump()
+                                           return 3
+                                       },
+                                       settle: {})
+        let inbox = Inbox()
+        try await session.start(chatA, deliver: inbox.deliver)
+        now += 23
+        await session.stopAndSend()?.value
+
+        let checks = await measured.value
+        XCTAssertEqual(checks, 1 + VoiceNoteSession.shortFileRechecks, "measured again while the file might finish")
+        XCTAssertTrue(inbox.delivered.isEmpty)
+        let failure = try XCTUnwrap(session.failures.first)
+        XCTAssertEqual(failure.message, "Only 0:03 of 0:23 was saved. Retry sends what was saved.")
+        XCTAssertTrue(failure.canRetry)
+        await session.retry(failure.id)?.value
+        XCTAssertEqual(inbox.delivered.count, 1, "Retry sends it as it is")
+        XCTAssertTrue(session.failures.isEmpty)
+    }
+
+    /// A file that finishes while the session waits is sent normally.
+    func test_aFileThatCatchesUp_isSent() async throws {
+        var now = Date(timeIntervalSince1970: 0)
+        let recorder = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in FakeRecording() },
+                                     observeInterruptions: interruptions.source, now: { now })
+        let measured = Counter()
+        let session = VoiceNoteSession(recorder: recorder,
+                                       measureAudio: { _ in await measured.bump() >= 3 ? 23 : 3 },
+                                       settle: {})
+        let inbox = Inbox()
+        try await session.start(chatA, deliver: inbox.deliver)
+        now += 23
+        await session.stopAndSend()?.value
+        XCTAssertEqual(inbox.delivered.count, 1)
+        XCTAssertTrue(session.failures.isEmpty)
+    }
+}
+
+extension VoiceNoteSessionTests {
+    /// The recorder reported an error finishing the file: the note isn't
+    /// sent as if it were whole; Retry sends what was saved.
+    func test_aFileTheRecorderFailedToFinish_waitsForTheUser() async throws {
+        let fake = BrokenFinishRecording()
+        let recorder = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in fake },
+                                     observeInterruptions: interruptions.source)
+        let session = VoiceNoteSession(recorder: recorder, measureAudio: { url in
+            try? Data("AUDIO".utf8).write(to: url)
+            return 5
+        })
+        let inbox = Inbox()
+        try await session.start(chatA, deliver: inbox.deliver)
+        await session.stopAndSend()?.value
+
+        XCTAssertTrue(inbox.delivered.isEmpty)
+        let failure = try XCTUnwrap(session.failures.first)
+        XCTAssertEqual(failure.message, VoiceNoteSession.brokenMessage)
+        XCTAssertTrue(failure.canRetry)
+        await session.retry(failure.id)?.value
+        XCTAssertEqual(inbox.delivered.count, 1)
+    }
+}
+
+private final class BrokenFinishRecording: AudioRecording {
+    private var stopped = false
+    func record() -> Bool { true }
+    func stop() { stopped = true }
+    var hasFailed: Bool { stopped }
+}
+
+private actor Counter {
+    private(set) var value = 0
+    @discardableResult func bump() -> Int { value += 1; return value }
+}
+
+private final class StallingRecording: AudioRecording {
+    var seconds: TimeInterval = 1
+    func record() -> Bool { true }
+    func stop() {}
+    var elapsed: TimeInterval { seconds }
+    var microphone: Microphone? { Microphone(id: "desk", name: "Desk mic") }
 }

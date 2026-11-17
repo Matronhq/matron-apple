@@ -977,7 +977,13 @@ struct MacItemDetailHost: View {
     }
 
     private func voiceRecordingBar(start: Date?) -> some View {
-        MacItemVoiceNoteBar(start: start, onCancel: { voiceNotes.cancel() })
+        MacItemVoiceNoteBar(start: start, onCancel: { voiceNotes.cancel() }) {
+            MicrophoneMenu(current: voiceNotes.recorder.microphone,
+                           available: voiceNotes.recorder.availableMicrophones(),
+                           preferredID: voiceNotes.recorder.preferredMicrophoneID,
+                           defaultTitle: "System default",
+                           onSelect: { voiceNotes.recorder.selectMicrophone($0) })
+        }
     }
 
     /// C2/I9: coarse download-in-progress affordance — see the doc comment
@@ -997,9 +1003,11 @@ struct MacItemDetailHost: View {
 /// Cancel. With no `start` the microphone is still coming up. No send of its
 /// own: the composer's send sends the note with the text, so there is one
 /// send rather than two that did different things.
-struct MacItemVoiceNoteBar: View {
+struct MacItemVoiceNoteBar<MicrophonePicker: View>: View {
     let start: Date?
     let onCancel: () -> Void
+    /// Names the input the note records from, and lets the user pick another.
+    @ViewBuilder let microphone: () -> MicrophonePicker
 
     var body: some View {
         HStack(spacing: 12) {
@@ -1009,6 +1017,7 @@ struct MacItemVoiceNoteBar: View {
             } else {
                 Text("Starting microphone…").foregroundStyle(.secondary)
             }
+            microphone()
             Spacer()
             Button("Cancel", action: onCancel)
                 .buttonStyle(.plain)

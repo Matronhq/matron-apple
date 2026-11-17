@@ -300,10 +300,17 @@ struct MatronMacApp: App {
             }
             .onChange(of: voiceNotes.recordingStart) { _, start in
                 if let start {
-                    voicePanel.show(start: start, hotkey: VoiceNoteHotkeyKey(rawValue: voiceHotkeyRaw) ?? .default)
+                    voicePanel.show(start: start, hotkey: VoiceNoteHotkeyKey(rawValue: voiceHotkeyRaw) ?? .default,
+                                    microphone: voiceNotes.recorder.microphone?.name)
                 } else {
                     voicePanel.hide()
                 }
+            }
+            // A microphone picked mid-note: the panel names the new one.
+            .onChange(of: voiceNotes.recorder.microphone?.name) { _, name in
+                guard let start = voiceNotes.recordingStart else { return }
+                voicePanel.show(start: start, hotkey: VoiceNoteHotkeyKey(rawValue: voiceHotkeyRaw) ?? .default,
+                                microphone: name)
             }
             // Gated on a live session: pre-bootstrap and the sign-in view
             // hold nothing worth hiding, and a cold-launch lock would

@@ -179,6 +179,7 @@ final class CaptureSessionRecording: NSObject, AudioRecording, AVCaptureFileOutp
     func fileOutput(_ output: AVCaptureFileOutput, didStartRecordingTo fileURL: URL,
                     from connections: [AVCaptureConnection]) {
         locked { _recordingStarted = true }
+        Self.logger.notice("capture: started writing")
     }
 
     func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo outputFileURL: URL,
@@ -190,10 +191,14 @@ final class CaptureSessionRecording: NSObject, AudioRecording, AVCaptureFileOutp
             if !_stopRequested { _failed = true }
             return !_stopRequested
         }
+        let bytes = (try? FileManager.default.attributesOfItem(atPath: outputFileURL.path)[.size] as? Int) ?? -1
+        let seconds = output.recordedDuration.seconds
         if let error {
-            Self.logger.error("capture: finished with \(error.localizedDescription, privacy: .public) unexpected=\(unexpected)")
+            Self.logger.error("capture: finished with \(error.localizedDescription, privacy: .public) unexpected=\(unexpected) recorded=\(seconds, format: .fixed(precision: 2))s bytes=\(bytes)")
         } else if unexpected {
-            Self.logger.error("capture: stopped on its own")
+            Self.logger.error("capture: stopped on its own recorded=\(seconds, format: .fixed(precision: 2))s bytes=\(bytes)")
+        } else {
+            Self.logger.notice("capture: finished recorded=\(seconds, format: .fixed(precision: 2))s bytes=\(bytes)")
         }
         if !unexpected { queue.async { [session] in session.stopRunning() } }
         fileFinished.signal()

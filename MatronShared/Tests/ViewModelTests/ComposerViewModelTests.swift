@@ -671,7 +671,7 @@ final class ComposerViewModelTests: XCTestCase {
         let session = VoiceNoteSession(recorder: VoiceRecorder(
             requestPermission: { true },
             makeRecorder: { _ in Silent() },
-            observeInterruptions: { _ in {} }))
+            observeInterruptions: { _ in {} }), measureAudio: { _ in 5 })
         let fake = FakeTimelineService()
         fake.nextSendError = NSError(domain: "test", code: 1)
         let vm = ComposerViewModel(roomID: "!test:s", timeline: fake, commands: [])
@@ -704,7 +704,7 @@ final class ComposerViewModelTests: XCTestCase {
         let session = VoiceNoteSession(recorder: VoiceRecorder(
             requestPermission: { true },
             makeRecorder: { _ in Silent() },
-            observeInterruptions: { _ in {} }))
+            observeInterruptions: { _ in {} }), measureAudio: { _ in 5 })
         let fake = FakeTimelineService()
         let vm = ComposerViewModel(roomID: "!test:s", timeline: fake, commands: [])
         vm.input = "typed"
