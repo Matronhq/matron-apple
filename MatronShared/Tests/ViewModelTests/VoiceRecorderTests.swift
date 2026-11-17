@@ -650,6 +650,39 @@ final class VoiceRecorderTests: XCTestCase {
         XCTAssertNotNil(rec.stop())
     }
 
+    /// After a hand-over the live recorder's clock starts near zero:
+    /// that is a new file growing, not a stall.
+    @MainActor
+    func test_recording_afterAHandover_isNotTakenForAStall() async throws {
+        let old = FakeAudioRecorder()
+        old.canSwitchMicrophoneLive = false
+        old.elapsed = 20
+        let fresh = FakeAudioRecorder()
+        var made = 0
+        var checks = 0
+        var lost: [VoiceRecorder.CaptureLost] = []
+        let rec = VoiceRecorder(requestPermission: { true },
+                                makeRecorder: { _ in made += 1; return made == 1 ? old : fresh },
+                                pause: {},
+                                watchPause: {
+                                    await Task.yield()
+                                    checks += 1
+                                    old.elapsed += 0.5
+                                    fresh.elapsed += 0.5
+                                })
+        rec.onCaptureLost = { lost.append($0) }
+        try await rec.start()
+        // The watchdog has seen the old file's clock before the switch.
+        await waitUntil { checks >= 3 }
+        rec.selectMicrophone("usb")
+        await waitUntil { checks > VoiceRecorder.maxStalledChecks * 4 }
+        XCTAssertGreaterThan(checks, VoiceRecorder.maxStalledChecks * 4)
+        XCTAssertEqual(made, 2, "the note was handed over")
+        XCTAssertTrue(lost.isEmpty, "a growing new file is not a stall")
+        guard case .recording = rec.state else { return XCTFail("expected .recording") }
+        XCTAssertNotNil(rec.stop())
+    }
+
     // MARK: Files older decoders reject
 
     func test_versionedChannelLayout_isFoundInsideMoov() {

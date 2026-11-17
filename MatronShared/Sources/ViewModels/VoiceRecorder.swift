@@ -495,10 +495,13 @@ public final class VoiceRecorder {
                 if self.fileURL != watchedURL {
                     // A hand-over moved the note to a new file: its writer
                     // has to show it writes as it goes all over again.
+                    // Its clock starts again from near zero, too.
                     watchedURL = self.fileURL
                     lastBytes = nil
                     unwritten = 0
                     growths = 0
+                    lastElapsed = -1
+                    stalled = 0
                 }
                 if let url = self.fileURL, let bytes = self.fileSize(url) {
                     if checks % 10 == 0 {
