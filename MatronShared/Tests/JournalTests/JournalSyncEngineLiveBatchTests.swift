@@ -1,5 +1,6 @@
 import XCTest
 import Foundation
+import os
 import MatronModels
 @testable import MatronJournal
 
@@ -94,6 +95,60 @@ final class JournalSyncEngineLiveBatchTests: XCTestCase {
         let last = Int64(1 + JournalSyncEngine.liveBatchMax)
         for seq in 2...last { socket.serve(line(seq)) }
         try await until("the full group", timeout: .milliseconds(800)) { store.cursor == last }
+        await engine.endSync()
+    }
+
+    func testTheForYouCursorFrameLandsWhatWasWaitingBeforeMovingTheCursor() async throws {
+        let socket = FakeWebSocketConnection()
+        let store = try seededStore()
+        try store.markForYouStart()
+        socket.serve(#"{"kind":"control","op":"hello_ok","seq":2,"sync":"for_you"}"#)
+        // The replay reaches the hello's head, then carries one more frame
+        // the bridge wrote meanwhile, then names a head past both.
+        socket.serve(line(2))
+        socket.serve(line(5))
+        socket.serve(#"{"kind":"control","op":"cursor","seq":7}"#)
+        let engine = JournalSyncEngine(api: JournalAPI(serverURL: URL(string: "https://x")!), store: store,
+                                       connector: FakeConnector([socket]), token: "t", ownSender: "user:alice",
+                                       search: nil, backoffBaseSeconds: 0.01, syncScope: .forYou)
+        await engine.beginSync()
+        try await until("the cursor frame") { store.cursor == 7 }
+        XCTAssertEqual(try store.events(convoID: "c1").map(\.seq), [2, 5], "the waiting frame was written, not skipped")
+        await engine.endSync()
+    }
+
+    func testAFailedTimedWriteLetsNoLaterFrameMoveTheCursor() async throws {
+        let first = FakeWebSocketConnection()
+        let second = FakeWebSocketConnection()
+        let store = try seededStore()
+        // Twice: the batch, then its one-by-one salvage.
+        let failuresLeft = OSAllocatedUnfairLock(initialState: 2)
+        store.failApplyForTesting = { seq in
+            guard seq == 3 else { return false }
+            return failuresLeft.withLock { left in
+                guard left > 0 else { return false }
+                left -= 1
+                return true
+            }
+        }
+        first.serve(helloOK(1))
+        second.serve(helloOK(5))
+        let connector = FakeConnector([first, second])
+        let engine = JournalSyncEngine(api: JournalAPI(serverURL: URL(string: "https://x")!), store: store,
+                                       connector: connector, token: "t", ownSender: "user:alice",
+                                       search: nil, backoffBaseSeconds: 0.01)
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        first.serve(line(3))
+        first.serve(line(4))
+        try await until("the failed write closes the socket") { connector.connectCount == 2 }
+        XCTAssertEqual(store.cursor, 1, "nothing after the lost frame landed")
+        // The replacement socket replays from the unchanged cursor.
+        second.serve(line(3))
+        second.serve(line(4))
+        second.serve(line(5))
+        try await until("the replay lands") { store.cursor == 5 }
+        XCTAssertEqual(try store.events(convoID: "c1").map(\.seq), [3, 4, 5])
         await engine.endSync()
     }
 

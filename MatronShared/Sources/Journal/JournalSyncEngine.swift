@@ -249,6 +249,10 @@ public actor JournalSyncEngine {
     private var liveBuffer: [JournalEvent] = []
     /// Writes `liveBuffer` once its first frame has waited `liveFlushDelay`.
     private var liveFlushTask: Task<Void, Never>?
+    /// A timed write of `liveBuffer` failed. The frame loop throws it before
+    /// handling anything else, so no later frame can move the cursor past
+    /// the frames that did not land.
+    private var liveWriteFailure: (any Error)?
     /// Session starts this device asked for and has not yet seen born —
     /// the only thing that lets a live-born conversation open itself.
     private var localStartIntents: LocalStartIntents
@@ -1919,6 +1923,7 @@ public actor JournalSyncEngine {
                     return
                 }
                 liveConnection = connection
+                liveWriteFailure = nil
                 // Fetched over the last socket; this one starts behind them.
                 caughtUpViewed.removeAll()
                 // Nothing is carried until this socket's own `viewing` op.
@@ -2005,6 +2010,9 @@ public actor JournalSyncEngine {
                 var lastReplayFlush = ContinuousClock.now
                 frameLoop: for try await frame in connection.frames() {
                     lastFrameAt = ContinuousClock.now
+                    // Kept set: the teardown must not write later frames
+                    // either. The next socket clears it.
+                    if let failure = liveWriteFailure { throw failure }
                     switch frame {
                     case .journal(let event):
                         // Backlog frame mid-catch-up: buffer it. The
@@ -2250,6 +2258,12 @@ public actor JournalSyncEngine {
                             replayBuffer.removeAll(keepingCapacity: true)
                             lastReplayFlush = ContinuousClock.now
                         }
+                        // The head can be past `headSeq` (the bridge wrote
+                        // while the replay ran), so frames after `headSeq`
+                        // may be waiting as live ones: land them before the
+                        // cursor passes them, or they would read as already
+                        // written and be lost.
+                        try await flushLiveBuffer(connection: connection)
                         try store.advanceCursor(to: seq)
                         scopedReplayDone = true
                         try? await connection.send(.ack(cursor: store.cursor))
@@ -2413,10 +2427,12 @@ public actor JournalSyncEngine {
             }
             buffer.removeAll()
         }
-        // Live frames come after the replay's, so they land second.
+        // Live frames come after the replay's, so they land second, unless
+        // a timed write of earlier ones failed: then none may land, or the
+        // cursor would pass the lost ones. The journal replays them all.
         let live = liveBuffer
         dropLiveBuffer()
-        if !live.isEmpty, let applied = try? store.applyJournalBatch(live) {
+        if liveWriteFailure == nil, !live.isEmpty, let applied = try? store.applyJournalBatch(live) {
             didApplyBatch(applied)
             stats?.noteEvents(applied.count)
         }
@@ -2470,6 +2486,7 @@ public actor JournalSyncEngine {
             try await flushLiveBuffer(connection: connection)
         } catch {
             Self.logger.warning("live batch write failed, reconnecting: \(error.localizedDescription, privacy: .public)")
+            liveWriteFailure = error
             connection.close()
         }
     }
