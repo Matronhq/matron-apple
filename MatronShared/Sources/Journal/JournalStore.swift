@@ -1416,9 +1416,10 @@ public final class JournalStore: @unchecked Sendable {
 
     public func applyColdSnapshot(_ convos: [ConvoSummaryDTO], headSeq: Int64) throws {
         try metrics.measureWrite("applyColdSnapshot", on: db) { db in
+            var stored = try Self.storedConversations(db)
             for c in convos {
                 try self.throwIfSuspended()
-                try Self.upsertSummary(db, c, resetLocalState: true)
+                stored[c.id] = try Self.upsertSummary(db, c, original: stored[c.id], resetLocalState: true)
             }
             try Self.setCursor(db, headSeq)
         }
@@ -1429,17 +1430,31 @@ public final class JournalStore: @unchecked Sendable {
     /// count would stay at zero for every conversation it has not opened.
     public func refreshSummaries(_ convos: [ConvoSummaryDTO], adoptUnread: Bool = false) throws {
         try metrics.measureWrite("refreshSummaries", on: db) { db in
+            var stored = try Self.storedConversations(db)
             for c in convos {
                 try self.throwIfSuspended()
-                try Self.upsertSummary(db, c, resetLocalState: false, adoptUnread: adoptUnread)
+                stored[c.id] = try Self.upsertSummary(db, c, original: stored[c.id], resetLocalState: false,
+                                                      adoptUnread: adoptUnread)
                 afterSummaryRowForTesting?()
             }
         }
     }
 
-    private static func upsertSummary(_ db: Database, _ c: ConvoSummaryDTO, resetLocalState: Bool,
-                                      adoptUnread: Bool = false) throws {
-        if let original = try ConversationRecord.fetchOne(db, key: c.id) {
+    /// Every stored conversation by id, read in one query. A snapshot holds
+    /// every conversation the account has (tens of thousands with
+    /// sub-chats), and looking each up on its own took seconds.
+    private static func storedConversations(_ db: Database) throws -> [String: ConversationRecord] {
+        var byID: [String: ConversationRecord] = [:]
+        let cursor = try ConversationRecord.fetchCursor(db)
+        while let record = try cursor.next() { byID[record.id] = record }
+        return byID
+    }
+
+    /// `original`: the stored row for `c.id`, if there is one, from
+    /// `storedConversations` read in the same transaction.
+    private static func upsertSummary(_ db: Database, _ c: ConvoSummaryDTO, original: ConversationRecord?,
+                                      resetLocalState: Bool, adoptUnread: Bool = false) throws -> ConversationRecord {
+        if let original {
             var existing = original
             existing.title = c.title
             existing.sessionState = c.sessionState
@@ -1498,8 +1513,9 @@ public final class JournalStore: @unchecked Sendable {
             if let count = c.missionCount { existing.missionCount = count }
             if adoptUnread, let unread = c.unreadCount { existing.unreadCount = unread }
             try existing.updateChanges(db, from: original)
+            return existing
         } else {
-            try ConversationRecord(
+            let record = ConversationRecord(
                 id: c.id, title: c.title, sessionState: c.sessionState,
                 lastSeq: c.lastSeq, snippet: c.snippet, createdAt: c.createdAt,
                 lastActivityTS: c.lastTS, muted: false, hidden: false,
@@ -1515,7 +1531,9 @@ public final class JournalStore: @unchecked Sendable {
                 // (`ArchiveSync`): a snapshot fetched before an Archive the
                 // user just tapped would otherwise put the row back.
                 archivedAt: c.archivedAt
-            ).insert(db)
+            )
+            try record.insert(db)
+            return record
         }
     }
 
