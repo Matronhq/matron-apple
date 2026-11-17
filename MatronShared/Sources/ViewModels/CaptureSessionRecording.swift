@@ -142,6 +142,8 @@ final class CaptureSessionRecording: NSObject, AudioRecording, AVCaptureFileOutp
         guard locked({ _finishOwed }) else { return }
         if await !fileFinished.wait(timeout: 3) {
             Self.logger.error("capture: the file didn't finish within 3 s")
+            // Unconfirmed: the note is held for the user, not sent as whole.
+            locked { _failed = true }
             // The delegate that would have stopped the session never came.
             queue.async { [session] in session.stopRunning() }
         }
