@@ -612,6 +612,44 @@ final class VoiceRecorderTests: XCTestCase {
         XCTAssertNotNil(rec.stop())
     }
 
+    /// The clock runs but the file on disk stopped growing: the writer
+    /// has stopped, so the note stops rather than ticking on.
+    @MainActor
+    func test_recording_whoseFileStopsGrowingOnDisk_isStoppedAndReported() async throws {
+        let fake = FakeAudioRecorder()
+        var bytes = 1_000
+        var lost: [VoiceRecorder.CaptureLost] = []
+        let rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in fake }, pause: {},
+                                watchPause: {
+                                    await Task.yield()
+                                    fake.elapsed += 0.5
+                                    // Written for three checks, then stuck.
+                                    if fake.elapsed <= 1.5 { bytes += 4_000 }
+                                },
+                                fileSize: { _ in bytes })
+        rec.onCaptureLost = { lost.append($0) }
+        try await rec.start()
+        await waitUntil { !lost.isEmpty }
+        XCTAssertEqual(lost.count, 1)
+        XCTAssertEqual(rec.state, .finished)
+    }
+
+    /// A writer that holds everything until Stop never counts as stalled.
+    @MainActor
+    func test_recording_whoseWriterHoldsTheAudioUntilStop_isLeftAlone() async throws {
+        let fake = FakeAudioRecorder()
+        var checks = 0
+        var lost: [VoiceRecorder.CaptureLost] = []
+        let rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in fake }, pause: {},
+                                watchPause: { await Task.yield(); fake.elapsed += 0.5; checks += 1 },
+                                fileSize: { _ in 600 })
+        rec.onCaptureLost = { lost.append($0) }
+        try await rec.start()
+        await waitUntil { checks > VoiceRecorder.maxUnwrittenChecks * 2 }
+        XCTAssertTrue(lost.isEmpty)
+        XCTAssertNotNil(rec.stop())
+    }
+
     // MARK: Files older decoders reject
 
     func test_versionedChannelLayout_isFoundInsideMoov() {

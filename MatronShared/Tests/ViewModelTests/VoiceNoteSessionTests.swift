@@ -623,6 +623,60 @@ final class VoiceNoteSessionTests: XCTestCase {
         XCTAssertFalse(failure.canRetry)
         XCTAssertTrue(failure.message.hasSuffix("Nothing was recorded, try again."), failure.message)
     }
+
+    /// The writer saved much less than the clock showed: the note isn't
+    /// sent as if it were whole. The row says so, and Retry sends what
+    /// was saved.
+    func test_aFileMuchShorterThanTheClock_waitsThenAsks() async throws {
+        var now = Date(timeIntervalSince1970: 0)
+        let recorder = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in FakeRecording() },
+                                     observeInterruptions: interruptions.source, now: { now })
+        let measured = Counter()
+        let session = VoiceNoteSession(recorder: recorder,
+                                       measureAudio: { url in
+                                           // Stands in for the recorder's short file.
+                                           try? Data("AUDIO".utf8).write(to: url)
+                                           await measured.bump()
+                                           return 3
+                                       },
+                                       settle: {})
+        let inbox = Inbox()
+        try await session.start(chatA, deliver: inbox.deliver)
+        now += 23
+        await session.stopAndSend()?.value
+
+        let checks = await measured.value
+        XCTAssertEqual(checks, 1 + VoiceNoteSession.shortFileRechecks, "measured again while the file might finish")
+        XCTAssertTrue(inbox.delivered.isEmpty)
+        let failure = try XCTUnwrap(session.failures.first)
+        XCTAssertEqual(failure.message, "Only 0:03 of 0:23 was saved. Retry sends what was saved.")
+        XCTAssertTrue(failure.canRetry)
+        await session.retry(failure.id)?.value
+        XCTAssertEqual(inbox.delivered.count, 1, "Retry sends it as it is")
+        XCTAssertTrue(session.failures.isEmpty)
+    }
+
+    /// A file that finishes while the session waits is sent normally.
+    func test_aFileThatCatchesUp_isSent() async throws {
+        var now = Date(timeIntervalSince1970: 0)
+        let recorder = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in FakeRecording() },
+                                     observeInterruptions: interruptions.source, now: { now })
+        let measured = Counter()
+        let session = VoiceNoteSession(recorder: recorder,
+                                       measureAudio: { _ in await measured.bump() >= 3 ? 23 : 3 },
+                                       settle: {})
+        let inbox = Inbox()
+        try await session.start(chatA, deliver: inbox.deliver)
+        now += 23
+        await session.stopAndSend()?.value
+        XCTAssertEqual(inbox.delivered.count, 1)
+        XCTAssertTrue(session.failures.isEmpty)
+    }
+}
+
+private actor Counter {
+    private(set) var value = 0
+    @discardableResult func bump() -> Int { value += 1; return value }
 }
 
 private final class StallingRecording: AudioRecording {

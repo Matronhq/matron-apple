@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import AVFoundation
+import os
 
 /// The app's one voice-note recording, owned above every page (a note used to die the moment you moved to another page
 /// inside Matron, because each composer owned its own `VoiceRecorder` and
@@ -106,15 +107,35 @@ public final class VoiceNoteSession {
     /// Shortest note worth sending, in seconds of audio in the file.
     public static let minimumAudio: TimeInterval = 1
     public static let nothingRecordedMessage = "Nothing was recorded, try again"
+    private static let logger = os.Logger(subsystem: "chat.matron", category: "voice-recorder")
+    static let shortFileRechecks = 6
+
+    /// The file holds under half of a note over 2 s long.
+    static func isShort(_ audio: TimeInterval?, of duration: TimeInterval) -> Bool {
+        guard let audio else { return false }
+        return duration >= 2 && audio >= minimumAudio && audio < duration / 2
+    }
+
+    static func shortMessage(saved: TimeInterval, of duration: TimeInterval) -> String {
+        func clock(_ seconds: TimeInterval) -> String {
+            Duration.seconds(seconds.rounded()).formatted(.time(pattern: .minuteSecond))
+        }
+        return "Only \(clock(saved)) of \(clock(duration)) was saved. Retry sends what was saved."
+    }
+
+    /// How a short file waits before it is measured again (500 ms).
+    private let settle: @Sendable () async -> Void
 
     /// Seconds of audio in a finished file; `nil` when it can't be read
     /// as audio at all. Injectable so tests can send placeholder files.
     private let measureAudio: @Sendable (URL) async -> TimeInterval?
 
     public init(recorder: VoiceRecorder,
-                measureAudio: @escaping @Sendable (URL) async -> TimeInterval? = VoiceNoteSession.audioDuration) {
+                measureAudio: @escaping @Sendable (URL) async -> TimeInterval? = VoiceNoteSession.audioDuration,
+                settle: @escaping @Sendable () async -> Void = { try? await Task.sleep(for: .milliseconds(500)) }) {
         self.recorder = recorder
         self.measureAudio = measureAudio
+        self.settle = settle
         recorder.onCaptureLost = { [weak self] lost in self?.captureLost(lost) }
     }
 
@@ -282,7 +303,9 @@ public final class VoiceNoteSession {
         guard let failure = failures.first(where: { $0.id == id }), failure.canRetry,
               let note = failedNotes[id] else { return nil }
         forget(id)
-        return send(url: note.url, duration: note.duration, to: failure.target, via: note.deliver)
+        // The user has seen what the file holds: a short one goes as it is.
+        return send(url: note.url, duration: note.duration, to: failure.target, via: note.deliver,
+                    acceptShort: true)
     }
 
     /// Gives up on a failed note and deletes its file.
@@ -319,7 +342,8 @@ public final class VoiceNoteSession {
     }
 
     private func send(url: URL, duration: TimeInterval, to target: Target, via deliver: @escaping Deliver,
-                      waitForFile: @escaping @MainActor () async -> Void = {}) -> Task<Void, Never> {
+                      waitForFile: @escaping @MainActor () async -> Void = {},
+                      acceptShort: Bool = false) -> Task<Void, Never> {
         sendingTarget = target
         let generation = self.generation
         let deliveryID = UUID()
@@ -329,11 +353,22 @@ public final class VoiceNoteSession {
             await waitForFile()
             // A file with (almost) no audio in it is never sent: it would
             // arrive as a note nobody can play or transcribe.
-            let audio = Task.isCancelled ? nil : await measureAudio(url)
+            var audio = Task.isCancelled ? nil : await measureAudio(url)
+            // Much less audio than the clock showed: give a late writer a
+            // moment to finish, then measure again.
+            var waited = 0
+            while !acceptShort, !Task.isCancelled, Self.isShort(audio, of: duration), waited < Self.shortFileRechecks {
+                await settle()
+                waited += 1
+                audio = await measureAudio(url)
+            }
+            Self.logger.notice("send: clock=\(duration, format: .fixed(precision: 2))s audio=\(audio ?? -1, format: .fixed(precision: 2))s rechecks=\(waited)")
             let empty = !Task.isCancelled && (audio ?? 0) < Self.minimumAudio
+            let short = !acceptShort && !Task.isCancelled && !empty && Self.isShort(audio, of: duration)
             if empty { try? FileManager.default.removeItem(at: url) }
             let error = Task.isCancelled ? "Cancelled"
                 : empty ? Self.nothingRecordedMessage
+                : short ? Self.shortMessage(saved: audio ?? 0, of: duration)
                 : await deliver(url, duration)
             guard generation == self.generation, !Task.isCancelled else {
                 // Signed out meanwhile: the old account's note is dropped.
