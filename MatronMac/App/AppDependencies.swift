@@ -64,6 +64,9 @@ final class AppDependencies {
     /// on every call. Mirrors `cores`/`timelineCache`: one instance per
     /// signed-in session, cleared on sign-out.
     private var mediaServices: [String: any MediaService] = [:]
+    /// Each account's on-disk media cache, kept so sign-out can close and
+    /// wipe it.
+    private var mediaCaches: [String: MediaDiskCache] = [:]
     /// Per-room `TimelineService` cache, bounded LRU so a long session that
     /// visits many rooms doesn't accumulate one journal timeline handle per
     /// room forever. Mirrors the pre-journal `timelineCache` — see
@@ -250,8 +253,10 @@ final class AppDependencies {
 
     func mediaService(for session: UserSession) -> any MediaService {
         if let existing = mediaServices[session.userID] { return existing }
-        let service = JournalMediaService(api: core(for: session).api)
+        let cache = MediaDiskCache(directory: MediaDiskCache.directory(forAccount: session.userID))
+        let service = JournalMediaService(api: core(for: session).api, cache: cache)
         mediaServices[session.userID] = service
+        mediaCaches[session.userID] = cache
         return service
     }
 
@@ -456,6 +461,10 @@ final class AppDependencies {
         for core in oldCores { core.revocation.cancel() }
         // Keyed by user id, captured before `cores.removeAll()` below.
         let oldUserIDs = Array(cores.keys)
+        // Wiped inside the teardown. `removeAll()` also closes each cache,
+        // so a fetch still in flight can't write the old account's image
+        // back.
+        let oldMediaCaches = Array(mediaCaches.values)
         // Chain onto any previous teardown: `sign out A → re-login →
         // sign out B` overwrote `teardownTask` while A's endSync/wipe on
         // A's cores might still be running, and `awaitPendingTeardown()`
@@ -520,6 +529,13 @@ final class AppDependencies {
             // Inside the awaited teardown so a new session's indexing can't
             // interleave with the wipe (bugbot "Search wipe races indexing").
             try? await search?.wipe()
+            // Images and files this account viewed, cached on disk by
+            // blob id. Then the whole cache root, for directories an
+            // earlier launch left, and the shared URL cache, which holds
+            // the small responses the API client fetched.
+            for cache in oldMediaCaches { await cache.removeAll() }
+            MediaDiskCache.removeAllOnDisk()
+            URLCache.shared.removeAllCachedResponses()
             // Same data-separation contract: agent device ids repeat across
             // journals, so the next account on this device must not inherit
             // the last one's box capacities (account email included).
@@ -533,6 +549,7 @@ final class AppDependencies {
         cores.removeAll()
         seenTrackers.removeAll()
         mediaServices.removeAll()
+        mediaCaches.removeAll()
         timelineCache = LRUCache(limit: AppDependencies.timelineCacheLimit)
         // The previous account's notifications stay in Notification Center
         // otherwise, previews and all.
