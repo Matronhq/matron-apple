@@ -158,6 +158,10 @@ final class MessagesStubURLProtocol: URLProtocol {
         state.withLockUnchecked { $0.requests }.filter { $0.url?.path.hasSuffix("/messages") == true }
     }
 
+    static var snapshotRequests: Int {
+        state.withLockUnchecked { $0.requests }.filter { $0.url?.path.hasSuffix("/snapshot") == true }.count
+    }
+
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
@@ -319,6 +323,58 @@ final class SyncScopeEngineTests: XCTestCase {
         try await until("the fetch") { try store.events(convoID: "c1").map(\.seq) == [5, 30, 31] }
         XCTAssertEqual(MessagesStubURLProtocol.messageRequests.count, 1, "one page reached the stored events")
         XCTAssertEqual(try store.syncedSeq(convoID: "c1"), 31)
+        await engine.endSync()
+    }
+
+    private func connectedEngine(scope: SyncScope, beforeConnect: (JournalSyncEngine) async -> Void = { _ in }) async throws -> JournalSyncEngine {
+        let socket = FakeWebSocketConnection()
+        let store = try seededStore(cursor: 10)
+        let engine = JournalSyncEngine(api: stubbedAPI(), store: store, connector: FakeConnector([socket]), token: "t",
+                                       ownSender: "user:alice", search: nil, backoffBaseSeconds: 0.01,
+                                       syncScope: scope)
+        if scope == .forYou {
+            socket.serve(#"{"kind":"control","op":"hello_ok","seq":10,"sync":"for_you"}"#)
+            socket.serve(#"{"kind":"control","op":"cursor","seq":10}"#)
+        } else {
+            socket.serve(#"{"kind":"control","op":"hello_ok","seq":10}"#)
+        }
+        await beforeConnect(engine)
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        return engine
+    }
+
+    func testOnForYouAConnectDoesNotFetchTheConversationList() async throws {
+        let engine = try await connectedEngine(scope: .forYou)
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(MessagesStubURLProtocol.snapshotRequests, 0, "nothing on screen reads the list")
+        await engine.endSync()
+    }
+
+    func testOnForYouAConnectFetchesTheListWhileTheChatListIsOnScreen() async throws {
+        let engine = try await connectedEngine(scope: .forYou) { engine in
+            await engine.chatListAppeared(UUID())
+        }
+        try await until("the connect's list fetch") { MessagesStubURLProtocol.snapshotRequests == 2 }
+        await engine.endSync()
+    }
+
+    func testOnForYouAChatListThatLeftNoLongerCounts() async {
+        let engine = JournalSyncEngine(api: stubbedAPI(), store: try! seededStore(cursor: 10),
+                                       connector: FakeConnector([]), token: "t", ownSender: "user:alice",
+                                       search: nil, syncScope: .forYou)
+        let token = UUID()
+        await engine.chatListAppeared(token)
+        let onScreen = await engine.refreshesSummariesOnConnect
+        XCTAssertTrue(onScreen)
+        await engine.chatListDisappeared(token)
+        let gone = await engine.refreshesSummariesOnConnect
+        XCTAssertFalse(gone)
+    }
+
+    func testOnEverythingAConnectFetchesTheConversationList() async throws {
+        let engine = try await connectedEngine(scope: .everything)
+        try await until("the list fetch") { MessagesStubURLProtocol.snapshotRequests == 1 }
         await engine.endSync()
     }
 

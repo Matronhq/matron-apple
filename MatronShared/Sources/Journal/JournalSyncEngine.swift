@@ -1296,6 +1296,34 @@ public actor JournalSyncEngine {
     private var lastSummaryRefresh: ContinuousClock.Instant?
     private static let listRefreshInterval: Duration = .seconds(60)
 
+    /// The chat lists on screen now, by the token each passed to
+    /// `chatListAppeared`. A set rather than a flag, so a list that leaves
+    /// and comes back can report the two in either order.
+    private var chatListsOnScreen: Set<UUID> = []
+
+    /// A chat list came on screen: refreshes its summaries if they are due
+    /// (`refreshSummariesForList`), and makes every connect refresh them
+    /// until `chatListDisappeared` with the same token.
+    public func chatListAppeared(_ token: UUID) async {
+        chatListsOnScreen.insert(token)
+        await refreshSummariesForList()
+    }
+
+    public func chatListDisappeared(_ token: UUID) {
+        chatListsOnScreen.remove(token)
+    }
+
+    /// Whether a new socket fetches `/snapshot` as soon as it is up. On
+    /// `everything` it always does. On `forYou` the snapshot is the whole
+    /// conversation list (every sub-chat included, megabytes for a busy
+    /// account), and only the chat list reads what it brings, so a phone
+    /// that reconnects each time it is opened or woken fetches it only
+    /// while a chat list is on screen. The list fetches it when it comes
+    /// back on screen otherwise.
+    var refreshesSummariesOnConnect: Bool {
+        syncScope == .everything || !chatListsOnScreen.isEmpty
+    }
+
     /// The chat list came on screen. On `forYou` most messages never reach
     /// this device, so the list's unread counts and snippets come from the
     /// journal's summary: refreshed here, at most once a minute. On
@@ -1950,7 +1978,9 @@ public actor JournalSyncEngine {
                 // state below belongs to the loop that owns the live socket.
                 guard isCurrent(generation) else { connection.close(); return }
                 refreshSummariesTask?.cancel()
-                refreshSummariesTask = Task { await self.refreshSummaries() } // title/state stopgap (spec §7 ask 4)
+                if refreshesSummariesOnConnect {
+                    refreshSummariesTask = Task { await self.refreshSummaries() } // title/state stopgap (spec §7 ask 4)
+                }
                 // Fresh socket: everything unconfirmed is eligible to resend
                 // once (idem-dedup'd server-side), including messages queued
                 // while offline. Kicked as a child task so the frame loop

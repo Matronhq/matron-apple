@@ -313,9 +313,16 @@ public final class ChatListViewModel {
         if error != nil { error = nil }
     }
 
-    /// See `ChatService.listDidAppear()`.
-    public func listDidAppear() async {
-        await chat.listDidAppear()
+    /// Reports the list on screen for as long as the calling task runs:
+    /// call it from the list's `.task`, which SwiftUI cancels when the list
+    /// leaves the screen. See `ChatService.listDidAppear(_:)`.
+    public func listOnScreen() async {
+        let token = UUID()
+        await chat.listDidAppear(token)
+        // Parked until the task is cancelled: iterating a stream that never
+        // yields ends when its task is.
+        for await _ in AsyncStream<Never> { _ in } {}
+        await chat.listDidDisappear(token)
     }
 
     /// iOS pull-to-refresh / Mac `⌘R` entry point: re-fetches the summaries
