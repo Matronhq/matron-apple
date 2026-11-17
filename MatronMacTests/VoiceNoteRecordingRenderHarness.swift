@@ -52,6 +52,9 @@ final class VoiceNoteRecordingRenderHarness: XCTestCase {
         write(VoiceNoteIndicator(mode: .failed(message: "MacBook Pro Microphone stopped at 0:12. Retry sends what was recorded.", canRetry: true),
                                  title: "Weekend trip itinerary",
                                  onOpen: {}, onCancel: {}, onSend: {}), "capture-lost", to: dir)
+        write(VoiceNoteIndicator(mode: .failed(message: "Only 0:03 of 0:23 was saved. Retry sends what was saved.", canRetry: true),
+                                 title: "Weekend trip itinerary",
+                                 onOpen: {}, onCancel: {}, onSend: {}), "short-file", to: dir)
     }
 }
 #endif
