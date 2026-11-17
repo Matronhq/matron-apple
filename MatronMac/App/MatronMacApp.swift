@@ -31,6 +31,10 @@ struct MatronMacApp: App {
 
     @State private var dependencies = AppDependencies()
     @State private var session: UserSession?
+    /// The socket lifecycle outlives any one window: closing the last window
+    /// leaves the app running, and the socket must still close after the
+    /// grace (it is dropped with the session, in `tearDownSession`).
+    @State private var syncLifecycle: MacSyncLifecycle?
     @State private var bootstrapDone = false
     /// The Settings pane shown; its label names it.
     #if DEBUG
@@ -119,7 +123,10 @@ struct MatronMacApp: App {
                                      idealSize: CGSize(width: 1280, height: 860))
                     .environment(\.appDependencies, dependencies)
                     .environment(\.currentSession, session)
-                    .task { await dependencies.syncEngine(for: session).beginSync() }
+                    // No `beginSync()` here: `MacSyncLifecycle` is the only
+                    // thing that starts and stops sync on the Mac, so a
+                    // window mounting cannot start a socket the lifecycle
+                    // does not know about.
                     // Push pipeline: request permission, register for
                     // remote notifications, and wire the delegate's
                     // device-token callback straight to the journal
@@ -200,23 +207,27 @@ struct MatronMacApp: App {
                         dependencies.seenTracker(for: session).setActive(NSApp.isActive && !locked)
                     }
                     .environment(\.appLockController, appLock)
-                    // App Nap suppression: an idle/unfocused Mac app gets its
-                    // timers and runloop throttled, which freezes the journal
-                    // engine's ping watchdog and backoff sleeper — a silently
-                    // dropped socket is then neither detected nor reconnected,
-                    // and the chat list sits stale until the user clicks the
-                    // window. Holding a `.background` activity for the
-                    // lifetime of the signed-in session opts the process out
-                    // of App Nap (lowest-impact option: it doesn't block
-                    // display or system sleep).
+                    // Socket lifecycle: `MacSyncLifecycle` owns sync. The
+                    // socket opens as the app starts to come forward and
+                    // closes shortly after nothing can be seen (or at once on
+                    // sleep); a voice note in flight keeps it open. While it
+                    // is open with no window on screen, a scoped activity
+                    // keeps App Nap off the engine's timers, so a dropped
+                    // socket is still noticed; with it closed the Mac may idle.
                     .task(id: session.userID) {
-                        let token = ProcessInfo.processInfo.beginActivity(
-                            options: .background,
-                            reason: "Matron keeps a live sync connection while signed in")
-                        defer { ProcessInfo.processInfo.endActivity(token) }
-                        while !Task.isCancelled {
-                            try? await Task.sleep(for: .seconds(3600))
-                        }
+                        // One per session, whichever window mounts first.
+                        guard syncLifecycle?.userID != session.userID else { return }
+                        syncLifecycle?.stop()
+                        // The lifecycle watches the voice notes itself, so a
+                        // note that ends with no window open still releases
+                        // the socket.
+                        let notes = voiceNotes
+                        let lifecycle = MacSyncLifecycle(
+                            userID: session.userID,
+                            engine: dependencies.syncEngine(for: session),
+                            voiceNoteBusy: { notes.isRecording || notes.isStarting || notes.isSending })
+                        syncLifecycle = lifecycle
+                        lifecycle.start()
                     }
                 } else {
                     let linkViewModel = LinkSignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron Mac")
@@ -442,6 +453,8 @@ struct MatronMacApp: App {
 
     /// The sign-out teardown both paths share.
     private func tearDownSession() {
+        syncLifecycle?.stop()
+        syncLifecycle = nil
         dependencies.signOut()
         session = nil
         // The old account's note neither keeps recording nor sends.

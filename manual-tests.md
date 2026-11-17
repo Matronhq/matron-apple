@@ -406,3 +406,60 @@ back on the test database).
 - [ ] Confirm with Face ID: the locked screen goes, chats and items load again without signing in, and the other devices are signed out. Quit and reopen the app: it is still signed in (the new token was saved).
 - [ ] Lock again, turn off the network after confirming but before the answer arrives, then turn it on: if the account was unlocked, the app goes to the sign-in screen and says the server's answer was lost. Sign in, then remove the old entry for this device in Settings ▸ Devices (Face ID re-attaches the key first).
 - [ ] With the account locked, a key enrolled less than a day ago does not freeze the device: it is signed out like a device with no key.
+
+## Mac: socket closes when nothing is visible, and a drop is still noticed
+
+Needs a signed-in Mac build and a journal you can watch (its log, or any tool listing open connections for the device). "Hidden" means every window hidden (`⌘H`), minimised, or fully covered by other windows.
+
+If the Matron bridge also runs on this Mac, it may keep the Mac awake on its own, separately from this app. These checks cover the app only, so run them with the bridge on or off as you prefer.
+
+- [ ] With a window visible, turn Wi-Fi off, wait 30 s, turn it on — the chat list shows connecting/offline (a real drop shows the banner as before), then reconnects within about 30 s of the network returning, and an event sent while it was off appears.
+- [ ] With a window visible and the app idle for 5 minutes, drop the connection without the OS noticing (for example block the journal host in the firewall for 90 s, then unblock) — the app notices and reconnects without a click.
+- [ ] Hide all windows and wait 90 s — the journal shows the device's socket closed. Activity Monitor's "Preventing App Nap" column for Matron reads No with a window visible (the window keeps the app awake by itself), Yes during the first minute after hiding, and No once the socket has closed.
+- [ ] While hidden, send an event from another client, then bring Matron forward — the socket reopens as soon as the app starts to activate, the event appears, and no rows are duplicated or missing.
+- [ ] Hide, then show again within 30 s — the socket never closed (no new connection in the journal).
+- [ ] Sleep the Mac (Apple menu, Sleep) with a window visible, wake it after a minute — the socket closes at sleep, reopens at wake, and an event sent during the sleep appears.
+- [ ] Let the Mac sleep with all windows hidden, wake it — no socket opens until Matron is brought forward.
+- [ ] Turn the displays off (hot corner or `pmset displaysleepnow`) while the Mac stays awake, wake them within 30 s — the socket never closed. Leave them off for 90 s — it closes; waking them reopens it.
+- [ ] Close the last window with the red button (the app keeps running) and wait 90 s — the socket closes; reopen from the Dock — it reconnects.
+- [ ] Open a new window (⌘N), Settings, and switch Spaces back to a Matron window from a hidden state — each reconnects without waiting for a click.
+- [ ] Put a floating or helper window of another app over everything while Matron is hidden — it does not keep the socket open past the grace.
+
+### Quiet stop and return
+
+- [ ] Hide Matron for 90 s, then bring it forward. The offline banner never appears during the stop, and on return the chat list catches up with no banner when it takes under about 2 s.
+- [ ] Make the reconnect slow (throttle the network, or block the journal for a few seconds) and bring Matron forward — "Reconnecting…" appears only after about 2 s, and goes when the catch-up finishes.
+- [ ] Block the journal entirely and bring Matron forward — after 2 s the banner shows the real state (connecting, then offline) instead of staying hidden. The wait is always the full 2 s, also when the reconnect has already failed.
+- [ ] When a quiet return finishes, the banner goes away and stays away: no flash of "Connecting…" or "Loading…" at the end of the catch-up (the chat list ends the quiet period on its own state).
+- [ ] A real drop with a window visible shows the banner at once, as before.
+- [ ] Screenshots or a short screen recording of the banner in these states are to come from the maintainer's own run of this checklist on a build of this branch (none are included here).
+
+### Voice note while covered
+
+- [ ] With Matron covered by other windows and the socket closed, press the voice note key in a chat that was open, speak, press it again — the socket opens while recording, the note uploads (`POST /media`) straight away and is delivered; it appears in the chat on the next look, and the socket closes a few seconds after delivery.
+- [ ] Record and send a note with the network off: it fails with a Retry as before; with the network back, Retry delivers it.
+- [ ] Queue a text message while offline, hide Matron — the socket is not closed while the outbox holds it; once it is delivered, the socket closes within the grace.
+- [ ] Queue a text message with the network off (Wi-Fi off), hide Matron and wait a minute — Activity Monitor's "Preventing App Nap" column reads No for Matron while the network is down. Turn Wi-Fi on: it reads Yes again, the message is delivered, and the socket closes within the grace.
+
+### Dock badge from pushes
+
+These need push notifications working on the build, so they are for the maintainer's own build of this branch.
+
+- [ ] Hide Matron until its socket closes. Send a message that raises an alert push — the notification shows, and the Dock badge shows the account's unread count from the push (not from the stream).
+- [ ] While hidden and closed, read a chat on another device — the silent push updates the Dock badge to the lower count (or clears it at zero).
+- [ ] An event that changes the count without an alert (a muted chat) updates the badge on the next silent push, and no later than the next time Matron comes forward.
+- [ ] Bring Matron forward — the badge keeps the same count after the catch-up (it must not flash to zero or double).
+- [ ] Hide Matron until closed, then send a message that raises the push badge to a number that differs from the app's own count (for example, while the chat is muted, so the app would count it differently), then bring Matron forward. When the banner is gone (the catch-up has finished), the Dock badge shows the app's own unread count, even if that equals the count from before hiding. (The tile may show the pre-hide count for a moment while the catch-up lands: it corrects itself when the count changes, and the write is what fixes the unchanged case.)
+- [ ] Settings ▸ General ▸ Connection: the footer under "Stay connected in the background" reads "When this is off, Matron disconnects a minute after its windows are hidden or covered, to save battery. Notifications and the Dock badge still update, though changes in muted chats can take a few minutes to show. Turn this on to stay connected all the time. This uses more battery."
+- [ ] With "Stay connected in the background" on (Settings ▸ General ▸ Connection), hide Matron for 5 minutes — the socket stays open and the badge follows the stream. Off (the default): it closes after the grace.
+
+### Push wake-up checks (Mac)
+
+For the maintainer's own build of this branch (they need working Apple push, which we cannot run).
+
+- [ ] Alert push while hidden or covered (socket closed): the banner notification appears; expected: Dock badge equals the count in the push.
+- [ ] Silent push that changes the count (read elsewhere): expected: the Dock badge updates with no window shown and no socket opened.
+- [ ] Bring the app forward after either: expected: it reconnects at once, no banner (or "Reconnecting…" only after 2 s), catches up from the cursor, rows complete.
+- [ ] Sleep and wake with Matron hidden, and a network change (switch Wi-Fi network) while hidden: expected: nothing opens while hidden; bringing it forward reconnects at once.
+- [ ] Hotkey voice note while covered: expected: the upload starts immediately over HTTP, and the note is delivered over a socket opened for it, then the socket closes.
+- [ ] iPhone: this change does not touch the iPhone app. Spot-check that its Dock-less badge and silent-push catch-up behave as before.

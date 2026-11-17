@@ -8,6 +8,7 @@ import MatronViewModels
 /// auto-archive.
 struct MacGeneralSettingsPane: View {
     @AppStorage(VoiceNoteHotkeyKey.storageKey) private var voiceHotkeyRaw = VoiceNoteHotkeyKey.default.rawValue
+    @AppStorage(MacSyncLifecycle.stayConnectedKey) private var stayConnected = false
     let session: UserSession
     let deps: AppDependencies
 
@@ -31,6 +32,15 @@ struct MacGeneralSettingsPane: View {
                 Text("Voice notes")
             } footer: {
                 Text("Press the key from any app to start a voice note in the open chat, and again to send it. On Apple keyboards F5 is the Dictation key: turn off the Dictation shortcut in System Settings → Keyboard, or pick another key.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section {
+                Toggle("Stay connected in the background", isOn: $stayConnected)
+            } header: {
+                Text("Connection")
+            } footer: {
+                Text("When this is off, Matron disconnects a minute after its windows are hidden or covered, to save battery. Notifications and the Dock badge still update, though changes in muted chats can take a few minutes to show. Turn this on to stay connected all the time. This uses more battery.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

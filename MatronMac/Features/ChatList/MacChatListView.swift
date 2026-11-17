@@ -213,6 +213,10 @@ struct MacChatListView: View {
     /// this session, so the banner can pick "Connecting…" vs
     /// "Reconnecting…" copy. Sticky once true.
     @State private var hasEverConnected: Bool = false
+    /// Planned stops and reconnects (the socket closes while nothing is
+    /// visible) keep the banner away for a moment: see `QuietReconnect`.
+    private let quietReconnect = QuietReconnect.shared
+    @State private var quietDelayPassed = false
 
     /// Every chat-list summary, the Coordinator's included (it is left out
     /// of the list, not out of search or stale-restore checks). Used to
@@ -1271,7 +1275,28 @@ struct MacChatListView: View {
                     // Catch-up counts: the socket IS established there, so a
                     // drop mid-replay should come back as "Reconnecting…".
                     if state == .running || state == .catchingUp { hasEverConnected = true }
+                    // This view's own state is what the banner falls back to,
+                    // so it ends the quiet period itself, after the state
+                    // above is set. Coming back: while hidden the Dock badge
+                    // followed pushes, so end on the app's own count even
+                    // when it has not changed since (no `onChange` fires). The
+                    // count can still be catching up with the replay: if it is
+                    // then different, its own `onChange` writes it, so the tile
+                    // always ends on the app's count.
+                    if state == .running, quietReconnect.runningReached() {
+                        NSApp.dockTile.badgeLabel = PushBadge.label(for: viewModel.totalUnread)
+                    }
                 }
+            }
+            // The delay a planned reconnect gets before the banner appears.
+            // Restarts with each planned reconnect (`episode`); episode 0 is
+            // a planned stop, which stays quiet for as long as it lasts.
+            .task(id: quietReconnect.episode) {
+                quietDelayPassed = false
+                guard quietReconnect.episode != 0 else { return }
+                try? await Task.sleep(for: QuietReconnect.delay)
+                guard !Task.isCancelled else { return }
+                quietDelayPassed = true
             }
             // A conversation born while we're live. Only one this device
             // asked for (the user sent /start here) is selected, through the
@@ -1329,6 +1354,13 @@ struct MacChatListView: View {
         return withLifecycle(withCoordinatorWiring(withSharedLinks(withNavigationListeners(withCommandListeners(splitView)))))
     }
 
+    /// What the banner shows. A planned stop or reconnect shows nothing until
+    /// it has taken `QuietReconnect.delay` (whatever its outcome) or this
+    /// view's own state is `.running`; a real drop is shown at once.
+    private var bannerState: SyncBannerState {
+        quietReconnect.isQuiet && !quietDelayPassed ? .running : connectionState
+    }
+
     /// Sidebar column wrapper: connection banner (when not `.running`)
     /// stacked over the search field stacked over the chat list. The
     /// search field lives at the top of the conversation list — it used
@@ -1336,16 +1368,16 @@ struct MacChatListView: View {
     /// it over the detail column instead of with the list it filters.
     private var sidebarColumn: some View {
         VStack(spacing: 0) {
-            if connectionState != .running {
+            if bannerState != .running {
                 // Connection-state banner sits at the very top so the
                 // user's first read of the sidebar is "what's the
                 // current sync status?" before anything else competes
                 // for attention.
                 ConnectionStatusBanner(
-                    state: connectionState,
+                    state: bannerState,
                     hasEverConnected: hasEverConnected
                 )
-                .animation(.easeInOut(duration: 0.2), value: connectionState)
+                .animation(.easeInOut(duration: 0.2), value: bannerState)
             }
             if let searchModel {
                 // Top padding is tighter than bottom so the field sits a

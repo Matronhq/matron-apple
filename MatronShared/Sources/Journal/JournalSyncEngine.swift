@@ -1,5 +1,4 @@
 import Foundation
-import Network
 import os
 import MatronModels
 import MatronSearch
@@ -85,13 +84,38 @@ public actor JournalSyncEngine {
     private let backoffBaseSeconds: Double
 
     private var runTask: Task<Void, Never>?
-    private var pathMonitor: NWPathMonitor?
+    /// Bumped by every `beginSync()` and `endSync()`. A run loop carries the
+    /// value it started under and stops touching shared state (the live
+    /// connection, the connection state, the RPC waiters) once it no longer
+    /// matches: a stopped loop can still be mid-handshake, mid-replay or
+    /// mid-teardown when the next one starts, and must not close the new
+    /// socket or overwrite the new state.
+    private var runGeneration = 0
+    /// The generations whose run loop is inside a hello.
+    /// `JournalConnection.establish` cannot observe cancellation (its receive
+    /// only ends when the socket does, or after the handshake timeout), so
+    /// `endSync()` does not wait for a loop that is inside one: that loop
+    /// notices it is stale when the hello returns and drops the socket. Per
+    /// generation, so a newer loop's hello never excuses waiting for an older
+    /// loop that is somewhere else.
+    private var handshakingGenerations: Set<Int> = []
+    private var pathMonitor: (any NetworkPathMonitoring)?
+    /// Builds the path monitor each `beginSync()` starts. The system monitor
+    /// by default; a test swaps in one it controls.
+    private let makePathMonitor: @Sendable () -> any NetworkPathMonitoring
     /// Status + sorted interface names of the last observed network path.
     /// macOS fires a burst of path callbacks at app startup (interface
     /// enumeration, VPN utuns coming up) that all describe the same usable
     /// path; comparing signatures lets us ignore those instead of tearing
     /// down a healthy connection per callback.
     private var lastPathSignature: String?
+    /// Whether the last observed network path was usable. True until the
+    /// monitor says otherwise (and while it is not running).
+    private var pathSatisfied = true
+    /// Identifies the running path monitor. Bumped by every
+    /// `startPathMonitor()`; a callback from a monitor that has since been
+    /// cancelled and replaced carries the old value and is dropped.
+    private var pathMonitorEpoch = 0
     /// Set when the engine itself closes the socket because the network
     /// path changed. The run loop then goes straight back to `.connecting`
     /// (no `.offline` blip in the UI, no backoff sleep) — the network is
@@ -263,8 +287,10 @@ public actor JournalSyncEngine {
         databasesSuspended: @escaping @Sendable () -> Bool = { false },
         credentialSignals: (@Sendable (CredentialSignal) -> Void)? = nil,
         syncScope: SyncScope = .everything,
-        stats: SyncStatsRecorder? = nil
+        stats: SyncStatsRecorder? = nil,
+        pathMonitorFactory: @escaping @Sendable () -> any NetworkPathMonitoring = { SystemNetworkPathMonitor() }
     ) {
+        self.makePathMonitor = pathMonitorFactory
         self.credentialSignals = credentialSignals
         self.syncScope = syncScope
         self.stats = stats
@@ -348,17 +374,27 @@ public actor JournalSyncEngine {
         guard runTask == nil else { return }
         stoppedByRejection = false
         attempt = 0
-        runTask = Task { await runLoop() }
+        runGeneration &+= 1
+        let generation = runGeneration
+        runTask = Task { await runLoop(generation: generation) }
         startPathMonitor()
     }
 
+    /// Stops sync and returns once the run loop that was running has ended,
+    /// so a `beginSync()` that follows never overlaps the old loop's
+    /// teardown. The generation bump below makes the old loop inert from
+    /// here on even while it unwinds.
     public func endSync() async {
         stoppedByRejection = false
+        let stoppedTask = runTask
+        let stoppedGeneration = runGeneration
+        runGeneration &+= 1
         runTask?.cancel()
         runTask = nil
         pathMonitor?.cancel()
         pathMonitor = nil
         lastPathSignature = nil
+        pathSatisfied = true
         pathChangeReconnect = false
         pathDebounceTask?.cancel()
         pathDebounceTask = nil
@@ -379,6 +415,16 @@ public actor JournalSyncEngine {
         if case .offline = state {} else {
             setState(.offline(reason: nil))
         }
+        if !handshakingGenerations.contains(stoppedGeneration) { await stoppedTask?.value }
+    }
+
+    private func isCurrent(_ generation: Int) -> Bool { generation == runGeneration }
+
+    /// `setState` for the run loop: a stopped loop's late transitions are
+    /// dropped.
+    private func setState(_ new: SyncConnectionState, generation: Int) {
+        guard isCurrent(generation) else { return }
+        setState(new)
     }
 
     public var isRunning: Bool { runTask != nil }
@@ -491,17 +537,26 @@ public actor JournalSyncEngine {
     /// the offline banner and the backoff sleep.
     private func startPathMonitor() {
         guard pathMonitor == nil else { return }
-        let monitor = NWPathMonitor()
-        monitor.pathUpdateHandler = { [weak self] path in
-            let satisfied = path.status == .satisfied
-            let signature = "\(path.status)|\(path.availableInterfaces.map(\.name).sorted().joined(separator: ","))"
-            Task { await self?.handlePathUpdate(satisfied: satisfied, signature: signature) }
+        let monitor = makePathMonitor()
+        pathMonitorEpoch &+= 1
+        let epoch = pathMonitorEpoch
+        monitor.start { [weak self] satisfied, signature in
+            Task { await self?.handlePathUpdate(satisfied: satisfied, signature: signature, epoch: epoch) }
         }
-        monitor.start(queue: DispatchQueue(label: "chat.matron.journal.path-monitor"))
         pathMonitor = monitor
     }
 
-    private func handlePathUpdate(satisfied: Bool, signature: String) {
+    /// True while the engine is not connected and the network path is down:
+    /// nothing it does can succeed until the path returns, and the monitor
+    /// then wakes it (`nudge()` below), so a host may stop holding the
+    /// process awake for it. Never true while running or after `endSync()`.
+    public var isWaitingForNetwork: Bool { !pathSatisfied && !isConnectedAndCaughtUp }
+
+    func handlePathUpdate(satisfied: Bool, signature: String, epoch: Int) {
+        // A callback that was in flight when its monitor was cancelled (and
+        // maybe replaced by a restart's) says nothing about this run.
+        guard pathMonitor != nil, epoch == pathMonitorEpoch else { return }
+        pathSatisfied = satisfied
         let previous = lastPathSignature
         lastPathSignature = signature
         // First callback reports the current path (not a change), and
@@ -606,7 +661,41 @@ public actor JournalSyncEngine {
         }
         if liveConnection != nil {
             Task { await self.flushOutbox() }
+        } else {
+            announceQueuedWithoutConnection()
         }
+    }
+
+    /// Fires each time a row is queued (a new send, or a retry) while no
+    /// connection is live, so a host that closes the socket when idle can
+    /// open it again to deliver the row. Nothing is sent for a row queued
+    /// with a live connection: the engine flushes that itself. A host that
+    /// has not asked is not affected.
+    public nonisolated func queuedWithoutConnectionStream() -> AsyncStream<Void> {
+        AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            let id = UUID()
+            Task { await self.registerQueuedWithoutConnection(id: id, continuation: continuation) }
+            continuation.onTermination = { _ in
+                Task { await self.unregisterQueuedWithoutConnection(id: id) }
+            }
+        }
+    }
+
+    private var queuedWithoutConnectionContinuations: [UUID: AsyncStream<Void>.Continuation] = [:]
+
+    /// Observers currently registered on `queuedWithoutConnectionStream()`.
+    var queuedWithoutConnectionObserverCount: Int { queuedWithoutConnectionContinuations.count }
+
+    private func registerQueuedWithoutConnection(id: UUID, continuation: AsyncStream<Void>.Continuation) {
+        queuedWithoutConnectionContinuations[id] = continuation
+    }
+
+    private func unregisterQueuedWithoutConnection(id: UUID) {
+        queuedWithoutConnectionContinuations.removeValue(forKey: id)
+    }
+
+    private func announceQueuedWithoutConnection() {
+        for continuation in queuedWithoutConnectionContinuations.values { continuation.yield() }
     }
 
     /// The box a `/start` sent in `convoID` asks: the one that owns it.
@@ -636,6 +725,7 @@ public actor JournalSyncEngine {
         if liveConnection != nil {
             Task { await self.flushOutbox() }
         } else {
+            announceQueuedWithoutConnection()
             nudge()
         }
     }
@@ -1754,8 +1844,8 @@ public actor JournalSyncEngine {
 
     // MARK: Run loop
 
-    private func runLoop() async {
-        while !Task.isCancelled {
+    private func runLoop(generation: Int) async {
+        while !Task.isCancelled, isCurrent(generation) {
             // Catch-up replay buffer: while `.catchingUp`, frames accumulate
             // here and land via `applyJournalBatch` — one transaction + one
             // observation fire per batch instead of per frame (see that
@@ -1771,9 +1861,9 @@ public actor JournalSyncEngine {
             // a new one while the hello was out): the next pass uses the new.
             var helloToken = token
             await parkWhileDatabasesSuspended()
-            if Task.isCancelled { break }
+            if Task.isCancelled || !isCurrent(generation) { break }
             do {
-                setState(.connecting)
+                setState(.connecting, generation: generation)
                 // Back on `everything` with a mirror that was `forYou`: it
                 // lacks whatever that socket never carried, so rebuild it.
                 // Read from the store rather than remembered, so a switch
@@ -1788,19 +1878,39 @@ public actor JournalSyncEngine {
                     if (try? store.forYouSince()) != nil { throw MirrorResetFailed() }
                 }
                 try await coldStartIfNeeded()
+                // `endSync()` (or a restart) may have landed during the
+                // bootstrap; do not start a hello nobody will use.
+                guard !Task.isCancelled, isCurrent(generation) else { return }
                 // Every conversation is complete up to here. Idempotent, and
                 // also covers a scope that came from settings at launch.
                 if syncScope == .forYou { try? store.markForYouStart() }
                 let cursor = store.cursor
                 helloToken = token
-                let (connection, headSeq) = try await JournalConnection.establish(
-                    connector: connector, wsURL: api.wsURL, token: helloToken, cursor: cursor,
-                    archiveSince: archive.helloArchiveSince(), sync: syncScope)
+                handshakingGenerations.insert(generation)
+                let established: (connection: JournalConnection, headSeq: Int64)
+                do {
+                    established = try await JournalConnection.establish(
+                        connector: connector, wsURL: api.wsURL, token: helloToken, cursor: cursor,
+                        archiveSince: archive.helloArchiveSince(), sync: syncScope)
+                } catch {
+                    handshakingGenerations.remove(generation)
+                    throw error
+                }
+                handshakingGenerations.remove(generation)
+                let (connection, headSeq) = established
                 guard helloToken == token else {
                     // Accepted with a token that has since been replaced:
                     // start again with the new one.
                     connection.close()
                     continue
+                }
+                // `endSync()` cancelled this loop while the handshake ran (it
+                // cannot observe cancellation): drop the socket instead of
+                // publishing it over the stopped state. Hosts that stop and
+                // restart sync as windows come and go can land here.
+                if Task.isCancelled || !isCurrent(generation) {
+                    connection.close()
+                    return
                 }
                 liveConnection = connection
                 // Fetched over the last socket; this one starts behind them.
@@ -1812,6 +1922,10 @@ public actor JournalSyncEngine {
                 // Before the replay: a message the replay brings back is
                 // then judged against the archive as the journal has it.
                 await archive.applyHello(connection.archiveHello)
+                // Stopped (and maybe restarted) while the hello was applied:
+                // `endSync()` already closed this socket, and the loop that
+                // owns the live one is another.
+                guard isCurrent(generation) else { connection.close(); return }
                 publishCoordinatorHello(connection.coordinatorHello, headSeq: headSeq)
                 attempt = 0
                 // Read state: register this device as a seen-range reporter
@@ -1832,6 +1946,9 @@ public actor JournalSyncEngine {
                 if store.cursor > 0 {
                     try? await connection.send(.ack(cursor: store.cursor))
                 }
+                // Stopped (and maybe restarted) during the sends above: the
+                // state below belongs to the loop that owns the live socket.
+                guard isCurrent(generation) else { connection.close(); return }
                 refreshSummariesTask?.cancel()
                 refreshSummariesTask = Task { await self.refreshSummaries() } // title/state stopgap (spec §7 ask 4)
                 // Fresh socket: everything unconfirmed is eligible to resend
@@ -1849,7 +1966,7 @@ public actor JournalSyncEngine {
                 // matters after a long offline stretch, where the replay
                 // can take visible seconds and a "Connecting…" banner
                 // reads as a connection that never completes.
-                setState(store.cursor >= headSeq ? .running : .catchingUp)
+                setState(store.cursor >= headSeq ? .running : .catchingUp, generation: generation)
 
                 lastFrameAt = ContinuousClock.now
                 let watchdog = Task {
@@ -1917,7 +2034,7 @@ public actor JournalSyncEngine {
                                 try? await connection.send(.ack(cursor: store.cursor))
                                 appliedSinceAck = 0
                             }
-                            if store.cursor >= headSeq { setState(.running) }
+                            if store.cursor >= headSeq { setState(.running, generation: generation) }
                             continue
                         }
                         // Propagate a throw (disk full, sqlite I/O error) rather than
@@ -1995,7 +2112,7 @@ public actor JournalSyncEngine {
                                 considerAutoOpen(event, firstFrame: false)
                             }
                         }
-                        if store.cursor >= headSeq { setState(.running) }
+                        if store.cursor >= headSeq { setState(.running, generation: generation) }
                     case .ephemeral(let update):
                         for (_, entry) in ephemeralContinuations where entry.convoID == update.convoID {
                             entry.continuation.yield(update)
@@ -2124,7 +2241,7 @@ public actor JournalSyncEngine {
                         scopedReplayDone = true
                         try? await connection.send(.ack(cursor: store.cursor))
                         appliedSinceAck = 0
-                        if store.cursor >= headSeq { setState(.running) }
+                        if store.cursor >= headSeq { setState(.running, generation: generation) }
                         // The replay never carries the chats on screen.
                         for convoID in Set(viewers.map(\.convoID)) { startConversationCatchUp(convoID) }
                     case .helloOK, .unknownControl:
@@ -2135,14 +2252,17 @@ public actor JournalSyncEngine {
                 // replay buffered before the cut. The next connect's hello
                 // acks the advanced cursor, so the server resumes past it.
                 flushReplayBufferOnTeardown(&replayBuffer)
+                guard isCurrent(generation) else { return }
             } catch JournalConnectionError.authRejected where helloToken != token {
                 // The old token was refused after it was replaced: say
                 // hello again at once with the new one.
                 flushReplayBufferOnTeardown(&replayBuffer)
+                guard isCurrent(generation) else { return }
                 liveConnection = nil
                 continue
             } catch JournalConnectionError.authRejected {
                 flushReplayBufferOnTeardown(&replayBuffer)
+                guard isCurrent(generation) else { return }
                 Self.logger.warning("server rejected auth — stopping sync (signed out by server)")
                 liveConnection = nil
                 setState(.offline(reason: "Signed out by server"))
@@ -2154,10 +2274,12 @@ public actor JournalSyncEngine {
                 return
             } catch JournalConnectionError.accountLocked where helloToken != token {
                 flushReplayBufferOnTeardown(&replayBuffer)
+                guard isCurrent(generation) else { return }
                 liveConnection = nil
                 continue
             } catch JournalConnectionError.accountLocked(let lock) {
                 flushReplayBufferOnTeardown(&replayBuffer)
+                guard isCurrent(generation) else { return }
                 // The token still exists but the account is locked. The
                 // journal does not say when the lock is cleared, so keep
                 // trying at the backoff's pace.
@@ -2165,6 +2287,7 @@ public actor JournalSyncEngine {
                 credentialSignals?(.accountLocked(lock))
             } catch {
                 flushReplayBufferOnTeardown(&replayBuffer)
+                guard isCurrent(generation) else { return }
                 // Fall through to backoff — but never silently: the
                 // 2026-07-13 phone incident sat in this loop for 90
                 // minutes (proxy refusing the ws upgrade) with nothing in
@@ -2172,6 +2295,9 @@ public actor JournalSyncEngine {
                 // line/min at steady state.
                 Self.logger.warning("connect/stream failed (attempt \(self.attempt + 1, privacy: .public)): \(String(describing: error), privacy: .public)")
             }
+            // A stopped loop must not close the connection a newer one now
+            // owns, fail its RPCs or flip its state.
+            guard isCurrent(generation) else { return }
             liveConnection?.close()
             liveConnection = nil
             // The relay is stateless — an in-flight request's answer cannot
@@ -2188,10 +2314,10 @@ public actor JournalSyncEngine {
                 // genuinely fails, the next loop iteration lands in the
                 // normal offline/backoff path (the flag is already cleared).
                 pathChangeReconnect = false
-                setState(.connecting)
+                setState(.connecting, generation: generation)
                 continue
             }
-            setState(.offline(reason: nil))
+            setState(.offline(reason: nil), generation: generation)
             await backoff()
         }
     }
