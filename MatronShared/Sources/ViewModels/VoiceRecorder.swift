@@ -950,6 +950,8 @@ final class SystemAudioRecorder: NSObject, AudioRecording, AVAudioRecorderDelega
         guard stopped else { return }
         if await !finish.wait(timeout: 3) {
             Self.logger.error("recorder: no finish from AVAudioRecorder within 3 s")
+            // Unconfirmed: the note is held for the user, not sent as whole.
+            lock.withLock { _failed = true }
         }
     }
 
