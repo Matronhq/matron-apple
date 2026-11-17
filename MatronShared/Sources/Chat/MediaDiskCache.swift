@@ -58,10 +58,14 @@ public actor MediaDiskCache {
         self.now = now
     }
 
-    /// Root of every account's media cache.
+    /// Root of every account's media cache, under the app's own folder in
+    /// Caches: an unsandboxed (debug) Mac build shares `~/Library/Caches`
+    /// with every other app.
     public static var rootDirectory: URL {
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        return caches.appendingPathComponent("MatronMedia", isDirectory: true)
+        return caches
+            .appendingPathComponent(Bundle.main.bundleIdentifier ?? "Matron", isDirectory: true)
+            .appendingPathComponent("MatronMedia", isDirectory: true)
     }
 
     /// The directory for one account. Named by a hash so the account id
@@ -83,8 +87,8 @@ public actor MediaDiskCache {
         let url = fileURL(for: blobRef)
         guard let modified = modificationDate(of: url) else { return nil }
         if now().timeIntervalSince(modified) > maxAge {
-            if let size = size(of: url), let total = totalBytes { totalBytes = max(0, total - size) }
-            remove(url)
+            let size = size(of: url) ?? 0
+            if remove(url), let total = totalBytes { totalBytes = max(0, total - size) }
             return nil
         }
         guard let data = try? Data(contentsOf: url) else { return nil }
@@ -99,15 +103,12 @@ public actor MediaDiskCache {
         guard prepareDirectory() else { return }
         var total = totalBytes ?? scan()
         let url = fileURL(for: blobRef)
-        if let existing = size(of: url) { total -= existing }
-        do {
-            try data.write(to: url, options: .atomic)
-        } catch {
-            totalBytes = total
-            return
-        }
+        let existing = size(of: url) ?? 0
+        // A failed atomic write leaves the old file in place, so the total
+        // changes only once the write has landed.
+        guard (try? data.write(to: url, options: .atomic)) != nil else { return }
         try? fileManager.setAttributes([.modificationDate: now()], ofItemAtPath: url.path)
-        total += data.count
+        total += data.count - existing
         totalBytes = total
         if total > byteLimit { evict() }
     }
@@ -167,11 +168,8 @@ public actor MediaDiskCache {
         let cutoff = now().addingTimeInterval(-maxAge)
         var total = 0
         for entry in entries() {
-            if entry.modified < cutoff {
-                remove(entry.url)
-            } else {
-                total += entry.size
-            }
+            if entry.modified < cutoff, remove(entry.url) { continue }
+            total += entry.size
         }
         totalBytes = total
         return total
@@ -184,14 +182,16 @@ public actor MediaDiskCache {
         let sorted = entries().sorted { $0.modified < $1.modified }
         var total = sorted.reduce(0) { $0 + $1.size }
         for entry in sorted where total > target {
-            remove(entry.url)
-            total -= entry.size
+            if remove(entry.url) { total -= entry.size }
         }
         totalBytes = total
     }
 
-    private func remove(_ url: URL) {
-        try? fileManager.removeItem(at: url)
+    /// True when the file is gone, so callers only count bytes actually
+    /// reclaimed.
+    @discardableResult
+    private func remove(_ url: URL) -> Bool {
+        (try? fileManager.removeItem(at: url)) != nil
     }
 
     private func modificationDate(of url: URL) -> Date? {

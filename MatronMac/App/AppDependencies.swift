@@ -634,6 +634,11 @@ final class AppDependencies {
                 try? fm.removeItem(at: file)
             }
         }
+        // An interrupted sign-out may have left the previous account's
+        // cached media, and a fetch that finished after sign-out's purge
+        // may have put a small response back in the shared URL cache.
+        MediaDiskCache.removeAllOnDisk()
+        URLCache.shared.removeAllCachedResponses()
         try? await search?.wipe()
     }
 

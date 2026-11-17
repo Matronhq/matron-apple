@@ -908,6 +908,11 @@ final class AppDependencies {
         // retries until it lands. The caller publishes the session only
         // after this returns. This also catches a sign-out teardown whose
         // own wipe was refused while locked or suspended.
+        // An interrupted sign-out may have left the previous account's
+        // cached media, and a fetch that finished after sign-out's purge
+        // may have put a small response back in the shared URL cache.
+        MediaDiskCache.removeAllOnDisk()
+        URLCache.shared.removeAllCachedResponses()
         let protectedData = self.protectedData
         await FreshLoginSearchWipe.run(
             waitForProtectedData: { await protectedData.waitUntilAvailable() },
