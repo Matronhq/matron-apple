@@ -9,9 +9,13 @@ import MatronJournal
 /// renders placeholders for `nil` image results.
 public final class JournalMediaService: MediaService, @unchecked Sendable {
     private let api: JournalAPI
+    /// Bytes already fetched, by blob id. Nil keeps every fetch on the
+    /// network (tests, previews).
+    private let cache: MediaDiskCache?
 
-    public init(api: JournalAPI) {
+    public init(api: JournalAPI, cache: MediaDiskCache? = nil) {
         self.api = api
+        self.cache = cache
     }
 
     /// Resolves a `serverURL/media/<ref>` URL to its raw bytes. Any URL not
@@ -19,7 +23,10 @@ public final class JournalMediaService: MediaService, @unchecked Sendable {
     /// issuing a request.
     public func image(for url: URL) async -> Data? {
         guard let blobRef = Self.blobRef(for: url, serverURL: api.serverURL) else { return nil }
-        return try? await api.mediaData(blobRef: blobRef)
+        if let cached = await cache?.data(for: blobRef) { return cached }
+        guard let data = try? await api.mediaData(blobRef: blobRef) else { return nil }
+        await cache?.store(data, for: blobRef)
+        return data
     }
 
     /// Surfaces the server's 404 as `.notFound` so the file-tap path can
@@ -28,8 +35,11 @@ public final class JournalMediaService: MediaService, @unchecked Sendable {
     /// `.failure`, not `.notFound` — we know nothing definitive about it.
     public func fetchOutcome(mxcURL: URL) async -> MediaFetchOutcome {
         guard let blobRef = Self.blobRef(for: mxcURL, serverURL: api.serverURL) else { return .failure }
+        if let cached = await cache?.data(for: blobRef) { return .data(cached) }
         do {
-            return .data(try await api.mediaData(blobRef: blobRef))
+            let data = try await api.mediaData(blobRef: blobRef)
+            await cache?.store(data, for: blobRef)
+            return .data(data)
         } catch JournalAPIError.notFound {
             return .notFound
         } catch {

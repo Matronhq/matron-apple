@@ -130,6 +130,20 @@ final class MacAppDependenciesTests: XCTestCase {
                        "fresh-login wipe must empty the shared search index")
     }
 
+    /// A sign-out the process didn't live to finish leaves the previous
+    /// account's cached media; the next fresh login must remove it.
+    func test_wipeLocalDataForFreshLogin_removesCachedMedia() async throws {
+        deps = AppDependencies()
+        let cache = MediaDiskCache(directory: MediaDiskCache.directory(forAccount: "ghost-\(UUID().uuidString)"))
+        await cache.store(Data("PNG".utf8), for: "blob-1")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: MediaDiskCache.rootDirectory.path))
+
+        await deps.wipeLocalDataForFreshLogin()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: MediaDiskCache.rootDirectory.path),
+                       "fresh-login wipe must delete the previous account's cached media")
+    }
+
     /// Mac mirror of the iOS `test_awaitPendingTeardown_waitsForSignOutSearchWipe`.
     /// bugbot "Teardown await drops newer job". Suspension-race determinism
     /// isn't reachable without a teardown gate seam — see the task report.
