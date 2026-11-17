@@ -56,6 +56,9 @@ final class VoiceNoteRecordingRenderHarness: XCTestCase {
         try write(VoiceNoteIndicator(mode: .failed(message: "Only 0:03 of 0:23 was saved. Retry sends what was saved.", canRetry: true),
                                  title: "Weekend trip itinerary",
                                  onOpen: {}, onCancel: {}, onSend: {}), "short-file", to: dir)
+        try write(VoiceNoteIndicator(mode: .failed(message: "The recorder reported an error saving this note. Retry sends what was saved.", canRetry: true),
+                                     title: "Weekend trip itinerary",
+                                     onOpen: {}, onCancel: {}, onSend: {}), "broken-file", to: dir)
     }
 }
 #endif
