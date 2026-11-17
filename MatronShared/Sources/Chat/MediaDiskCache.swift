@@ -62,6 +62,16 @@ public actor MediaDiskCache {
     /// Caches: an unsandboxed (debug) Mac build shares `~/Library/Caches`
     /// with every other app.
     public static var rootDirectory: URL {
+        #if DEBUG
+        // The Mac unit tests run inside the unsandboxed app, so without this
+        // a test that wipes the cache would wipe the developer's real one.
+        // Same seam as `StoragePaths.appSupport`.
+        if NSClassFromString("XCTestCase") != nil {
+            return FileManager.default.temporaryDirectory
+                .appendingPathComponent("matron-tests-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
+                .appendingPathComponent("MatronMedia", isDirectory: true)
+        }
+        #endif
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
         return caches
             .appendingPathComponent(Bundle.main.bundleIdentifier ?? "Matron", isDirectory: true)

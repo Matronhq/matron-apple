@@ -102,6 +102,10 @@ final class MediaDiskCacheTests: XCTestCase {
         XCTAssertEqual(values.isExcludedFromBackup, true)
     }
 
+    func testTestRunsUseAThrowawayRoot() {
+        XCTAssertTrue(MediaDiskCache.rootDirectory.path.hasPrefix(FileManager.default.temporaryDirectory.path))
+    }
+
     func testAccountDirectoryDoesNotContainTheAccountID() {
         let url = MediaDiskCache.directory(forAccount: "alice")
         XCTAssertFalse(url.path.contains("alice"))
