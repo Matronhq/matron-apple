@@ -82,6 +82,10 @@ final class MatronAppDelegate: NSObject, UIApplicationDelegate {
         // activity (see `OutboxBackgroundGrace.holdIfNeeded`).
         let launchedInBackground = application.applicationState == .background
         DatabaseSuspensionController.shared.setInBackground(launchedInBackground)
+        // A wake launched straight into the background catches up the
+        // journal and nothing more: the stores read their lists once the
+        // app is in front (`RefreshPacer`).
+        AppActivity.shared.setActive(!launchedInBackground)
         // Scene-based apps have been seen to report `.background` here on an
         // ordinary foreground launch; if so, the databases start suspended
         // until the scene's first phase change resumes them. Logged so the
@@ -91,6 +95,19 @@ final class MatronAppDelegate: NSObject, UIApplicationDelegate {
             forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main
         ) { _ in
             DatabaseSuspensionController.shared.setInBackground(false)
+            AppActivity.shared.setActive(true)
+        }
+        // Also on becoming active: an ordinary launch that reported
+        // `.background` above never posts a will-enter-foreground.
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { _ in
+            AppActivity.shared.setActive(true)
+        }
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main
+        ) { _ in
+            AppActivity.shared.setActive(false)
         }
         return true
     }
@@ -109,8 +126,8 @@ final class MatronAppDelegate: NSObject, UIApplicationDelegate {
 
     private static func handleRefresh(_ task: BGAppRefreshTask) {
         scheduleBackgroundRefresh() // always re-arm the next wake
-        let run = startCatchUp { caughtUp in
-            task.setTaskCompleted(success: caughtUp)
+        let run = startCatchUp { outcome in
+            task.setTaskCompleted(success: outcome.completed)
         }
         task.expirationHandler = {
             run.expire()
@@ -141,9 +158,11 @@ final class MatronAppDelegate: NSObject, UIApplicationDelegate {
         }
         // `.failed` even on expiry would be wrong: a replay that runs out of
         // time keeps what it reached, and iOS may wake an app less often if
-        // it reports failures.
-        let run = Self.startCatchUp { _ in
-            completionHandler(.newData)
+        // it reports failures. `.noData` when the wake found nothing: iOS
+        // paces its wakes by what they bring, so reporting news that was
+        // not there buys more wakes that will not find any either.
+        let run = Self.startCatchUp { outcome in
+            completionHandler(outcome.newData ? .newData : .noData)
         }
         Task {
             try? await Task.sleep(for: BackgroundCatchUp.silentPushDeadline)
@@ -155,14 +174,22 @@ final class MatronAppDelegate: NSObject, UIApplicationDelegate {
     /// `finished` exactly once: when it ends, or on expiry, whichever is
     /// first. iOS treats a wake that never reports back as a failed one, so
     /// expiry must not depend on the work unwinding promptly.
-    private static func startCatchUp(finished: @escaping @Sendable (Bool) -> Void) -> CatchUpRun {
+    /// How a background catch-up ended: whether it ran to its end (rather
+    /// than expiring), and whether it brought anything new. An expired run
+    /// counts as news: it ran out of time because there was a backlog.
+    struct CatchUpOutcome: Sendable {
+        let completed: Bool
+        let newData: Bool
+    }
+
+    private static func startCatchUp(finished: @escaping @Sendable (CatchUpOutcome) -> Void) -> CatchUpRun {
         // The catch-up writes the journal with the app backgrounded, so the
         // databases stay resumed for its lifetime and are suspended again as
         // it completes — normal path and expiry alike.
         let activity = DatabaseSuspensionController.shared.beginActivity(named: "bg-catch-up")
         let stats = AppRoot.dependencies.syncStats
         let completed = OSAllocatedUnfairLock(initialState: false)
-        let completeOnce: @Sendable (Bool) -> Void = { success in
+        let completeOnce: @Sendable (CatchUpOutcome) -> Void = { outcome in
             let first = completed.withLock { done -> Bool in
                 if done { return false }
                 done = true
@@ -179,15 +206,15 @@ final class MatronAppDelegate: NSObject, UIApplicationDelegate {
             activity.end()
             let ended = Date()
             Task { @MainActor in lastCatchUpEnded = ended }
-            finished(success)
+            finished(outcome)
         }
         let work = Task { @MainActor in
-            await BackgroundCatchUp.run(dependencies: AppRoot.dependencies)
-            completeOnce(true)
+            let newData = await BackgroundCatchUp.run(dependencies: AppRoot.dependencies)
+            completeOnce(CatchUpOutcome(completed: true, newData: newData))
         }
         return CatchUpRun(expire: {
             work.cancel()
-            completeOnce(false)
+            completeOnce(CatchUpOutcome(completed: false, newData: true))
         })
     }
 

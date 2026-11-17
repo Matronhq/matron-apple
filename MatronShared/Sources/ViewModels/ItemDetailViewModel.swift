@@ -770,6 +770,28 @@ public final class ItemDetailViewModel {
             }
         })
         subscribeComments()
+        // A change that reached this device only through a list read (a
+        // catch-up, or the background) brought the item row, not its
+        // thread: refetch it.
+        tasks.append(Task { [weak self] in
+            guard let deferred = await self?.sync.deferredItemsRead() else { return }
+            for await ids in deferred where ids.contains(id) {
+                guard let self, !Task.isCancelled else { return }
+                await self.sync.refreshItem(id: id)
+            }
+        })
+        // While the item shows its session working, re-read it now and
+        // then: a phone on "For you only" does not hear the session start
+        // and stop (`subscribeOwner`), so the indicator would otherwise
+        // stay up until the item changes or the page is opened again.
+        tasks.append(Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: Self.workingRecheckInterval)
+                guard let self, !Task.isCancelled else { return }
+                guard self.item?.working != nil, AppActivity.shared.isActive else { continue }
+                await self.sync.refreshItem(id: id)
+            }
+        })
         tasks.append(Task { [weak self] in
             guard let s = self?.store.itemOutboxStream(itemID: id) else { return }
             for await v in s {
@@ -802,6 +824,9 @@ public final class ItemDetailViewModel {
     /// The item is closing (its view went away, or the Mac pane released
     /// its slot): stop observing, and delete the reply's staged copies —
     /// nothing will send them now, and they are our files to clean up.
+    /// How often an open item that shows its session working is re-read.
+    static let workingRecheckInterval: Duration = .seconds(30)
+
     public func stop() {
         onScreenHosts.removeAll()
         seen?.removeItem(itemID)

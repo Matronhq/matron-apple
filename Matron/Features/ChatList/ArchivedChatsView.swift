@@ -34,6 +34,9 @@ struct ArchivedChatsView: View {
             .searchable(text: $viewModel.query, placement: .navigationBarDrawer(displayMode: .always),
                         prompt: "Search archived")
             .task { viewModel.start() }
+            // On "For you only" its titles and states come from the
+            // journal's summary, refreshed while a list is on screen.
+            .task { await viewModel.listOnScreen() }
             .onDisappear { viewModel.cancel() }
     }
 

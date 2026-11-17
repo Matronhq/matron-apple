@@ -82,6 +82,24 @@ public actor MissionsSync {
     /// immediately after its await, so a call suspended in the network when
     /// sign-out lands cannot resume and write into a wiped store.
     private var stopped = false
+    /// Paces the list re-read on reconnect and on return to the front.
+    private let pacer: RefreshPacer
+    private var foregroundTask: Task<Void, Never>?
+    /// Whether the socket is replaying what this device missed.
+    private var catchingUp = false
+    /// Tests wait on this rather than on time: a state and a marker reach
+    /// the sync on separate tasks.
+    var isCatchingUpForTesting: Bool { catchingUp }
+    var hasDeferredChangesForTesting: Bool { listChanged }
+    /// A mission changed while the list was not being kept current one
+    /// mission at a time (during a catch-up, or in the background): the
+    /// next re-read of the list goes out whatever the pacer's interval.
+    private var listChanged = false
+    /// The missions whose markers `listChanged` stands for. The list read
+    /// writes mission rows, not milestones: an open mission page refetches
+    /// its mission when its id is published (`deferredMissionsRead()`).
+    private var deferredMissionIDs: Set<String> = []
+    private var deferredWatchers: [UUID: AsyncStream<Set<String>>.Continuation] = [:]
     /// Work whose store write the suspended databases refused (the app was
     /// backgrounded while its fetch was in the network): the full list,
     /// and single missions by id. `databasesResumed()` fetches them again.
@@ -91,8 +109,10 @@ public actor MissionsSync {
 
     public init(api: any MissionsProviding, store: JournalStore,
                 markers: @escaping @Sendable () -> AsyncStream<(convoID: String, marker: MissionMarker)>,
-                connectionStates: @escaping @Sendable () -> AsyncStream<SyncConnectionState>) {
+                connectionStates: @escaping @Sendable () -> AsyncStream<SyncConnectionState>,
+                pacer: RefreshPacer = RefreshPacer()) {
         self.api = api; self.store = store; self.markers = markers; self.connectionStates = connectionStates
+        self.pacer = pacer
     }
 
     public func supportedStream() -> AsyncStream<Bool> {
@@ -117,7 +137,7 @@ public actor MissionsSync {
         markerTask = Task { [weak self] in
             for await (_, marker) in markers {
                 guard let self else { return }
-                await self.refreshMission(id: marker.missionID)
+                await self.noteMarker(missionID: marker.missionID)
             }
         }
         let states = connectionStates()
@@ -127,7 +147,14 @@ public actor MissionsSync {
                 // No `setSupported(true)` here: publishing "supported"
                 // before the probe would flash true→false for an old
                 // journal that 404s. `refresh` publishes the real answer.
-                if case .running = state { await self.refresh() }
+                await self.noteState(state)
+            }
+        }
+        let foreground = pacer.foregroundSignals()
+        foregroundTask = Task { [weak self] in
+            for await _ in foreground {
+                guard let self else { return }
+                await self.refreshListIfDue()
             }
         }
     }
@@ -137,16 +164,87 @@ public actor MissionsSync {
     /// network call resuming into a write. Same contract as `ItemsSync.stop`.
     public func stop() async {
         stopped = true
-        let mt = markerTask; let st = stateTask
-        markerTask = nil; stateTask = nil
-        mt?.cancel(); st?.cancel()
+        let mt = markerTask; let st = stateTask; let ft = foregroundTask
+        markerTask = nil; stateTask = nil; foregroundTask = nil
+        mt?.cancel(); st?.cancel(); ft?.cancel()
         let refresh = inFlightRefresh
         refresh?.cancel()
         let refetches = Array(inFlightRefetches.values)
         for t in refetches { t.cancel() }
-        await mt?.value; await st?.value
+        await mt?.value; await st?.value; await ft?.value
         _ = await refresh?.value
         for t in refetches { await t.value }
+    }
+
+    /// A live mission marker refetches that mission at once. One replayed
+    /// in a catch-up, or one that lands with the app in the background,
+    /// only marks the list as changed: the catch-up can carry dozens, and
+    /// the one list re-read that follows covers them all.
+    private func noteMarker(missionID: String) async {
+        guard !stopped else { return }
+        if catchingUp || !pacer.isAppActive {
+            listChanged = true
+            deferredMissionIDs.insert(missionID)
+            return
+        }
+        await refreshMission(id: missionID)
+    }
+
+    private func noteState(_ state: SyncConnectionState) async {
+        switch state {
+        case .catchingUp:
+            catchingUp = true
+        case .running:
+            catchingUp = false
+            await refreshListIfDue()
+        case .connecting, .offline:
+            catchingUp = false
+        }
+    }
+
+    /// The list re-read on reconnect and on return to the front: paced,
+    /// unless a mission is known to have changed meanwhile.
+    private func refreshListIfDue() async {
+        guard !stopped, pacer.take(changed: listChanged) else { return }
+        let changed = listChanged
+        let ids = deferredMissionIDs
+        listChanged = false
+        deferredMissionIDs.removeAll()
+        // A read already in flight may have reached the journal before the
+        // deferred changes did: wait it out and read again.
+        if changed, let running = inFlightRefresh { _ = await running.value }
+        switch await refresh() {
+        case .succeeded:
+            guard !ids.isEmpty else { return }
+            for watcher in deferredWatchers.values { watcher.yield(ids) }
+        case .failed:
+            pacer.reset()
+            listChanged = true
+            deferredMissionIDs.formUnion(ids)
+        case .stopped:
+            listChanged = listChanged || changed
+            deferredMissionIDs.formUnion(ids)
+        case .unsupported:
+            break
+        }
+    }
+
+    /// The ids of missions that changed while the cache was kept current by
+    /// list reads alone (a catch-up, or the background), each time a list
+    /// read has covered them. An open mission page whose id is in one
+    /// refetches its mission, milestones included.
+    public func deferredMissionsRead() -> AsyncStream<Set<String>> {
+        // Unbounded: each set is the only record of the missions it names, and a
+        // page busy refetching must still see every one of them afterwards.
+        AsyncStream(bufferingPolicy: .unbounded) { c in
+            let id = UUID()
+            deferredWatchers[id] = c
+            c.onTermination = { _ in Task { await self.dropDeferredWatcher(id) } }
+        }
+    }
+
+    private func dropDeferredWatcher(_ id: UUID) {
+        deferredWatchers.removeValue(forKey: id)
     }
 
     /// The host resumed the databases (iOS foregrounding). Re-runs every

@@ -1,4 +1,5 @@
 import Foundation
+import MatronJournal
 import MatronChat
 import MatronModels
 
@@ -313,9 +314,11 @@ public final class ChatListViewModel {
         if error != nil { error = nil }
     }
 
-    /// See `ChatService.listDidAppear()`.
-    public func listDidAppear() async {
-        await chat.listDidAppear()
+    /// Reports the list on screen for as long as the calling task runs:
+    /// call it from the list's `.task`, which SwiftUI cancels when the list
+    /// leaves the screen. See `ChatService.listDidAppear(_:)`.
+    public func listOnScreen() async {
+        await ChatListPresence.hold(chat)
     }
 
     /// iOS pull-to-refresh / Mac `⌘R` entry point: re-fetches the summaries
@@ -363,5 +366,24 @@ public final class ChatListViewModel {
         case (_?, nil): return true
         case (nil, nil): return a.title < b.title
         }
+    }
+}
+
+/// Reports a chat list on screen to its `ChatService` for as long as the
+/// calling task runs (a view's `.task`, which SwiftUI cancels when the list
+/// leaves the screen), and again each time the app comes back to the front,
+/// so a list that stayed on screen through the background refreshes then.
+public enum ChatListPresence {
+    public static func hold(_ chat: ChatService, activity: AppActivity = .shared) async {
+        let token = UUID()
+        // Subscribed before the first report, which waits for a fetch: a
+        // return to the front during that wait is kept and reported after.
+        let returns = activity.becameActive()
+        await chat.listDidAppear(token)
+        // Ends when the task is cancelled.
+        for await _ in returns {
+            await chat.listDidAppear(token)
+        }
+        await chat.listDidDisappear(token)
     }
 }

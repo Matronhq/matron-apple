@@ -124,6 +124,7 @@ final class MessagesStubURLProtocol: URLProtocol {
         var requests: [URLRequest] = []
         var failuresLeft = 0
         var holdNextFor: String?
+        var holdNextSnapshot = false
         var held: (() -> Void)?
     }
     /// The engine's requests land on URLSession's queue while a test reads.
@@ -144,6 +145,11 @@ final class MessagesStubURLProtocol: URLProtocol {
         get { state.withLockUnchecked { $0.holdNextFor } }
         set { state.withLockUnchecked { $0.holdNextFor = newValue } }
     }
+    /// The next `/snapshot` request is answered only on `releaseHeld()`.
+    static var holdNextSnapshot: Bool {
+        get { state.withLockUnchecked { $0.holdNextSnapshot } }
+        set { state.withLockUnchecked { $0.holdNextSnapshot = newValue } }
+    }
     static var isHolding: Bool { state.withLockUnchecked { $0.held != nil } }
     static func releaseHeld() {
         let answer = state.withLockUnchecked { s -> (() -> Void)? in
@@ -156,6 +162,10 @@ final class MessagesStubURLProtocol: URLProtocol {
     /// The conversation fetches only; every connect also asks for `/snapshot`.
     static var messageRequests: [URLRequest] {
         state.withLockUnchecked { $0.requests }.filter { $0.url?.path.hasSuffix("/messages") == true }
+    }
+
+    static var snapshotRequests: Int {
+        state.withLockUnchecked { $0.requests }.filter { $0.url?.path.hasSuffix("/snapshot") == true }.count
     }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -172,9 +182,18 @@ final class MessagesStubURLProtocol: URLProtocol {
         let before = items.first { $0.name == "before_seq" }?.value.flatMap(Int64.init)
         guard request.url?.path.hasSuffix("/messages") == true else {
             let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
-            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocol(self, didLoad: Data("{}".utf8))
-            client?.urlProtocolDidFinishLoading(self)
+            let answer = { [client] in
+                client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocol(self, didLoad: Data("{}".utf8))
+                client?.urlProtocolDidFinishLoading(self)
+            }
+            let held = Self.state.withLockUnchecked { s -> Bool in
+                guard s.holdNextSnapshot, request.url?.path.hasSuffix("/snapshot") == true else { return false }
+                s.holdNextSnapshot = false
+                s.held = answer
+                return true
+            }
+            if !held { answer() }
             return
         }
         if failing {
@@ -319,6 +338,103 @@ final class SyncScopeEngineTests: XCTestCase {
         try await until("the fetch") { try store.events(convoID: "c1").map(\.seq) == [5, 30, 31] }
         XCTAssertEqual(MessagesStubURLProtocol.messageRequests.count, 1, "one page reached the stored events")
         XCTAssertEqual(try store.syncedSeq(convoID: "c1"), 31)
+        await engine.endSync()
+    }
+
+    private func connectedEngine(scope: SyncScope, beforeConnect: (JournalSyncEngine) async -> Void = { _ in }) async throws -> JournalSyncEngine {
+        let socket = FakeWebSocketConnection()
+        let store = try seededStore(cursor: 10)
+        let engine = JournalSyncEngine(api: stubbedAPI(), store: store, connector: FakeConnector([socket]), token: "t",
+                                       ownSender: "user:alice", search: nil, backoffBaseSeconds: 0.01,
+                                       syncScope: scope)
+        if scope == .forYou {
+            socket.serve(#"{"kind":"control","op":"hello_ok","seq":10,"sync":"for_you"}"#)
+            socket.serve(#"{"kind":"control","op":"cursor","seq":10}"#)
+        } else {
+            socket.serve(#"{"kind":"control","op":"hello_ok","seq":10}"#)
+        }
+        await beforeConnect(engine)
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        return engine
+    }
+
+    func testOnForYouAConnectDoesNotFetchTheConversationList() async throws {
+        let engine = try await connectedEngine(scope: .forYou)
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(MessagesStubURLProtocol.snapshotRequests, 0, "nothing on screen reads the list")
+        await engine.endSync()
+    }
+
+    func testOnForYouAConnectFetchesTheListWhileTheChatListIsOnScreen() async throws {
+        let engine = try await connectedEngine(scope: .forYou) { engine in
+            await engine.chatListAppeared(UUID())
+        }
+        try await until("the connect's list fetch") { MessagesStubURLProtocol.snapshotRequests == 2 }
+        await engine.endSync()
+    }
+
+    func testOnForYouAListLeftOnScreenInTheBackgroundDoesNotFetchOnAWake() async {
+        let activity = AppActivity(active: false)
+        let engine = JournalSyncEngine(api: stubbedAPI(), store: try! seededStore(cursor: 10),
+                                       connector: FakeConnector([]), token: "t", ownSender: "user:alice",
+                                       search: nil, syncScope: .forYou, activity: activity)
+        await engine.chatListAppeared(UUID())
+        let inBackground = await engine.refreshesSummariesOnConnect
+        XCTAssertFalse(inBackground)
+        activity.setActive(true)
+        let inFront = await engine.refreshesSummariesOnConnect
+        XCTAssertTrue(inFront)
+    }
+
+    func testAListFetchThatLandsAfterABackgroundReconnectDoesNotMarkTheListCurrent() async throws {
+        let activity = AppActivity(active: true)
+        let socket = FakeWebSocketConnection()
+        let engine = JournalSyncEngine(api: stubbedAPI(), store: try seededStore(cursor: 10),
+                                       connector: FakeConnector([socket]), token: "t", ownSender: "user:alice",
+                                       search: nil, backoffBaseSeconds: 0.01, syncScope: .forYou,
+                                       activity: activity)
+        MessagesStubURLProtocol.holdNextSnapshot = true
+        let appeared = Task { await engine.chatListAppeared(UUID()) }
+        try await until("the list's fetch is in flight") { MessagesStubURLProtocol.isHolding }
+
+        // The app goes to the background and a wake reconnects: that socket
+        // does not fetch the list, so what it missed is not in the summaries.
+        activity.setActive(false)
+        socket.serve(#"{"kind":"control","op":"hello_ok","seq":10,"sync":"for_you"}"#)
+        socket.serve(#"{"kind":"control","op":"cursor","seq":10}"#)
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(MessagesStubURLProtocol.snapshotRequests, 1, "the background connect fetches nothing")
+
+        // The older fetch lands afterwards.
+        MessagesStubURLProtocol.releaseHeld()
+        await appeared.value
+
+        activity.setActive(true)
+        await engine.refreshSummariesForList()
+        XCTAssertEqual(MessagesStubURLProtocol.snapshotRequests, 2,
+                       "the list fetches again: the older fetch predates the reconnect")
+        await engine.endSync()
+    }
+
+    func testOnForYouAChatListThatLeftNoLongerCounts() async {
+        let engine = JournalSyncEngine(api: stubbedAPI(), store: try! seededStore(cursor: 10),
+                                       connector: FakeConnector([]), token: "t", ownSender: "user:alice",
+                                       search: nil, syncScope: .forYou)
+        let token = UUID()
+        await engine.chatListAppeared(token)
+        let onScreen = await engine.refreshesSummariesOnConnect
+        XCTAssertTrue(onScreen)
+        await engine.chatListDisappeared(token)
+        let gone = await engine.refreshesSummariesOnConnect
+        XCTAssertFalse(gone)
+    }
+
+    func testOnEverythingAConnectFetchesTheConversationList() async throws {
+        let engine = try await connectedEngine(scope: .everything)
+        try await until("the list fetch") { MessagesStubURLProtocol.snapshotRequests == 1 }
         await engine.endSync()
     }
 

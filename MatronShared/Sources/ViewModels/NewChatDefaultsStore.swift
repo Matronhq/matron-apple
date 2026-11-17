@@ -7,7 +7,7 @@ import MatronModels
 /// /defaults`): what Settings → New chats edits. A port of matron-web's
 /// `MatronJournalClient` defaults logic, so the three apps behave alike.
 ///
-/// Reads `GET /defaults` on every connect (the live `defaults` frame has no
+/// Reads `GET /defaults` on reconnect and on return to the front, paced by `RefreshPacer` (the live `defaults` frame has no
 /// replay, so one missed while offline is caught there) and applies live
 /// frames as they land.
 ///
@@ -64,13 +64,20 @@ public final class NewChatDefaultsStore {
     private var generation = 0
     private var updatesTask: Task<Void, Never>?
     private var statesTask: Task<Void, Never>?
+    private var foregroundTask: Task<Void, Never>?
+    /// Paces the re-reads on reconnect and on return to the front.
+    private let pacer: RefreshPacer
+    private let reader: PacedReader
 
     public init(api: any NewChatDefaultsProviding,
                 updates: @escaping @Sendable () -> AsyncStream<NewChatDefaults>,
-                connectionStates: @escaping @Sendable () -> AsyncStream<SyncConnectionState>) {
+                connectionStates: @escaping @Sendable () -> AsyncStream<SyncConnectionState>,
+                pacer: RefreshPacer = RefreshPacer()) {
         self.api = api
         self.updates = updates
         self.connectionStates = connectionStates
+        self.pacer = pacer
+        self.reader = PacedReader(pacer: pacer)
     }
 
     public func start() {
@@ -88,7 +95,15 @@ public final class NewChatDefaultsStore {
         statesTask = Task { [weak self] in
             for await state in states {
                 guard !Task.isCancelled else { return }
-                if case .running = state { await self?.refresh() }
+                // Paced: a phone reconnects each time it is opened or woken.
+                if case .running = state { await self?.requestRead() }
+            }
+        }
+        let foreground = pacer.foregroundSignals()
+        foregroundTask = Task { [weak self] in
+            for await _ in foreground {
+                guard !Task.isCancelled else { return }
+                await self?.requestRead()
             }
         }
         // Picks kept across a `stop()` are sent now. A key whose old `PUT`
@@ -104,11 +119,20 @@ public final class NewChatDefaultsStore {
     public func stop() {
         updatesTask?.cancel()
         statesTask?.cancel()
+        foregroundTask?.cancel()
+        foregroundTask = nil
+        reader.cancel()
         updatesTask = nil
         statesTask = nil
         // A `GET` or `PUT` still in flight must not land after this.
         seq += 1
         generation += 1
+    }
+
+    /// A reconnect or a return to the front asks for a re-read
+    /// (`PacedReader`).
+    private func requestRead() async {
+        await reader.request { [weak self] in await self?.refresh() }
     }
 
     /// `GET /defaults`. A 404 means the journal predates per-user defaults;
@@ -134,6 +158,7 @@ public final class NewChatDefaultsStore {
             guard seq == sentSeq else { return }
             loadError = "Couldn't load the defaults: \(error.localizedDescription)"
             Self.logger.warning("GET /defaults failed: \(error.localizedDescription, privacy: .public)")
+            pacer.reset()
         }
     }
 

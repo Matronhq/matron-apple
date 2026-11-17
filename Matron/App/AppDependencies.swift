@@ -455,7 +455,7 @@ final class AppDependencies {
     /// joined, not repeated.
     func refreshForYou(for session: UserSession) {
         let items = core(for: session).items
-        Task { await items.refresh(scope: .all) }
+        Task { await items.refreshOnReturn() }
     }
 
     /// The session's `MissionsSync` actor — marker refetches and the

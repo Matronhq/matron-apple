@@ -249,8 +249,12 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
         await engine.refreshSummaries()
     }
 
-    public func listDidAppear() async {
-        await engine.refreshSummariesForList()
+    public func listDidAppear(_ token: UUID) async {
+        await engine.chatListAppeared(token)
+    }
+
+    public func listDidDisappear(_ token: UUID) async {
+        await engine.chatListDisappeared(token)
     }
 
 }

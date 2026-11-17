@@ -33,8 +33,13 @@ public protocol ChatService: Sendable {
 
     /// The list came on screen. A device that does not mirror every
     /// conversation (the `forYou` sync scope) refreshes its summaries then,
-    /// at most once a minute; one that does has them current already.
-    func listDidAppear() async
+    /// at most once a minute, and on every reconnect until
+    /// `listDidDisappear` with the same token; one that does has them
+    /// current already.
+    func listDidAppear(_ token: UUID) async
+
+    /// The list that reported `token` left the screen.
+    func listDidDisappear(_ token: UUID) async
 
     /// Archives (`archived: true`) or unarchives the conversations. An
     /// archived conversation leaves the chat list for Archived at once;
@@ -48,7 +53,8 @@ public protocol ChatService: Sendable {
 }
 
 public extension ChatService {
-    func listDidAppear() async {}
+    func listDidAppear(_ token: UUID) async {}
+    func listDidDisappear(_ token: UUID) async {}
 
     /// Default for fakes that do not archive.
     func setArchived(_ roomIDs: [String], archived: Bool) async {}

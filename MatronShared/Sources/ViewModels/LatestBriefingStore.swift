@@ -7,7 +7,7 @@ import MatronModels
 /// for a new one (journal "Coordinator briefings"): what the "Latest
 /// briefing" card at the top of Projects draws, on both apps. One per
 /// signed-in session, like `NotifySettingsStore`: reads `GET
-/// /briefings/latest` on every connect (the live frame has no replay) and
+/// /briefings/latest` on reconnect and on return to the front, paced by `RefreshPacer` (the live frame has no replay) and
 /// again on every `briefing` frame, which is an invalidation signal only.
 /// Also re-reads when a pending refresh's `expires_at` passes — the journal
 /// sends no frame for a timeout — and wakes when the refresh cooldown ends so
@@ -56,6 +56,10 @@ public final class LatestBriefingStore {
     private var appliedRequest = -1
     private var updatesTask: Task<Void, Never>?
     private var statesTask: Task<Void, Never>?
+    private var foregroundTask: Task<Void, Never>?
+    /// Paces the re-reads on reconnect and on return to the front.
+    private let pacer: RefreshPacer
+    private let reader: PacedReader
     private var wakeTask: Task<Void, Never>?
 
     /// - Parameter expiryGrace: how long after a pending refresh's
@@ -63,11 +67,14 @@ public final class LatestBriefingStore {
     public init(api: any BriefingsProviding,
                 updates: @escaping @Sendable () -> AsyncStream<BriefingSignal>,
                 connectionStates: @escaping @Sendable () -> AsyncStream<SyncConnectionState>,
+                pacer: RefreshPacer = RefreshPacer(interval: .seconds(60)),
                 now: @escaping @Sendable () -> Date = { Date() },
                 expiryGrace: TimeInterval = 2) {
         self.api = api
         self.updates = updates
         self.connectionStates = connectionStates
+        self.pacer = pacer
+        self.reader = PacedReader(pacer: pacer)
         self.now = now
         self.expiryGrace = expiryGrace
         self.clock = now()
@@ -116,7 +123,15 @@ public final class LatestBriefingStore {
         statesTask = Task { [weak self] in
             for await state in states {
                 guard !Task.isCancelled else { return }
-                if case .running = state { await self?.refresh() }
+                // Paced: a phone reconnects each time it is opened or woken.
+                if case .running = state { await self?.requestRead() }
+            }
+        }
+        let foreground = pacer.foregroundSignals()
+        foregroundTask = Task { [weak self] in
+            for await _ in foreground {
+                guard !Task.isCancelled else { return }
+                await self?.requestRead()
             }
         }
     }
@@ -124,6 +139,9 @@ public final class LatestBriefingStore {
     public func stop() {
         updatesTask?.cancel()
         statesTask?.cancel()
+        foregroundTask?.cancel()
+        foregroundTask = nil
+        reader.cancel()
         wakeTask?.cancel()
         updatesTask = nil
         statesTask = nil
@@ -131,6 +149,12 @@ public final class LatestBriefingStore {
         // A `GET` still in flight must not land after this.
         appliedRequest = nextRequest
         nextRequest += 1
+    }
+
+    /// A reconnect or a return to the front asks for a re-read
+    /// (`PacedReader`).
+    private func requestRead() async {
+        await reader.request { [weak self] in await self?.refresh() }
     }
 
     /// `GET /briefings/latest`. A transport failure keeps what is shown.
@@ -149,6 +173,7 @@ public final class LatestBriefingStore {
             recompute()
         } catch {
             Self.logger.warning("GET /briefings/latest failed: \(error.localizedDescription, privacy: .public)")
+            pacer.reset()
         }
     }
 

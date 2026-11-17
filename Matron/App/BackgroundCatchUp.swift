@@ -37,7 +37,10 @@ enum BackgroundCatchUp {
     /// Lets in-flight journal frames and the outbox flush land.
     private static let settle: Duration = .seconds(2)
 
-    static func run(dependencies: AppDependencies) async {
+    /// Returns whether the run brought anything new: journal events, or
+    /// sends delivered. `false` also when signed out.
+    @discardableResult
+    static func run(dependencies: AppDependencies) async -> Bool {
         // Installed by the window's bootstrap too; a cold background launch
         // has no window, and a parked engine needs this to hear of a resume.
         dependencies.installLifecycleHooks()
@@ -45,8 +48,10 @@ enum BackgroundCatchUp {
         // suspended, with the notification missed: re-read before any search
         // write can happen.
         dependencies.refreshProtectedDataState(sceneIsActive: false)
-        guard let restored = try? await dependencies.auth.restoreSession() else { return }
+        guard let restored = try? await dependencies.auth.restoreSession() else { return false }
         let engine = dependencies.syncEngine(for: restored)
+        let eventsBefore = await engine.appliedEventCount
+        let outboxBefore = await engine.hasPendingOutbox
         // No-op when already running.
         await engine.beginSync()
         await engine.nudge()
@@ -75,5 +80,8 @@ enum BackgroundCatchUp {
         if needsSettle {
             try? await Task.sleep(for: settle)
         }
+        let eventsAfter = await engine.appliedEventCount
+        let outboxAfter = await engine.hasPendingOutbox
+        return eventsAfter > eventsBefore || (outboxBefore && !outboxAfter)
     }
 }

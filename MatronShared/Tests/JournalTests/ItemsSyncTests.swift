@@ -261,12 +261,126 @@ class ItemsSyncTests: XCTestCase {
     /// `ItemsSyncPoolTests` runs the whole suite again on a pool.
     class var writerKind: StoreWriterKind { .queue }
 
-    private func make(api: FakeItems, retryBase: TimeInterval = 2) throws -> (ItemsSync, JournalStore, AsyncStream<(convoID: String, marker: ItemMarkerEvent)>.Continuation, AsyncStream<SyncConnectionState>.Continuation) {
+    private func make(api: FakeItems, retryBase: TimeInterval = 2,
+                      reconcileInterval: TimeInterval? = 6 * 60 * 60,
+                      listPacer: RefreshPacer = RefreshPacer(interval: .seconds(30), activity: AppActivity())) throws -> (ItemsSync, JournalStore, AsyncStream<(convoID: String, marker: ItemMarkerEvent)>.Continuation, AsyncStream<SyncConnectionState>.Continuation) {
         let store = try makeTestStore(Self.writerKind)
         let (markers, mc) = AsyncStream<(convoID: String, marker: ItemMarkerEvent)>.makeStream()
         let (states, sc) = AsyncStream<SyncConnectionState>.makeStream()
-        let sync = ItemsSync(api: api, store: store, markers: { markers }, connectionStates: { states }, retryBase: retryBase)
+        let sync = ItemsSync(api: api, store: store, markers: { markers }, connectionStates: { states }, retryBase: retryBase,
+                             reconcileInterval: reconcileInterval, listPacer: listPacer)
         return (sync, store, mc, sc)
+    }
+
+    private func marker(_ id: String) -> (convoID: String, marker: ItemMarkerEvent) {
+        (convoID: "c1", marker: ItemMarkerEvent(itemID: id, num: 1, kind: .task, title: "T", action: .commented, by: .user))
+    }
+
+    // MARK: Reconnect and catch-up pacing
+
+    func testMarkersReplayedInACatchUpAreCoveredByOneListRead() async throws {
+        let api = FakeItems()
+        api.detail["it_1"] = (item("it_1", num: 1, updated: 5), [])
+        api.detail["it_2"] = (item("it_2", num: 2, updated: 6), [])
+        let (sync, _, markers, states) = try make(api: api, reconcileInterval: nil)
+        await sync.start()
+        states.yield(.catchingUp)
+        try await waitUntil { api.listQueries.count == 1 }
+        markers.yield(marker("it_1"))
+        markers.yield(marker("it_2"))
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(api.itemCalls, 0, "a replayed marker is not fetched on its own")
+        states.yield(.running)
+        try await waitUntil { api.listQueries.count == 2 }
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(api.itemCalls, 0)
+        XCTAssertEqual(api.listQueries.count, 2, "one list read when the catch-up ends covers them")
+    }
+
+    func testAReconnectRightAfterTheReturnReadDoesNotReadAgain() async throws {
+        let api = FakeItems()
+        let (sync, _, _, states) = try make(api: api, reconcileInterval: nil)
+        await sync.start()
+        await sync.refreshOnReturn()
+        XCTAssertEqual(api.listQueries.count, 1)
+        states.yield(.catchingUp)
+        states.yield(.running)
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertEqual(api.listQueries.count, 1, "the catch-up does not repeat the read the return just made")
+    }
+
+    func testAnAlreadyCaughtUpSocketReadsTheListWhenNothingReadItRecently() async throws {
+        let api = FakeItems()
+        let (sync, _, _, states) = try make(api: api, reconcileInterval: nil)
+        await sync.start()
+        states.yield(.running)
+        try await waitUntil { api.listQueries.count == 1 }
+    }
+
+    func testInTheBackgroundOnlyAChangedListIsRead() async throws {
+        let api = FakeItems()
+        api.detail["it_1"] = (item("it_1", num: 1, updated: 5), [])
+        let activity = AppActivity(active: false)
+        let (sync, _, markers, states) = try make(api: api, reconcileInterval: nil, listPacer: RefreshPacer(interval: .seconds(30), activity: activity))
+        await sync.start()
+        states.yield(.catchingUp)
+        states.yield(.running)
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(api.listQueries.count, 0, "a wake with nothing new reads nothing")
+        states.yield(.catchingUp)
+        markers.yield(marker("it_1"))
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        states.yield(.running)
+        try await waitUntil { api.listQueries.count == 1 }
+        XCTAssertEqual(api.itemCalls, 0)
+    }
+
+    func testItemsChangedInACatchUpArePublishedOnceTheListHasCoveredThem() async throws {
+        let api = FakeItems()
+        let (sync, _, markers, states) = try make(api: api, reconcileInterval: nil)
+        await sync.start()
+        let stream = await sync.deferredItemsRead()
+        let deferred = Task { await firstValue(of: stream) }
+        states.yield(.catchingUp)
+        try await waitUntil { api.listQueries.count == 1 }
+        markers.yield(marker("it_1"))
+        markers.yield(marker("it_2"))
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        try await waitUntilAsync { await sync.hasDeferredChangesForTesting }
+        states.yield(.running)
+        let ids = await deferred.value
+        XCTAssertEqual(ids, ["it_1", "it_2"])
+        XCTAssertEqual(api.listQueries.count, 2)
+    }
+
+    func testACatchUpsChangesAreNotCoveredByAReadThatStartedBeforeThem() async throws {
+        let api = FakeItems()
+        let (sync, _, markers, states) = try make(api: api, reconcileInterval: nil)
+        await sync.start()
+        api.blockNextList = true
+        let early = Task { await sync.refreshOnReturn() }
+        try await waitUntil { api.listQueries.count == 1 }
+        states.yield(.catchingUp)
+        try await waitUntilAsync { await sync.isCatchingUpForTesting }
+        markers.yield(marker("it_1"))
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        states.yield(.running)
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        api.releaseListGate()
+        await early.value
+        try await waitUntil({ api.listQueries.count == 2 }, timeout: 5)
+    }
+
+    func testALiveMarkerInFrontStillFetchesItsItem() async throws {
+        let api = FakeItems()
+        api.detail["it_1"] = (item("it_1", num: 1, updated: 5), [])
+        let (sync, store, markers, states) = try make(api: api, reconcileInterval: nil)
+        await sync.start()
+        states.yield(.running)
+        try await waitUntil { api.listQueries.count == 1 }
+        markers.yield(marker("it_1"))
+        try await waitUntil { try store.item(id: "it_1") != nil }
+        XCTAssertEqual(api.itemCalls, 1)
     }
     private func item(_ id: String, num: Int, updated: TimeInterval) -> TrackerItem {
         TrackerItem(id: id, num: num, kind: .task, title: "T", originConvoID: "c1", updatedAt: Date(timeIntervalSince1970: updated))
@@ -1380,6 +1494,32 @@ class ItemsSyncTests: XCTestCase {
         try await waitUntil { Set(asked.recorded) == ["ms_old", "ms_new"] }
     }
 
+    /// Bugbot: an item whose marker waited for the list read (a catch-up)
+    /// and that left a mission meanwhile changes the counts of the mission
+    /// it left as well as the one it is on now.
+    func testAnItemMovedDuringACatchUpRefetchesBothMissions() async throws {
+        let api = FakeItems()
+        let (sync, store, markers, states) = try make(api: api, reconcileInterval: nil)
+        let before = TrackerItem(id: "it_1", num: 1, kind: .question, awaiting: .user, title: "Q",
+                                 originConvoID: "c1", updatedAt: Date(timeIntervalSince1970: 4),
+                                 missionID: "ms_old", missionNum: 60)
+        try store.upsertItems([before])
+        let moved = TrackerItem(id: "it_1", num: 1, kind: .question, awaiting: .user, title: "Q",
+                                originConvoID: "c1", updatedAt: Date(timeIntervalSince1970: 5),
+                                missionID: "ms_new", missionNum: 61)
+        api.listResponses = [ItemsPage(items: [before], nextCursor: nil), ItemsPage(items: [moved], nextCursor: nil)]
+        let asked = IDRecorder()
+        await sync.setMissionRefetcher { asked.record($0) }
+        await sync.start()
+        states.yield(.catchingUp)
+        try await waitUntil { api.listQueries.count == 1 }
+        markers.yield(marker("it_1"))
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        states.yield(.running)
+        try await waitUntil { Set(asked.recorded) == ["ms_old", "ms_new"] }
+        XCTAssertEqual(api.itemCalls, 0, "the list read covered the item")
+    }
+
     func testAnItemOnNoMissionRefetchesNothing() async throws {
         let api = FakeItems()
         api.detail["it_1"] = (item("it_1", num: 1, updated: 5), [])
@@ -1451,6 +1591,15 @@ class ItemsSyncTests: XCTestCase {
         let (sync, _, _, _) = try make(api: FakeItems())
         let cancelled = await sync.cancelQueuedComment(localID: "gone")
         XCTAssertEqual(cancelled, .alreadySent)
+    }
+
+    private func waitUntilAsync(_ cond: () async -> Bool, timeout: TimeInterval = 5) async throws {
+        struct TimeoutError: Error, CustomStringConvertible { var description: String { "waitUntilAsync timed out" } }
+        let start = Date()
+        while !(await cond()) {
+            if Date().timeIntervalSince(start) > timeout { throw TimeoutError() }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
     }
 
     private func waitUntil(_ cond: @escaping () throws -> Bool, timeout: TimeInterval = 2) async throws {

@@ -21,7 +21,7 @@ public struct ConvoNotifyState: Equatable, Sendable {
 
 /// The session's notification settings (journal spec 2026-10-01): what the
 /// Notifications screen edits and what every conversation row reads for its
-/// bell-slash. Reads `GET /notify` on every connect (the live frame has no
+/// bell-slash. Reads `GET /notify` on reconnect and on return to the front, paced by `RefreshPacer` (the live frame has no
 /// replay, so one missed while offline is caught there) and applies live
 /// `notify` frames as they land. Writes are optimistic: the change shows at
 /// once and a failed `PUT` takes back exactly that change.
@@ -60,15 +60,22 @@ public final class NotifySettingsStore {
     private var confirmedEpoch = 0
     private var updatesTask: Task<Void, Never>?
     private var statesTask: Task<Void, Never>?
+    private var foregroundTask: Task<Void, Never>?
+    /// Paces the re-reads on reconnect and on return to the front.
+    private let pacer: RefreshPacer
+    private let reader: PacedReader
     private var expiryTask: Task<Void, Never>?
 
     public init(api: any NotifySettingsProviding,
                 updates: @escaping @Sendable () -> AsyncStream<NotifySettings>,
                 connectionStates: @escaping @Sendable () -> AsyncStream<SyncConnectionState>,
+                pacer: RefreshPacer = RefreshPacer(),
                 now: @escaping @Sendable () -> Date = { Date() }) {
         self.api = api
         self.updates = updates
         self.connectionStates = connectionStates
+        self.pacer = pacer
+        self.reader = PacedReader(pacer: pacer)
         self.now = now
         self.clock = now()
     }
@@ -101,7 +108,15 @@ public final class NotifySettingsStore {
         statesTask = Task { [weak self] in
             for await state in states {
                 guard !Task.isCancelled else { return }
-                if case .running = state { await self?.refresh() }
+                // Paced: a phone reconnects each time it is opened or woken.
+                if case .running = state { await self?.requestRead() }
+            }
+        }
+        let foreground = pacer.foregroundSignals()
+        foregroundTask = Task { [weak self] in
+            for await _ in foreground {
+                guard !Task.isCancelled else { return }
+                await self?.requestRead()
             }
         }
     }
@@ -109,12 +124,21 @@ public final class NotifySettingsStore {
     public func stop() {
         updatesTask?.cancel()
         statesTask?.cancel()
+        foregroundTask?.cancel()
+        foregroundTask = nil
+        reader.cancel()
         expiryTask?.cancel()
         updatesTask = nil
         statesTask = nil
         expiryTask = nil
         // A `GET` still in flight must not land after this.
         confirmedEpoch += 1
+    }
+
+    /// A reconnect or a return to the front asks for a re-read
+    /// (`PacedReader`).
+    private func requestRead() async {
+        await reader.request { [weak self] in await self?.refresh() }
     }
 
     /// `GET /notify`. A transport failure keeps what is shown.
@@ -134,6 +158,7 @@ public final class NotifySettingsStore {
             isSupported = false
         } catch {
             Self.logger.warning("GET /notify failed: \(error.localizedDescription, privacy: .public)")
+            pacer.reset()
         }
     }
 

@@ -20,6 +20,12 @@ public final class ArchivedChatsViewModel {
     private let chat: ChatService
     private var task: Task<Void, Never>?
 
+    /// Reports the list on screen while the calling task runs; see
+    /// `ChatListPresence`. Its rows come from the same summaries.
+    public func listOnScreen() async {
+        await ChatListPresence.hold(chat)
+    }
+
     public init(chat: ChatService) {
         self.chat = chat
     }

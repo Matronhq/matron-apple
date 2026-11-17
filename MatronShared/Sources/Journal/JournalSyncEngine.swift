@@ -288,8 +288,10 @@ public actor JournalSyncEngine {
         credentialSignals: (@Sendable (CredentialSignal) -> Void)? = nil,
         syncScope: SyncScope = .everything,
         stats: SyncStatsRecorder? = nil,
-        pathMonitorFactory: @escaping @Sendable () -> any NetworkPathMonitoring = { SystemNetworkPathMonitor() }
+        pathMonitorFactory: @escaping @Sendable () -> any NetworkPathMonitoring = { SystemNetworkPathMonitor() },
+        activity: AppActivity = .shared
     ) {
+        self.activity = activity
         self.makePathMonitor = pathMonitorFactory
         self.credentialSignals = credentialSignals
         self.syncScope = syncScope
@@ -436,6 +438,12 @@ public actor JournalSyncEngine {
         if case .running = state { return true }
         return false
     }
+
+    /// How many journal events this engine has written since it started.
+    /// A background wake compares it before and after to tell iOS whether
+    /// it brought news: on "For you only" the cursor also moves for events
+    /// the socket never carried, so the cursor cannot say.
+    public private(set) var appliedEventCount = 0
 
     public func waitUntilReady() async throws {
         if case .running = state { return }
@@ -1294,7 +1302,43 @@ public actor JournalSyncEngine {
 
     /// When `refreshSummaries` last landed, for `refreshSummariesForList`.
     private var lastSummaryRefresh: ContinuousClock.Instant?
+    /// Counts the connects that left the summaries behind (they cleared
+    /// `lastSummaryRefresh`). A fetch that started before one of them does
+    /// not mark the summaries current when it lands.
+    private var summaryInvalidations = 0
     private static let listRefreshInterval: Duration = .seconds(60)
+
+    /// The chat lists on screen now, by the token each passed to
+    /// `chatListAppeared`. A set rather than a flag, so a list that leaves
+    /// and comes back can report the two in either order.
+    private var chatListsOnScreen: Set<UUID> = []
+    /// Whether the app is in front (`refreshesSummariesOnConnect`).
+    private let activity: AppActivity
+
+    /// A chat list came on screen: refreshes its summaries if they are due
+    /// (`refreshSummariesForList`), and makes every connect refresh them
+    /// until `chatListDisappeared` with the same token.
+    public func chatListAppeared(_ token: UUID) async {
+        chatListsOnScreen.insert(token)
+        await refreshSummariesForList()
+    }
+
+    public func chatListDisappeared(_ token: UUID) {
+        chatListsOnScreen.remove(token)
+    }
+
+    /// Whether a new socket fetches `/snapshot` as soon as it is up. On
+    /// `everything` it always does. On `forYou` the snapshot is the whole
+    /// conversation list (every sub-chat included, megabytes for a busy
+    /// account), and only the chat list reads what it brings, so a phone
+    /// that reconnects each time it is opened or woken fetches it only
+    /// while a chat list is on screen and the app is in front (a list left
+    /// on screen when the app went to the background must not make every
+    /// silent push's wake fetch it). The list fetches it when it comes back
+    /// on screen otherwise.
+    var refreshesSummariesOnConnect: Bool {
+        syncScope == .everything || (!chatListsOnScreen.isEmpty && activity.isActive)
+    }
 
     /// The chat list came on screen. On `forYou` most messages never reach
     /// this device, so the list's unread counts and snippets come from the
@@ -1308,8 +1352,13 @@ public actor JournalSyncEngine {
 
     public func refreshSummaries() async {
         let epoch = storeEpoch
+        let invalidations = summaryInvalidations
         guard let snapshot = try? await api.snapshot() else { return }
         guard epoch == storeEpoch else { return } // store wiped mid-flight; stale
+        // A connect since this fetch started left the summaries behind, and a
+        // fetch started after it may already have written newer ones: this
+        // answer is dropped, and the list's next appearance fetches again.
+        guard invalidations == summaryInvalidations else { return }
         lastSummaryRefresh = .now
         try? store.refreshSummaries(snapshot.conversations, adoptUnread: syncScope == .forYou)
         try? store.replaceAgents(snapshot.agents)
@@ -1950,7 +1999,15 @@ public actor JournalSyncEngine {
                 // state below belongs to the loop that owns the live socket.
                 guard isCurrent(generation) else { connection.close(); return }
                 refreshSummariesTask?.cancel()
-                refreshSummariesTask = Task { await self.refreshSummaries() } // title/state stopgap (spec §7 ask 4)
+                if refreshesSummariesOnConnect {
+                    refreshSummariesTask = Task { await self.refreshSummaries() } // title/state stopgap (spec §7 ask 4)
+                } else {
+                    // Whatever this socket missed is not in the summaries:
+                    // the list's next appearance must fetch them, however
+                    // recently the last fetch was.
+                    lastSummaryRefresh = nil
+                    summaryInvalidations += 1
+                }
                 // Fresh socket: everything unconfirmed is eligible to resend
                 // once (idem-dedup'd server-side), including messages queued
                 // while offline. Kicked as a child task so the frame loop
@@ -2407,6 +2464,7 @@ public actor JournalSyncEngine {
     /// whose blobRef collides with the replayed one (bugbot "Media confirm
     /// ignores duplicate guard").
     private func didApply(_ event: JournalEvent) {
+        appliedEventCount += 1
         publishItemMarker(event)
         publishMissionMarker(event)
         publishMemoryMarker(event)
@@ -2422,6 +2480,7 @@ public actor JournalSyncEngine {
     /// batch instead of one of each per frame.
     private func didApplyBatch(_ events: [JournalEvent]) {
         guard !events.isEmpty else { return }
+        appliedEventCount += events.count
         for event in events {
             publishItemMarker(event); publishMissionMarker(event); publishMemoryMarker(event)
             publishRoutineMarker(event); publishCoordinatorEvent(event); confirmMediaSendIfNeeded(event)

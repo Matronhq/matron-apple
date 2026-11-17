@@ -84,14 +84,89 @@ final class MissionsSyncTests: XCTestCase {
                 lastMilestoneAt: Date(timeIntervalSince1970: 3))
     }
 
-    private func make(api: FakeMissions) throws -> (MissionsSync, JournalStore,
+    private func make(api: FakeMissions,
+                      pacer: RefreshPacer = RefreshPacer(interval: .zero, activity: AppActivity())) throws -> (MissionsSync, JournalStore,
                                                     AsyncStream<(convoID: String, marker: MissionMarker)>.Continuation,
                                                     AsyncStream<SyncConnectionState>.Continuation) {
         let store = try JournalStore(databaseURL: nil, ownSender: "user:alice")
         let (markers, mc) = AsyncStream<(convoID: String, marker: MissionMarker)>.makeStream()
         let (states, sc) = AsyncStream<SyncConnectionState>.makeStream()
-        let sync = MissionsSync(api: api, store: store, markers: { markers }, connectionStates: { states })
+        let sync = MissionsSync(api: api, store: store, markers: { markers }, connectionStates: { states }, pacer: pacer)
         return (sync, store, mc, sc)
+    }
+
+    private func milestoneMarker() -> (convoID: String, marker: MissionMarker) {
+        (convoID: "c1", marker: .milestone(MilestoneMarkerEvent(
+            milestoneID: "ml_1", num: 62, kind: .userInput, title: "step",
+            missionID: "ms_1", missionNum: 61, missionTitle: nil, by: .agent)))
+    }
+
+    func testMarkersReplayedInACatchUpAreCoveredByOneListRead() async throws {
+        let api = FakeMissions()
+        api.list = [mission("ms_1", num: 61)]
+        let (sync, _, markers, states) = try make(api: api, pacer: RefreshPacer(interval: .seconds(600), activity: AppActivity()))
+        await sync.start()
+        states.yield(.running)
+        try await waitUntil { api.listCalls == 1 }
+        states.yield(.connecting)
+        states.yield(.catchingUp)
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        markers.yield(milestoneMarker())
+        markers.yield(milestoneMarker())
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(api.detailCalls, [], "a replayed marker is not fetched on its own")
+        states.yield(.running)
+        try await waitUntil { api.listCalls == 2 }
+        XCTAssertEqual(api.detailCalls, [])
+        await sync.stop()
+    }
+
+    func testMissionsChangedInACatchUpArePublishedOnceTheListHasCoveredThem() async throws {
+        let api = FakeMissions()
+        api.list = [mission("ms_1", num: 61)]
+        let (sync, _, markers, states) = try make(api: api, pacer: RefreshPacer(interval: .seconds(600), activity: AppActivity()))
+        await sync.start()
+        let stream = await sync.deferredMissionsRead()
+        let deferred = Task { await firstValue(of: stream) }
+        states.yield(.catchingUp)
+        try await waitUntil { await sync.isCatchingUpForTesting }
+        markers.yield(milestoneMarker())
+        try await waitUntil { await sync.hasDeferredChangesForTesting }
+        states.yield(.running)
+        let ids = await deferred.value
+        XCTAssertEqual(ids, ["ms_1"])
+        await sync.stop()
+    }
+
+    func testAQuietReconnectInsideTheIntervalReadsNothing() async throws {
+        let api = FakeMissions()
+        api.list = [mission("ms_1", num: 61)]
+        let (sync, _, _, states) = try make(api: api, pacer: RefreshPacer(interval: .seconds(600), activity: AppActivity()))
+        await sync.start()
+        states.yield(.running)
+        try await waitUntil { api.listCalls == 1 }
+        states.yield(.connecting)
+        states.yield(.catchingUp)
+        states.yield(.running)
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertEqual(api.listCalls, 1)
+        await sync.stop()
+    }
+
+    func testABackgroundMarkerWaitsForTheFront() async throws {
+        let api = FakeMissions()
+        api.list = [mission("ms_1", num: 61)]
+        let activity = AppActivity(active: false)
+        let (sync, _, markers, states) = try make(api: api, pacer: RefreshPacer(interval: .seconds(600), activity: activity))
+        await sync.start()
+        states.yield(.running)
+        markers.yield(milestoneMarker())
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertEqual(api.listCalls, 0)
+        XCTAssertEqual(api.detailCalls, [])
+        activity.setActive(true)
+        try await waitUntil { api.listCalls == 1 }
+        await sync.stop()
     }
 
     func testReconnectFetchesTheWholeListIntoTheStore() async throws {
@@ -367,6 +442,45 @@ final class MissionsSyncSuspensionTests: XCTestCase {
             guard Date() < deadline else { return XCTFail("timed out") }
             try await Task.sleep(for: .milliseconds(10))
         }
+    }
+
+    /// A marker that arrives in the background while a list read is in
+    /// flight, and that read then lands on the suspended database: the
+    /// change stays pending, so the return to the front reads the list at
+    /// once (not paced) and tells open mission pages.
+    func testAChangeHeldDuringASuspendedListReadIsReadOnTheReturnToTheFront() async throws {
+        let api = FakeMissions()
+        api.list = [mission("ms_1", title: "M")]
+        let store = try JournalStore(databaseURL: url, ownSender: "user:alice", observesSuspension: true)
+        let activity = AppActivity(active: true)
+        let (markers, mc) = AsyncStream<(convoID: String, marker: MissionMarker)>.makeStream()
+        let (states, sc) = AsyncStream<SyncConnectionState>.makeStream()
+        let sync = MissionsSync(api: api, store: store, markers: { markers }, connectionStates: { states },
+                                pacer: RefreshPacer(interval: .seconds(600), activity: activity))
+        await sync.start()
+        let published = NSLock()
+        nonisolated(unsafe) var publishedIDs: Set<String>?
+        let deferred = await sync.deferredMissionsRead()
+        let reader = Task { for await ids in deferred { published.withLock { publishedIDs = ids } } }
+
+        api.blockNextList = true
+        sc.yield(.running)
+        try await waitUntil { api.isListGated }
+        activity.setActive(false)
+        controller.setInBackground(true)
+        mc.yield((convoID: "c1", marker: .milestone(MilestoneMarkerEvent(
+            milestoneID: "ml_1", num: 62, kind: .userInput, title: "step",
+            missionID: "ms_1", missionNum: 61, missionTitle: nil, by: .agent))))
+        try await Task.sleep(for: .milliseconds(100))
+        api.releaseListGate()
+        try await Task.sleep(for: .milliseconds(100))
+
+        controller.setInBackground(false)
+        await sync.databasesResumed()
+        activity.setActive(true)
+        try await waitUntil { published.withLock { publishedIDs } == ["ms_1"] }
+        reader.cancel()
+        await sync.stop()
     }
 
     func testRefetchRefusedBySuspensionIsDeferredNotReportedAndRunsAgainOnResume() async throws {

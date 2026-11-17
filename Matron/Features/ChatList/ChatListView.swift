@@ -139,8 +139,9 @@ struct ChatListView: View {
         chatListContent
         .onAppear { LaunchTimeline.shared.mark(.firstListPaint) }
         // On "For you only" the list's unread counts and snippets come from
-        // the journal's summary, not from every message arriving.
-        .task { await viewModel.listDidAppear() }
+        // the journal's summary, not from every message arriving, and are
+        // refreshed on reconnect only while the list is on screen.
+        .task { await viewModel.listOnScreen() }
         .navigationTitle("Chats")
         .toolbar {
             // Connection state rides inline in the nav bar's leading edge so
