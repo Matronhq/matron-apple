@@ -124,6 +124,7 @@ final class MessagesStubURLProtocol: URLProtocol {
         var requests: [URLRequest] = []
         var failuresLeft = 0
         var holdNextFor: String?
+        var holdNextSnapshot = false
         var held: (() -> Void)?
     }
     /// The engine's requests land on URLSession's queue while a test reads.
@@ -143,6 +144,11 @@ final class MessagesStubURLProtocol: URLProtocol {
     static var holdNextFor: String? {
         get { state.withLockUnchecked { $0.holdNextFor } }
         set { state.withLockUnchecked { $0.holdNextFor = newValue } }
+    }
+    /// The next `/snapshot` request is answered only on `releaseHeld()`.
+    static var holdNextSnapshot: Bool {
+        get { state.withLockUnchecked { $0.holdNextSnapshot } }
+        set { state.withLockUnchecked { $0.holdNextSnapshot = newValue } }
     }
     static var isHolding: Bool { state.withLockUnchecked { $0.held != nil } }
     static func releaseHeld() {
@@ -176,9 +182,18 @@ final class MessagesStubURLProtocol: URLProtocol {
         let before = items.first { $0.name == "before_seq" }?.value.flatMap(Int64.init)
         guard request.url?.path.hasSuffix("/messages") == true else {
             let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
-            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocol(self, didLoad: Data("{}".utf8))
-            client?.urlProtocolDidFinishLoading(self)
+            let answer = { [client] in
+                client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocol(self, didLoad: Data("{}".utf8))
+                client?.urlProtocolDidFinishLoading(self)
+            }
+            let held = Self.state.withLockUnchecked { s -> Bool in
+                guard s.holdNextSnapshot, request.url?.path.hasSuffix("/snapshot") == true else { return false }
+                s.holdNextSnapshot = false
+                s.held = answer
+                return true
+            }
+            if !held { answer() }
             return
         }
         if failing {
@@ -370,6 +385,38 @@ final class SyncScopeEngineTests: XCTestCase {
         activity.setActive(true)
         let inFront = await engine.refreshesSummariesOnConnect
         XCTAssertTrue(inFront)
+    }
+
+    func testAListFetchThatLandsAfterABackgroundReconnectDoesNotMarkTheListCurrent() async throws {
+        let activity = AppActivity(active: true)
+        let socket = FakeWebSocketConnection()
+        let engine = JournalSyncEngine(api: stubbedAPI(), store: try seededStore(cursor: 10),
+                                       connector: FakeConnector([socket]), token: "t", ownSender: "user:alice",
+                                       search: nil, backoffBaseSeconds: 0.01, syncScope: .forYou,
+                                       activity: activity)
+        MessagesStubURLProtocol.holdNextSnapshot = true
+        let appeared = Task { await engine.chatListAppeared(UUID()) }
+        try await until("the list's fetch is in flight") { MessagesStubURLProtocol.isHolding }
+
+        // The app goes to the background and a wake reconnects: that socket
+        // does not fetch the list, so what it missed is not in the summaries.
+        activity.setActive(false)
+        socket.serve(#"{"kind":"control","op":"hello_ok","seq":10,"sync":"for_you"}"#)
+        socket.serve(#"{"kind":"control","op":"cursor","seq":10}"#)
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(MessagesStubURLProtocol.snapshotRequests, 1, "the background connect fetches nothing")
+
+        // The older fetch lands afterwards.
+        MessagesStubURLProtocol.releaseHeld()
+        await appeared.value
+
+        activity.setActive(true)
+        await engine.refreshSummariesForList()
+        XCTAssertEqual(MessagesStubURLProtocol.snapshotRequests, 2,
+                       "the list fetches again: the older fetch predates the reconnect")
+        await engine.endSync()
     }
 
     func testOnForYouAChatListThatLeftNoLongerCounts() async {

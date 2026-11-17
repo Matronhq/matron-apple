@@ -443,6 +443,45 @@ final class MissionsSyncSuspensionTests: XCTestCase {
         }
     }
 
+    /// A marker that arrives in the background while a list read is in
+    /// flight, and that read then lands on the suspended database: the
+    /// change stays pending, so the return to the front reads the list at
+    /// once (not paced) and tells open mission pages.
+    func testAChangeHeldDuringASuspendedListReadIsReadOnTheReturnToTheFront() async throws {
+        let api = FakeMissions()
+        api.list = [mission("ms_1", title: "M")]
+        let store = try JournalStore(databaseURL: url, ownSender: "user:alice", observesSuspension: true)
+        let activity = AppActivity(active: true)
+        let (markers, mc) = AsyncStream<(convoID: String, marker: MissionMarker)>.makeStream()
+        let (states, sc) = AsyncStream<SyncConnectionState>.makeStream()
+        let sync = MissionsSync(api: api, store: store, markers: { markers }, connectionStates: { states },
+                                pacer: RefreshPacer(interval: .seconds(600), activity: activity))
+        await sync.start()
+        let published = NSLock()
+        nonisolated(unsafe) var publishedIDs: Set<String>?
+        let deferred = await sync.deferredMissionsRead()
+        let reader = Task { for await ids in deferred { published.withLock { publishedIDs = ids } } }
+
+        api.blockNextList = true
+        sc.yield(.running)
+        try await waitUntil { api.isListGated }
+        activity.setActive(false)
+        controller.setInBackground(true)
+        mc.yield((convoID: "c1", marker: .milestone(MilestoneMarkerEvent(
+            milestoneID: "ml_1", num: 62, kind: .userInput, title: "step",
+            missionID: "ms_1", missionNum: 61, missionTitle: nil, by: .agent))))
+        try await Task.sleep(for: .milliseconds(100))
+        api.releaseListGate()
+        try await Task.sleep(for: .milliseconds(100))
+
+        controller.setInBackground(false)
+        await sync.databasesResumed()
+        activity.setActive(true)
+        try await waitUntil { published.withLock { publishedIDs } == ["ms_1"] }
+        reader.cancel()
+        await sync.stop()
+    }
+
     func testRefetchRefusedBySuspensionIsDeferredNotReportedAndRunsAgainOnResume() async throws {
         let api = FakeMissions()
         let store = try JournalStore(databaseURL: url, ownSender: "user:alice", observesSuspension: true)

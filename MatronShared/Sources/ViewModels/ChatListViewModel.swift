@@ -376,9 +376,12 @@ public final class ChatListViewModel {
 public enum ChatListPresence {
     public static func hold(_ chat: ChatService, activity: AppActivity = .shared) async {
         let token = UUID()
+        // Subscribed before the first report, which waits for a fetch: a
+        // return to the front during that wait is kept and reported after.
+        let returns = activity.becameActive()
         await chat.listDidAppear(token)
         // Ends when the task is cancelled.
-        for await _ in activity.becameActive() {
+        for await _ in returns {
             await chat.listDidAppear(token)
         }
         await chat.listDidDisappear(token)

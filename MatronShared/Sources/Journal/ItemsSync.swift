@@ -140,6 +140,9 @@ public actor ItemsSync {
     /// refetches its thread when its id is published here
     /// (`deferredItemsRead()`): the list read writes item rows, not comments.
     private var deferredItemIDs: Set<String> = []
+    /// The missions those items were on when their markers landed: an
+    /// item that moved or left a mission changes that mission's counts too.
+    private var deferredItemMissionIDs: Set<String> = []
     private var deferredWatchers: [UUID: AsyncStream<Set<String>>.Continuation] = [:]
     /// Spec 2026-09-28 missions dashboard §3.7: an item change on a mission
     /// changes that mission's `needs_you` / `open_items`, which live on the
@@ -699,20 +702,24 @@ public actor ItemsSync {
     private func readDeferredChanges() async {
         listChanged = false
         let ids = deferredItemIDs
+        let missionsBefore = deferredItemMissionIDs
         deferredItemIDs.removeAll()
+        deferredItemMissionIDs.removeAll()
         if let running = inFlightRefreshes[.all] { _ = await running.value }
         switch await refreshList() {
         case .succeeded:
             guard !ids.isEmpty else { return }
             for watcher in deferredWatchers.values { watcher.yield(ids) }
             // A mission's counts (needs you, open items) follow its items:
-            // refetch each mission the changed items belong to, once.
+            // refetch, once each, every mission the changed items belong
+            // to now or belonged to before.
             let missions = ids.compactMap { try? store.item(id: $0)?.missionID }
-            refetchMissions(Set(missions))
+            refetchMissions(missionsBefore.union(missions))
         case .failed, .stopped:
             // Still owed: the next catch-up's end or return to the front.
             listChanged = true
             deferredItemIDs.formUnion(ids)
+            deferredItemMissionIDs.formUnion(missionsBefore)
         case .unsupported:
             break
         }
@@ -751,6 +758,9 @@ public actor ItemsSync {
         if catchingUp || !listPacer.isAppActive {
             listChanged = true
             deferredItemIDs.insert(marker.itemID)
+            if let missionID = (try? store.item(id: marker.itemID))?.missionID {
+                deferredItemMissionIDs.insert(missionID)
+            }
             return
         }
         if !pendingMarkerIDs.contains(marker.itemID) { pendingMarkerIDs.append(marker.itemID) }

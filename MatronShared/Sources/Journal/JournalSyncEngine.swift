@@ -1302,6 +1302,10 @@ public actor JournalSyncEngine {
 
     /// When `refreshSummaries` last landed, for `refreshSummariesForList`.
     private var lastSummaryRefresh: ContinuousClock.Instant?
+    /// Counts the connects that left the summaries behind (they cleared
+    /// `lastSummaryRefresh`). A fetch that started before one of them does
+    /// not mark the summaries current when it lands.
+    private var summaryInvalidations = 0
     private static let listRefreshInterval: Duration = .seconds(60)
 
     /// The chat lists on screen now, by the token each passed to
@@ -1348,9 +1352,10 @@ public actor JournalSyncEngine {
 
     public func refreshSummaries() async {
         let epoch = storeEpoch
+        let invalidations = summaryInvalidations
         guard let snapshot = try? await api.snapshot() else { return }
         guard epoch == storeEpoch else { return } // store wiped mid-flight; stale
-        lastSummaryRefresh = .now
+        if invalidations == summaryInvalidations { lastSummaryRefresh = .now }
         try? store.refreshSummaries(snapshot.conversations, adoptUnread: syncScope == .forYou)
         try? store.replaceAgents(snapshot.agents)
     }
@@ -1997,6 +2002,7 @@ public actor JournalSyncEngine {
                     // the list's next appearance must fetch them, however
                     // recently the last fetch was.
                     lastSummaryRefresh = nil
+                    summaryInvalidations += 1
                 }
                 // Fresh socket: everything unconfirmed is eligible to resend
                 // once (idem-dedup'd server-side), including messages queued

@@ -218,7 +218,7 @@ public actor MissionsSync {
             listChanged = true
             deferredMissionIDs.formUnion(ids)
         case .stopped:
-            listChanged = changed
+            listChanged = listChanged || changed
             deferredMissionIDs.formUnion(ids)
         case .unsupported:
             break

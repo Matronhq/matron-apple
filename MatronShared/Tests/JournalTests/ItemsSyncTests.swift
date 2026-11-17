@@ -1491,6 +1491,32 @@ class ItemsSyncTests: XCTestCase {
         try await waitUntil { Set(asked.recorded) == ["ms_old", "ms_new"] }
     }
 
+    /// Bugbot: an item whose marker waited for the list read (a catch-up)
+    /// and that left a mission meanwhile changes the counts of the mission
+    /// it left as well as the one it is on now.
+    func testAnItemMovedDuringACatchUpRefetchesBothMissions() async throws {
+        let api = FakeItems()
+        let (sync, store, markers, states) = try make(api: api, reconcileInterval: nil)
+        let before = TrackerItem(id: "it_1", num: 1, kind: .question, awaiting: .user, title: "Q",
+                                 originConvoID: "c1", updatedAt: Date(timeIntervalSince1970: 4),
+                                 missionID: "ms_old", missionNum: 60)
+        try store.upsertItems([before])
+        let moved = TrackerItem(id: "it_1", num: 1, kind: .question, awaiting: .user, title: "Q",
+                                originConvoID: "c1", updatedAt: Date(timeIntervalSince1970: 5),
+                                missionID: "ms_new", missionNum: 61)
+        api.listResponses = [ItemsPage(items: [before], nextCursor: nil), ItemsPage(items: [moved], nextCursor: nil)]
+        let asked = IDRecorder()
+        await sync.setMissionRefetcher { asked.record($0) }
+        await sync.start()
+        states.yield(.catchingUp)
+        try await waitUntil { api.listQueries.count == 1 }
+        markers.yield(marker("it_1"))
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        states.yield(.running)
+        try await waitUntil { Set(asked.recorded) == ["ms_old", "ms_new"] }
+        XCTAssertEqual(api.itemCalls, 0, "the list read covered the item")
+    }
+
     func testAnItemOnNoMissionRefetchesNothing() async throws {
         let api = FakeItems()
         api.detail["it_1"] = (item("it_1", num: 1, updated: 5), [])
