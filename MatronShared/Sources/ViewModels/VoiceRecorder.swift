@@ -478,6 +478,7 @@ public final class VoiceRecorder {
             var unwritten = 0
             var growths = 0
             var checks = 0
+            var watchedURL: URL?
             while !Task.isCancelled {
                 await watchPause()
                 guard let self, !Task.isCancelled, self.isRecordingState, let recorder = self.recorder else { return }
@@ -486,10 +487,19 @@ public final class VoiceRecorder {
                     lastElapsed = -1
                     unwritten = 0
                     lastBytes = nil
+                    growths = 0
                     continue
                 }
                 let elapsed = recorder.elapsed
                 checks += 1
+                if self.fileURL != watchedURL {
+                    // A hand-over moved the note to a new file: its writer
+                    // has to show it writes as it goes all over again.
+                    watchedURL = self.fileURL
+                    lastBytes = nil
+                    unwritten = 0
+                    growths = 0
+                }
                 if let url = self.fileURL, let bytes = self.fileSize(url) {
                     if checks % 10 == 0 {
                         Self.logger.notice("watch: elapsed=\(elapsed, format: .fixed(precision: 1))s bytes=\(bytes)")
@@ -1014,6 +1024,9 @@ final class SyntheticToneRecording: AudioRecording {
 
     private let url: URL
     private var startedAt: Date?
+
+    /// The tone runs as long as the note, so the watchdog sees it grow.
+    var elapsed: TimeInterval { startedAt.map { Date().timeIntervalSince($0) } ?? 0 }
 
     init(url: URL) {
         self.url = url
