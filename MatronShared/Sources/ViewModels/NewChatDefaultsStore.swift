@@ -67,6 +67,7 @@ public final class NewChatDefaultsStore {
     private var foregroundTask: Task<Void, Never>?
     /// Paces the re-reads on reconnect and on return to the front.
     private let pacer: RefreshPacer
+    private let reader: PacedReader
 
     public init(api: any NewChatDefaultsProviding,
                 updates: @escaping @Sendable () -> AsyncStream<NewChatDefaults>,
@@ -76,6 +77,7 @@ public final class NewChatDefaultsStore {
         self.updates = updates
         self.connectionStates = connectionStates
         self.pacer = pacer
+        self.reader = PacedReader(pacer: pacer)
     }
 
     public func start() {
@@ -94,14 +96,14 @@ public final class NewChatDefaultsStore {
             for await state in states {
                 guard !Task.isCancelled else { return }
                 // Paced: a phone reconnects each time it is opened or woken.
-                if case .running = state, self?.pacer.take() == true { await self?.refresh() }
+                if case .running = state { await self?.requestRead() }
             }
         }
         let foreground = pacer.foregroundSignals()
         foregroundTask = Task { [weak self] in
             for await _ in foreground {
                 guard !Task.isCancelled else { return }
-                if self?.pacer.take() == true { await self?.refresh() }
+                await self?.requestRead()
             }
         }
         // Picks kept across a `stop()` are sent now. A key whose old `PUT`
@@ -119,11 +121,18 @@ public final class NewChatDefaultsStore {
         statesTask?.cancel()
         foregroundTask?.cancel()
         foregroundTask = nil
+        reader.cancel()
         updatesTask = nil
         statesTask = nil
         // A `GET` or `PUT` still in flight must not land after this.
         seq += 1
         generation += 1
+    }
+
+    /// A reconnect or a return to the front asks for a re-read
+    /// (`PacedReader`).
+    private func requestRead() async {
+        await reader.request { [weak self] in await self?.refresh() }
     }
 
     /// `GET /defaults`. A 404 means the journal predates per-user defaults;

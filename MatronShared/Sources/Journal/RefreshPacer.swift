@@ -57,8 +57,15 @@ public final class AppActivity: @unchecked Sendable {
 ///
 /// `@unchecked`: the state sits behind the lock.
 public final class RefreshPacer: @unchecked Sendable {
-    /// How long a list read from the journal is taken to be current.
+    /// How long a list read from the journal is taken to be current. On the
+    /// iPhone, which reconnects each time it is opened or woken, 10 minutes:
+    /// a change made elsewhere while it was offline shows within that. The
+    /// Mac reconnects rarely and reads on every reconnect, as before.
+    #if os(iOS)
     public static let defaultInterval: Duration = .seconds(10 * 60)
+    #else
+    public static let defaultInterval: Duration = .zero
+    #endif
 
     private let interval: Duration
     private let activity: AppActivity
@@ -82,6 +89,17 @@ public final class RefreshPacer: @unchecked Sendable {
             if !changed, let previous = last, at - previous < interval { return false }
             last = at
             return true
+        }
+    }
+
+    /// How long until `take()` would let a refresh out, or nil while the
+    /// app is in the background (the return to the front asks then).
+    public func untilNext() -> Duration? {
+        guard activity.isActive else { return nil }
+        let at = now()
+        return last.withLock { last in
+            guard let previous = last else { return .zero }
+            return max(.zero, interval - (at - previous))
         }
     }
 

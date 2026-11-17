@@ -1416,7 +1416,7 @@ public final class JournalStore: @unchecked Sendable {
 
     public func applyColdSnapshot(_ convos: [ConvoSummaryDTO], headSeq: Int64) throws {
         try metrics.measureWrite("applyColdSnapshot", on: db) { db in
-            var stored = try Self.storedConversations(db)
+            var stored = try Self.storedConversations(db, checkSuspended: self.throwIfSuspended)
             for c in convos {
                 try self.throwIfSuspended()
                 stored[c.id] = try Self.upsertSummary(db, c, original: stored[c.id], resetLocalState: true)
@@ -1430,7 +1430,7 @@ public final class JournalStore: @unchecked Sendable {
     /// count would stay at zero for every conversation it has not opened.
     public func refreshSummaries(_ convos: [ConvoSummaryDTO], adoptUnread: Bool = false) throws {
         try metrics.measureWrite("refreshSummaries", on: db) { db in
-            var stored = try Self.storedConversations(db)
+            var stored = try Self.storedConversations(db, checkSuspended: self.throwIfSuspended)
             for c in convos {
                 try self.throwIfSuspended()
                 stored[c.id] = try Self.upsertSummary(db, c, original: stored[c.id], resetLocalState: false,
@@ -1443,10 +1443,18 @@ public final class JournalStore: @unchecked Sendable {
     /// Every stored conversation by id, read in one query. A snapshot holds
     /// every conversation the account has (tens of thousands with
     /// sub-chats), and looking each up on its own took seconds.
-    private static func storedConversations(_ db: Database) throws -> [String: ConversationRecord] {
+    ///
+    /// `checkSuspended` runs every few hundred rows: the scan holds the
+    /// write transaction, which must end promptly once the databases are
+    /// suspended (`throwIfSuspended`).
+    private static func storedConversations(_ db: Database,
+                                            checkSuspended: () throws -> Void) throws -> [String: ConversationRecord] {
         var byID: [String: ConversationRecord] = [:]
         let cursor = try ConversationRecord.fetchCursor(db)
-        while let record = try cursor.next() { byID[record.id] = record }
+        while let record = try cursor.next() {
+            if byID.count % 500 == 0 { try checkSuspended() }
+            byID[record.id] = record
+        }
         return byID
     }
 

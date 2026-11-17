@@ -91,6 +91,11 @@ public actor MissionsSync {
     /// mission at a time (during a catch-up, or in the background): the
     /// next re-read of the list goes out whatever the pacer's interval.
     private var listChanged = false
+    /// The missions whose markers `listChanged` stands for. The list read
+    /// writes mission rows, not milestones: an open mission page refetches
+    /// its mission when its id is published (`deferredMissionsRead()`).
+    private var deferredMissionIDs: Set<String> = []
+    private var deferredWatchers: [UUID: AsyncStream<Set<String>>.Continuation] = [:]
     /// Work whose store write the suspended databases refused (the app was
     /// backgrounded while its fetch was in the network): the full list,
     /// and single missions by id. `databasesResumed()` fetches them again.
@@ -175,6 +180,7 @@ public actor MissionsSync {
         guard !stopped else { return }
         if catchingUp || !pacer.isAppActive {
             listChanged = true
+            deferredMissionIDs.insert(missionID)
             return
         }
         await refreshMission(id: missionID)
@@ -196,11 +202,43 @@ public actor MissionsSync {
     /// unless a mission is known to have changed meanwhile.
     private func refreshListIfDue() async {
         guard !stopped, pacer.take(changed: listChanged) else { return }
+        let changed = listChanged
+        let ids = deferredMissionIDs
         listChanged = false
-        if case .failed = await refresh() {
+        deferredMissionIDs.removeAll()
+        // A read already in flight may have reached the journal before the
+        // deferred changes did: wait it out and read again.
+        if changed, let running = inFlightRefresh { _ = await running.value }
+        switch await refresh() {
+        case .succeeded:
+            guard !ids.isEmpty else { return }
+            for watcher in deferredWatchers.values { watcher.yield(ids) }
+        case .failed:
             pacer.reset()
             listChanged = true
+            deferredMissionIDs.formUnion(ids)
+        case .stopped:
+            listChanged = changed
+            deferredMissionIDs.formUnion(ids)
+        case .unsupported:
+            break
         }
+    }
+
+    /// The ids of missions that changed while the cache was kept current by
+    /// list reads alone (a catch-up, or the background), each time a list
+    /// read has covered them. An open mission page whose id is in one
+    /// refetches its mission, milestones included.
+    public func deferredMissionsRead() -> AsyncStream<Set<String>> {
+        AsyncStream(bufferingPolicy: .bufferingNewest(4)) { c in
+            let id = UUID()
+            deferredWatchers[id] = c
+            c.onTermination = { _ in Task { await self.dropDeferredWatcher(id) } }
+        }
+    }
+
+    private func dropDeferredWatcher(_ id: UUID) {
+        deferredWatchers.removeValue(forKey: id)
     }
 
     /// The host resumed the databases (iOS foregrounding). Re-runs every

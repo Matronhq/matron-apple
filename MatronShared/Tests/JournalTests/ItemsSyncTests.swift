@@ -335,6 +335,39 @@ class ItemsSyncTests: XCTestCase {
         XCTAssertEqual(api.itemCalls, 0)
     }
 
+    func testItemsChangedInACatchUpArePublishedOnceTheListHasCoveredThem() async throws {
+        let api = FakeItems()
+        let (sync, _, markers, states) = try make(api: api, reconcileInterval: nil)
+        await sync.start()
+        var deferred = await sync.deferredItemsRead().makeAsyncIterator()
+        states.yield(.catchingUp)
+        try await waitUntil { api.listQueries.count == 1 }
+        markers.yield(marker("it_1"))
+        markers.yield(marker("it_2"))
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        states.yield(.running)
+        let ids = await deferred.next()
+        XCTAssertEqual(ids, ["it_1", "it_2"])
+        XCTAssertEqual(api.listQueries.count, 2)
+    }
+
+    func testACatchUpsChangesAreNotCoveredByAReadThatStartedBeforeThem() async throws {
+        let api = FakeItems()
+        let (sync, _, markers, states) = try make(api: api, reconcileInterval: nil)
+        await sync.start()
+        api.blockNextList = true
+        let early = Task { await sync.refreshOnReturn() }
+        try await waitUntil { api.listQueries.count == 1 }
+        states.yield(.catchingUp)
+        markers.yield(marker("it_1"))
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        states.yield(.running)
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        api.releaseListGate()
+        await early.value
+        try await waitUntil { api.listQueries.count == 2 }
+    }
+
     func testALiveMarkerInFrontStillFetchesItsItem() async throws {
         let api = FakeItems()
         api.detail["it_1"] = (item("it_1", num: 1, updated: 5), [])

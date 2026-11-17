@@ -86,9 +86,16 @@ public protocol ItemsSyncing: Sendable {
     // satisfy the protocol with no unsafe conformance, and a synchronous
     // fake still satisfies an async requirement trivially.
     func supportedStream() async -> AsyncStream<Bool>
+    /// The ids of items whose changes reached this device only through a
+    /// list read (`ItemsSync.deferredItemsRead()`): an open item page whose
+    /// id is among them refetches its thread.
+    func deferredItemsRead() async -> AsyncStream<Set<String>>
 }
 
 public extension ItemsSyncing {
+    /// Nothing is ever deferred — test doubles and read-only hosts.
+    func deferredItemsRead() async -> AsyncStream<Set<String>> { AsyncStream { $0.finish() } }
+
     /// A sync that knows nothing of `replaces` queues the reply without the
     /// link: the words still go.
     @discardableResult

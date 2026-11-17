@@ -169,5 +169,12 @@ public protocol MissionsSyncing: Sendable {
     @discardableResult
     func closeMission(id: String, summary: String) async throws -> Mission
     func supportedStream() async -> AsyncStream<Bool>
+    /// The ids of missions whose changes reached this device only through a
+    /// list read (`MissionsSync.deferredMissionsRead()`).
+    func deferredMissionsRead() async -> AsyncStream<Set<String>>
+}
+public extension MissionsSyncing {
+    /// Nothing is ever deferred — test doubles.
+    func deferredMissionsRead() async -> AsyncStream<Set<String>> { AsyncStream { $0.finish() } }
 }
 extension MissionsSync: MissionsSyncing {}

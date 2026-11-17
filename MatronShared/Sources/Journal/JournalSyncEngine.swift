@@ -288,8 +288,10 @@ public actor JournalSyncEngine {
         credentialSignals: (@Sendable (CredentialSignal) -> Void)? = nil,
         syncScope: SyncScope = .everything,
         stats: SyncStatsRecorder? = nil,
-        pathMonitorFactory: @escaping @Sendable () -> any NetworkPathMonitoring = { SystemNetworkPathMonitor() }
+        pathMonitorFactory: @escaping @Sendable () -> any NetworkPathMonitoring = { SystemNetworkPathMonitor() },
+        activity: AppActivity = .shared
     ) {
+        self.activity = activity
         self.makePathMonitor = pathMonitorFactory
         self.credentialSignals = credentialSignals
         self.syncScope = syncScope
@@ -437,9 +439,11 @@ public actor JournalSyncEngine {
         return false
     }
 
-    /// The newest journal event this device holds. A background wake
-    /// compares it before and after to tell iOS whether it brought news.
-    public var mirrorCursor: Int64 { store.cursor }
+    /// How many journal events this engine has written since it started.
+    /// A background wake compares it before and after to tell iOS whether
+    /// it brought news: on "For you only" the cursor also moves for events
+    /// the socket never carried, so the cursor cannot say.
+    public private(set) var appliedEventCount = 0
 
     public func waitUntilReady() async throws {
         if case .running = state { return }
@@ -1304,6 +1308,8 @@ public actor JournalSyncEngine {
     /// `chatListAppeared`. A set rather than a flag, so a list that leaves
     /// and comes back can report the two in either order.
     private var chatListsOnScreen: Set<UUID> = []
+    /// Whether the app is in front (`refreshesSummariesOnConnect`).
+    private let activity: AppActivity
 
     /// A chat list came on screen: refreshes its summaries if they are due
     /// (`refreshSummariesForList`), and makes every connect refresh them
@@ -1322,10 +1328,12 @@ public actor JournalSyncEngine {
     /// conversation list (every sub-chat included, megabytes for a busy
     /// account), and only the chat list reads what it brings, so a phone
     /// that reconnects each time it is opened or woken fetches it only
-    /// while a chat list is on screen. The list fetches it when it comes
-    /// back on screen otherwise.
+    /// while a chat list is on screen and the app is in front (a list left
+    /// on screen when the app went to the background must not make every
+    /// silent push's wake fetch it). The list fetches it when it comes back
+    /// on screen otherwise.
     var refreshesSummariesOnConnect: Bool {
-        syncScope == .everything || !chatListsOnScreen.isEmpty
+        syncScope == .everything || (!chatListsOnScreen.isEmpty && activity.isActive)
     }
 
     /// The chat list came on screen. On `forYou` most messages never reach
@@ -1984,6 +1992,11 @@ public actor JournalSyncEngine {
                 refreshSummariesTask?.cancel()
                 if refreshesSummariesOnConnect {
                     refreshSummariesTask = Task { await self.refreshSummaries() } // title/state stopgap (spec §7 ask 4)
+                } else {
+                    // Whatever this socket missed is not in the summaries:
+                    // the list's next appearance must fetch them, however
+                    // recently the last fetch was.
+                    lastSummaryRefresh = nil
                 }
                 // Fresh socket: everything unconfirmed is eligible to resend
                 // once (idem-dedup'd server-side), including messages queued
@@ -2441,6 +2454,7 @@ public actor JournalSyncEngine {
     /// whose blobRef collides with the replayed one (bugbot "Media confirm
     /// ignores duplicate guard").
     private func didApply(_ event: JournalEvent) {
+        appliedEventCount += 1
         publishItemMarker(event)
         publishMissionMarker(event)
         publishMemoryMarker(event)
@@ -2456,6 +2470,7 @@ public actor JournalSyncEngine {
     /// batch instead of one of each per frame.
     private func didApplyBatch(_ events: [JournalEvent]) {
         guard !events.isEmpty else { return }
+        appliedEventCount += events.count
         for event in events {
             publishItemMarker(event); publishMissionMarker(event); publishMemoryMarker(event)
             publishRoutineMarker(event); publishCoordinatorEvent(event); confirmMediaSendIfNeeded(event)

@@ -171,6 +171,31 @@ final class NewChatDefaultsStoreTests: XCTestCase {
         store.stop()
     }
 
+    func testAReadSkippedInsideTheIntervalRunsWhenItEnds() async {
+        let api = FakeDefaultsAPI(stored: NewChatDefaults(model: "opus", effort: nil))
+        let store = makeStore(api, pacer: RefreshPacer(interval: .milliseconds(300), activity: AppActivity()))
+        store.start()
+        states.continuation.yield(.running)
+        await eventually("GET on running") { store.defaults?.model == "opus" }
+        api.stored = NewChatDefaults(model: "haiku", effort: "low")
+        states.continuation.yield(.connecting)
+        states.continuation.yield(.running)
+        await eventually("the read once the interval ends") { store.defaults?.model == "haiku" }
+        store.stop()
+    }
+
+    func testAStoppedReaderReadsAtOnceWhenAskedAgain() async {
+        let pacer = RefreshPacer(interval: .seconds(600), activity: AppActivity())
+        let reader = PacedReader(pacer: pacer)
+        var reads = 0
+        await reader.request { reads += 1 }
+        await reader.request { reads += 1 }
+        XCTAssertEqual(reads, 1, "inside the interval")
+        reader.cancel()
+        await reader.request { reads += 1 }
+        XCTAssertEqual(reads, 2, "a read abandoned by a stop does not hold the next one back")
+    }
+
     func testBackgroundReconnectWaitsForTheFront() async {
         let api = FakeDefaultsAPI(stored: NewChatDefaults(model: "opus", effort: nil))
         let activity = AppActivity(active: false)

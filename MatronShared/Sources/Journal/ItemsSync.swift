@@ -136,6 +136,11 @@ public actor ItemsSync {
     /// item (during a catch-up, or in the background): the list is re-read
     /// once the catch-up ends.
     private var listChanged = false
+    /// The items whose markers `listChanged` stands for. An open item page
+    /// refetches its thread when its id is published here
+    /// (`deferredItemsRead()`): the list read writes item rows, not comments.
+    private var deferredItemIDs: Set<String> = []
+    private var deferredWatchers: [UUID: AsyncStream<Set<String>>.Continuation] = [:]
     /// Spec 2026-09-28 missions dashboard §3.7: an item change on a mission
     /// changes that mission's `needs_you` / `open_items`, which live on the
     /// mission row. The `item` marker carries no `mission_id`, so the
@@ -669,9 +674,8 @@ public actor ItemsSync {
     private func endCatchUp() async {
         catchingUp = false
         if listChanged {
-            listChanged = false
             _ = listPacer.take(changed: true)
-            await refreshList()
+            await readDeferredChanges()
         } else if listPacer.take() {
             await refreshList()
         }
@@ -681,10 +685,53 @@ public actor ItemsSync {
         catchingUp = false
     }
 
-    private func refreshList() async {
-        if case .failed = await refresh(scope: .all) {
-            listPacer.reset()
+    @discardableResult
+    private func refreshList() async -> ItemsRefreshOutcome {
+        let outcome = await refresh(scope: .all)
+        if case .failed = outcome { listPacer.reset() }
+        return outcome
+    }
+
+    /// Reads the list for the markers that were not fetched one by one,
+    /// then tells open item pages which of their items changed. Never joins
+    /// a read already in flight: that one may have reached the journal
+    /// before the markers' changes did.
+    private func readDeferredChanges() async {
+        listChanged = false
+        let ids = deferredItemIDs
+        deferredItemIDs.removeAll()
+        if let running = inFlightRefreshes[.all] { _ = await running.value }
+        switch await refreshList() {
+        case .succeeded:
+            guard !ids.isEmpty else { return }
+            for watcher in deferredWatchers.values { watcher.yield(ids) }
+            // A mission's counts (needs you, open items) follow its items:
+            // refetch each mission the changed items belong to, once.
+            let missions = ids.compactMap { try? store.item(id: $0)?.missionID }
+            refetchMissions(Set(missions))
+        case .failed, .stopped:
+            // Still owed: the next catch-up's end or return to the front.
+            listChanged = true
+            deferredItemIDs.formUnion(ids)
+        case .unsupported:
+            break
         }
+    }
+
+    /// The ids of items that changed while the cache was kept current by
+    /// list reads alone (during a catch-up, or in the background), each
+    /// time a list read has covered them. An open item page whose id is in
+    /// one refetches its thread.
+    public func deferredItemsRead() -> AsyncStream<Set<String>> {
+        AsyncStream(bufferingPolicy: .bufferingNewest(4)) { c in
+            let id = UUID()
+            deferredWatchers[id] = c
+            c.onTermination = { _ in Task { await self.dropDeferredWatcher(id) } }
+        }
+    }
+
+    private func dropDeferredWatcher(_ id: UUID) {
+        deferredWatchers.removeValue(forKey: id)
     }
 
     /// The app came back to the front: For you first, one request for what
@@ -692,8 +739,7 @@ public actor ItemsSync {
     /// reconnect that follows does not read the list again.
     public func refreshOnReturn() async {
         _ = listPacer.take(changed: true)
-        listChanged = false
-        await refreshList()
+        await readDeferredChanges()
     }
 
     private func noteMarker(_ marker: ItemMarkerEvent) {
@@ -704,6 +750,7 @@ public actor ItemsSync {
         // request, where fetching each would send one per event.
         if catchingUp || !listPacer.isAppActive {
             listChanged = true
+            deferredItemIDs.insert(marker.itemID)
             return
         }
         if !pendingMarkerIDs.contains(marker.itemID) { pendingMarkerIDs.append(marker.itemID) }

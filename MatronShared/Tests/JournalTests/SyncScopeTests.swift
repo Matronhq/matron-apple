@@ -359,6 +359,19 @@ final class SyncScopeEngineTests: XCTestCase {
         await engine.endSync()
     }
 
+    func testOnForYouAListLeftOnScreenInTheBackgroundDoesNotFetchOnAWake() async {
+        let activity = AppActivity(active: false)
+        let engine = JournalSyncEngine(api: stubbedAPI(), store: try! seededStore(cursor: 10),
+                                       connector: FakeConnector([]), token: "t", ownSender: "user:alice",
+                                       search: nil, syncScope: .forYou, activity: activity)
+        await engine.chatListAppeared(UUID())
+        let inBackground = await engine.refreshesSummariesOnConnect
+        XCTAssertFalse(inBackground)
+        activity.setActive(true)
+        let inFront = await engine.refreshesSummariesOnConnect
+        XCTAssertTrue(inFront)
+    }
+
     func testOnForYouAChatListThatLeftNoLongerCounts() async {
         let engine = JournalSyncEngine(api: stubbedAPI(), store: try! seededStore(cursor: 10),
                                        connector: FakeConnector([]), token: "t", ownSender: "user:alice",

@@ -50,7 +50,7 @@ enum BackgroundCatchUp {
         dependencies.refreshProtectedDataState(sceneIsActive: false)
         guard let restored = try? await dependencies.auth.restoreSession() else { return false }
         let engine = dependencies.syncEngine(for: restored)
-        let cursorBefore = await engine.mirrorCursor
+        let eventsBefore = await engine.appliedEventCount
         let outboxBefore = await engine.hasPendingOutbox
         // No-op when already running.
         await engine.beginSync()
@@ -80,8 +80,8 @@ enum BackgroundCatchUp {
         if needsSettle {
             try? await Task.sleep(for: settle)
         }
-        let cursorAfter = await engine.mirrorCursor
+        let eventsAfter = await engine.appliedEventCount
         let outboxAfter = await engine.hasPendingOutbox
-        return cursorAfter > cursorBefore || (outboxBefore && !outboxAfter)
+        return eventsAfter > eventsBefore || (outboxBefore && !outboxAfter)
     }
 }

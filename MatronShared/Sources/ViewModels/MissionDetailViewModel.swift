@@ -137,6 +137,16 @@ public final class MissionDetailViewModel {
     public func start() {
         stop()
         let id = missionID
+        // A change that reached this device only through a list read (a
+        // catch-up, or the background) brought the mission row, not its
+        // milestones: refetch the mission.
+        tasks.append(Task { [weak self] in
+            guard let deferred = await self?.sync.deferredMissionsRead() else { return }
+            for await ids in deferred where ids.contains(id) {
+                guard let self, !Task.isCancelled else { return }
+                _ = await self.sync.refreshMission(id: id)
+            }
+        })
         tasks.append(Task { [weak self] in
             guard let s = self?.store.missionStream(id: id) else { return }
             for await v in s {
