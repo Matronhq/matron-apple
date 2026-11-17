@@ -152,6 +152,61 @@ final class JournalSyncEngineLiveBatchTests: XCTestCase {
         await engine.endSync()
     }
 
+    func testOpeningAChatWritesItsWaitingFramesAtOnce() async throws {
+        let socket = FakeWebSocketConnection()
+        let store = try seededStore()
+        let engine = try await engine(store: store, socket: socket)
+        socket.serve(line(2, convo: "c2"))
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(store.cursor, 1, "held for the group")
+        await engine.registerViewer(UUID(), convoID: "c2")
+        XCTAssertEqual(store.cursor, 2, "the chat that opened shows what was waiting")
+        XCTAssertEqual(try store.events(convoID: "c2").map(\.seq), [2])
+        await engine.endSync()
+    }
+
+    /// The salvage of a failed timed write waits on its ack. A frame of this
+    /// device's own, which is written at once, arrives meanwhile: it must not
+    /// land past the frame that failed.
+    func testAFrameArrivingWhileAFailedTimedWriteAcksIsNotWritten() async throws {
+        let first = FakeWebSocketConnection()
+        let second = FakeWebSocketConnection()
+        let store = try seededStore()
+        // Twice: the batch, then its one-by-one salvage.
+        let failuresLeft = OSAllocatedUnfairLock(initialState: 2)
+        store.failApplyForTesting = { seq in
+            guard seq == 3 else { return false }
+            return failuresLeft.withLock { left in
+                guard left > 0 else { return false }
+                left -= 1
+                return true
+            }
+        }
+        first.serve(helloOK(1))
+        second.serve(helloOK(4))
+        let connector = FakeConnector([first, second])
+        let engine = JournalSyncEngine(api: JournalAPI(serverURL: URL(string: "https://x")!), store: store,
+                                       connector: connector, token: "t", ownSender: "user:alice",
+                                       search: nil, backoffBaseSeconds: 0.01)
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        first.holdSends(after: first.sent.count)
+        first.serve(line(2))
+        first.serve(line(3))
+        try await until("the salvage waits on its ack") { first.heldCount == 1 }
+        XCTAssertEqual(store.cursor, 2, "the salvage landed the frame before the failed one")
+        first.serve(line(4, sender: "user:alice"))
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(store.cursor, 2, "nothing lands past the failed frame")
+        first.releaseHeldSends()
+        try await until("the socket is replaced") { connector.connectCount == 2 }
+        second.serve(line(3))
+        second.serve(line(4, sender: "user:alice"))
+        try await until("the replay lands") { store.cursor == 4 }
+        XCTAssertEqual(try store.events(convoID: "c1").map(\.seq), [2, 3, 4])
+        await engine.endSync()
+    }
+
     func testAClosedSocketStillWritesWhatWasWaiting() async throws {
         let socket = FakeWebSocketConnection()
         let store = try seededStore()
