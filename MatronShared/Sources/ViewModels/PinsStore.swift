@@ -6,8 +6,8 @@ import MatronModels
 
 /// The session's pinned desk chats (journal "Pinned desk chats"): the Mac's
 /// nav-column entries under the Coordinator, the iPhone's Pinned section,
-/// and Settings → Pinned chats all read this one list. Reads `GET /pins` on
-/// every connect (the live frame has no replay) and applies live `pins`
+/// and Settings → Pinned chats all read this one list. Reads `GET /pins`
+/// on reconnect and on return to the front, paced by `RefreshPacer` (the live frame has no replay) and applies live `pins`
 /// frames as they land. Writes go to the journal and its answer — the whole
 /// list — replaces what is shown; a reorder shows at once and a failed one
 /// puts the old order back.
@@ -41,15 +41,20 @@ public final class PinsStore {
     private var epoch = 0
     private var updatesTask: Task<Void, Never>?
     private var statesTask: Task<Void, Never>?
+    private var foregroundTask: Task<Void, Never>?
+    /// Paces the re-reads on reconnect and on return to the front.
+    private let pacer: RefreshPacer
     private var boxNamesTask: Task<Void, Never>?
 
     public init(api: any PinsProviding,
                 updates: @escaping @Sendable () -> AsyncStream<[ConvoPin]>,
                 connectionStates: @escaping @Sendable () -> AsyncStream<SyncConnectionState>,
+                pacer: RefreshPacer = RefreshPacer(),
                 boxNames: @escaping @Sendable () -> AsyncStream<[Int64: String]> = { AsyncStream { $0.finish() } }) {
         self.api = api
         self.updates = updates
         self.connectionStates = connectionStates
+        self.pacer = pacer
         self.boxNameUpdates = boxNames
     }
 
@@ -99,7 +104,15 @@ public final class PinsStore {
         statesTask = Task { [weak self] in
             for await state in states {
                 guard !Task.isCancelled else { return }
-                if case .running = state { await self?.refresh() }
+                // Paced: a phone reconnects each time it is opened or woken.
+                if case .running = state, self?.pacer.take() == true { await self?.refresh() }
+            }
+        }
+        let foreground = pacer.foregroundSignals()
+        foregroundTask = Task { [weak self] in
+            for await _ in foreground {
+                guard !Task.isCancelled else { return }
+                if self?.pacer.take() == true { await self?.refresh() }
             }
         }
         let names = boxNameUpdates()
@@ -114,6 +127,8 @@ public final class PinsStore {
     public func stop() {
         updatesTask?.cancel()
         statesTask?.cancel()
+        foregroundTask?.cancel()
+        foregroundTask = nil
         boxNamesTask?.cancel()
         updatesTask = nil
         statesTask = nil
@@ -139,6 +154,7 @@ public final class PinsStore {
             pins = []
         } catch {
             Self.logger.warning("GET /pins failed: \(error.localizedDescription, privacy: .public)")
+            pacer.reset()
         }
     }
 

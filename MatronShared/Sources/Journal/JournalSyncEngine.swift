@@ -437,6 +437,10 @@ public actor JournalSyncEngine {
         return false
     }
 
+    /// The newest journal event this device holds. A background wake
+    /// compares it before and after to tell iOS whether it brought news.
+    public var mirrorCursor: Int64 { store.cursor }
+
     public func waitUntilReady() async throws {
         if case .running = state { return }
         guard runTask != nil else { throw JournalSyncError.offline }

@@ -5,8 +5,8 @@ import MatronJournal
 import MatronModels
 
 /// The user's journal settings (`GET` / `PATCH /settings`): today only the
-/// "Send things I need to read to For you" switch. Reads `GET /settings` on
-/// every connect (the live frame has no replay, so one missed while offline
+/// "Send things I need to read to For you" switch. Reads `GET /settings`
+/// on reconnect and on return to the front, paced by `RefreshPacer` (the live frame has no replay, so one missed while offline
 /// is caught there) and applies live `settings` control frames as they land.
 /// A write shows at once; a failed `PATCH` puts the switch back. Mirrors
 /// `NotifySettingsStore`, without its overlapping-writes replay: there is
@@ -67,13 +67,18 @@ public final class UserSettingsStore {
     private var writesLanded = 0
     private var updatesTask: Task<Void, Never>?
     private var statesTask: Task<Void, Never>?
+    private var foregroundTask: Task<Void, Never>?
+    /// Paces the re-reads on reconnect and on return to the front.
+    private let pacer: RefreshPacer
 
     public init(api: any UserSettingsProviding,
                 updates: @escaping @Sendable () -> AsyncStream<UserSettings>,
-                connectionStates: @escaping @Sendable () -> AsyncStream<SyncConnectionState>) {
+                connectionStates: @escaping @Sendable () -> AsyncStream<SyncConnectionState>,
+                pacer: RefreshPacer = RefreshPacer()) {
         self.api = api
         self.updates = updates
         self.connectionStates = connectionStates
+        self.pacer = pacer
     }
 
     public func start() {
@@ -91,7 +96,15 @@ public final class UserSettingsStore {
         statesTask = Task { [weak self] in
             for await state in states {
                 guard !Task.isCancelled else { return }
-                if case .running = state { await self?.refresh() }
+                // Paced: a phone reconnects each time it is opened or woken.
+                if case .running = state, self?.pacer.take() == true { await self?.refresh() }
+            }
+        }
+        let foreground = pacer.foregroundSignals()
+        foregroundTask = Task { [weak self] in
+            for await _ in foreground {
+                guard !Task.isCancelled else { return }
+                if self?.pacer.take() == true { await self?.refresh() }
             }
         }
     }
@@ -99,6 +112,8 @@ public final class UserSettingsStore {
     public func stop() {
         updatesTask?.cancel()
         statesTask?.cancel()
+        foregroundTask?.cancel()
+        foregroundTask = nil
         updatesTask = nil
         statesTask = nil
         // A `GET` still in flight must not land after this.
@@ -127,6 +142,7 @@ public final class UserSettingsStore {
             isSupported = false
         } catch {
             Self.logger.warning("GET /settings failed: \(error.localizedDescription, privacy: .public)")
+            pacer.reset()
         }
     }
 

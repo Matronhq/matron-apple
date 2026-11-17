@@ -71,6 +71,15 @@ public actor ProjectsSync {
     /// again. Same rule as `MissionsSync`.
     private var listDeferredUntilResume = false
     private var projectsDeferredUntilResume: Set<String> = []
+    /// Paces the list re-read on reconnect and on return to the front.
+    private let pacer: RefreshPacer
+    private var foregroundTask: Task<Void, Never>?
+    /// Whether the socket is replaying what this device missed.
+    private var catchingUp = false
+    /// A mission event landed while the list was not being kept current
+    /// event by event (during a catch-up, or in the background): the next
+    /// re-read goes out whatever the pacer's interval.
+    private var listChanged = false
     private var linksDeferredUntilResume: Set<String> = []
     /// Mission rows the journal returned from `setMissionProject` whose
     /// write was refused. Kept and written on resume rather than re-fetched:
@@ -80,8 +89,10 @@ public actor ProjectsSync {
 
     public init(api: any ProjectsProviding, store: JournalStore,
                 markers: @escaping @Sendable () -> AsyncStream<(convoID: String, marker: MissionMarker)>,
-                connectionStates: @escaping @Sendable () -> AsyncStream<SyncConnectionState>) {
+                connectionStates: @escaping @Sendable () -> AsyncStream<SyncConnectionState>,
+                pacer: RefreshPacer = RefreshPacer()) {
         self.api = api; self.store = store; self.markers = markers; self.connectionStates = connectionStates
+        self.pacer = pacer
     }
 
     // MARK: Support
@@ -117,7 +128,14 @@ public actor ProjectsSync {
         stateTask = Task { [weak self] in
             for await state in states {
                 guard let self else { return }
-                if case .running = state { await self.refresh() }
+                await self.noteState(state)
+            }
+        }
+        let foreground = pacer.foregroundSignals()
+        foregroundTask = Task { [weak self] in
+            for await _ in foreground {
+                guard let self else { return }
+                await self.refreshListIfDue()
             }
         }
     }
@@ -136,16 +154,16 @@ public actor ProjectsSync {
     /// `watched` is deliberately NOT cleared here — see its declaration.
     public func stop() async {
         stopped = true
-        let mt = markerTask, st = stateTask
-        markerTask = nil; stateTask = nil
-        mt?.cancel(); st?.cancel()
+        let mt = markerTask, st = stateTask, ft = foregroundTask
+        markerTask = nil; stateTask = nil; foregroundTask = nil
+        mt?.cancel(); st?.cancel(); ft?.cancel()
         let refresh = inFlightRefresh
         refresh?.cancel()
         let links = Array(inFlightLinks.values)
         for t in links { t.cancel() }
         let details = Array(inFlightDetails.values)
         for t in details { t.cancel() }
-        await mt?.value; await st?.value
+        await mt?.value; await st?.value; await ft?.value
         _ = await refresh?.value
         for t in links { await t.value }
         for t in details { await t.value }
@@ -198,7 +216,36 @@ public actor ProjectsSync {
         if watched[convoID, default: 0] > 0 {
             Task { await self.refreshConversationMissions(convoID: convoID) }
         }
+        // Replayed in a catch-up, or landed in the background: the one
+        // list re-read after it covers every such event.
+        if catchingUp || !pacer.isAppActive {
+            listChanged = true
+            return
+        }
         if inFlightRefresh != nil { refreshAgain = true } else { Task { await self.refresh() } }
+    }
+
+    private func noteState(_ state: SyncConnectionState) async {
+        switch state {
+        case .catchingUp:
+            catchingUp = true
+        case .running:
+            catchingUp = false
+            await refreshListIfDue()
+        case .connecting, .offline:
+            catchingUp = false
+        }
+    }
+
+    /// The list re-read on reconnect and on return to the front: paced,
+    /// unless a mission event landed meanwhile.
+    private func refreshListIfDue() async {
+        guard !stopped, pacer.take(changed: listChanged) else { return }
+        listChanged = false
+        if case .failed = await refresh() {
+            pacer.reset()
+            listChanged = true
+        }
     }
 
     // MARK: List

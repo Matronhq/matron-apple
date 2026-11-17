@@ -126,6 +126,16 @@ public actor ItemsSync {
     /// three methods re-checks this flag immediately after its await,
     /// before touching `store`.
     private var stopped = false
+    /// Keeps a reconnect from re-reading the list one just read (the app's
+    /// own read on return to the front, or the catch-up's), and keeps the
+    /// background from reading it at all unless an item changed.
+    private let listPacer: RefreshPacer
+    /// Whether the socket is replaying what this device missed.
+    private var catchingUp = false
+    /// An item changed while the cache was not being kept current item by
+    /// item (during a catch-up, or in the background): the list is re-read
+    /// once the catch-up ends.
+    private var listChanged = false
     /// Spec 2026-09-28 missions dashboard §3.7: an item change on a mission
     /// changes that mission's `needs_you` / `open_items`, which live on the
     /// mission row. The `item` marker carries no `mission_id`, so the
@@ -201,8 +211,10 @@ public actor ItemsSync {
                 connectionStates: @escaping @Sendable () -> AsyncStream<SyncConnectionState>,
                 retryBase: TimeInterval = 2,
                 reconcileInterval: TimeInterval? = 6 * 60 * 60,
-                sharedMissions: (@Sendable () -> AsyncStream<SharedMissionSignal>)? = nil) {
+                sharedMissions: (@Sendable () -> AsyncStream<SharedMissionSignal>)? = nil,
+                listPacer: RefreshPacer = RefreshPacer(interval: .seconds(30))) {
         self.api = api; self.store = store; self.markers = markers; self.connectionStates = connectionStates
+        self.listPacer = listPacer
         self.retryBase = retryBase
         self.reconcileInterval = reconcileInterval
         self.sharedMissions = sharedMissions
@@ -243,18 +255,20 @@ public actor ItemsSync {
                     // the list now, in one request, rather than once the
                     // replay of everything this device missed has ended.
                     // The For you list is then current while the rest of
-                    // the catch-up is still arriving.
-                    await self.refresh(scope: .all)
+                    // the catch-up is still arriving. Skipped when the list
+                    // was read moments ago (the app reads it itself on
+                    // return to the front) or the app is in the background.
+                    await self.beginCatchUp()
                 case .running:
                     // No `setSupported(true)` here: publishing "supported"
                     // before the probe would flash true→false for an old
                     // journal that 404s on GET /items. `refresh` publishes
                     // the real result once it knows it.
-                    await self.refresh(scope: .all)
+                    await self.endCatchUp()
                     await self.drainOutbox()
-                    if await self.reconcileDue() { await self.reconcile() }
+                    if self.listPacer.isAppActive, await self.reconcileDue() { await self.reconcile() }
                 case .connecting, .offline:
-                    break
+                    await self.leaveCatchUp()
                 }
             }
         }
@@ -643,9 +657,55 @@ public actor ItemsSync {
 
     /// One marker off the socket: its tap is applied at once, and its item
     /// joins the refetch queue unless it is already waiting there.
+    private func beginCatchUp() async {
+        catchingUp = true
+        guard listPacer.take() else { return }
+        await refreshList()
+    }
+
+    /// The catch-up ended. The list is re-read if an item changed during
+    /// it (its markers were not fetched one by one), or if nothing read it
+    /// recently: a socket that was already caught up never catches up.
+    private func endCatchUp() async {
+        catchingUp = false
+        if listChanged {
+            listChanged = false
+            _ = listPacer.take(changed: true)
+            await refreshList()
+        } else if listPacer.take() {
+            await refreshList()
+        }
+    }
+
+    private func leaveCatchUp() async {
+        catchingUp = false
+    }
+
+    private func refreshList() async {
+        if case .failed = await refresh(scope: .all) {
+            listPacer.reset()
+        }
+    }
+
+    /// The app came back to the front: For you first, one request for what
+    /// changed in the tracker, sent before the socket has been checked. The
+    /// reconnect that follows does not read the list again.
+    public func refreshOnReturn() async {
+        _ = listPacer.take(changed: true)
+        listChanged = false
+        await refreshList()
+    }
+
     private func noteMarker(_ marker: ItemMarkerEvent) {
         guard !stopped else { return }
         applyCommentTap(marker)
+        // Replayed in a catch-up, or landed in the background: the list
+        // re-read when the catch-up ends covers every such item in one
+        // request, where fetching each would send one per event.
+        if catchingUp || !listPacer.isAppActive {
+            listChanged = true
+            return
+        }
         if !pendingMarkerIDs.contains(marker.itemID) { pendingMarkerIDs.append(marker.itemID) }
         guard markerDrain == nil else { return }
         markerDrainGeneration += 1
