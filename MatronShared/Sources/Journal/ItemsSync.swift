@@ -132,6 +132,9 @@ public actor ItemsSync {
     private let listPacer: RefreshPacer
     /// Whether the socket is replaying what this device missed.
     private var catchingUp = false
+    /// Tests wait on this rather than on time: a state and a marker reach
+    /// the sync on separate tasks.
+    var isCatchingUpForTesting: Bool { catchingUp }
     /// An item changed while the cache was not being kept current item by
     /// item (during a catch-up, or in the background): the list is re-read
     /// once the catch-up ends.

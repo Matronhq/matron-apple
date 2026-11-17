@@ -359,13 +359,14 @@ class ItemsSyncTests: XCTestCase {
         let early = Task { await sync.refreshOnReturn() }
         try await waitUntil { api.listQueries.count == 1 }
         states.yield(.catchingUp)
+        try await waitUntilAsync { await sync.isCatchingUpForTesting }
         markers.yield(marker("it_1"))
         try? await Task.sleep(nanoseconds: 50_000_000)
         states.yield(.running)
         try? await Task.sleep(nanoseconds: 50_000_000)
         api.releaseListGate()
         await early.value
-        try await waitUntil { api.listQueries.count == 2 }
+        try await waitUntil({ api.listQueries.count == 2 }, timeout: 5)
     }
 
     func testALiveMarkerInFrontStillFetchesItsItem() async throws {
@@ -1588,6 +1589,15 @@ class ItemsSyncTests: XCTestCase {
         let (sync, _, _, _) = try make(api: FakeItems())
         let cancelled = await sync.cancelQueuedComment(localID: "gone")
         XCTAssertEqual(cancelled, .alreadySent)
+    }
+
+    private func waitUntilAsync(_ cond: () async -> Bool, timeout: TimeInterval = 5) async throws {
+        struct TimeoutError: Error, CustomStringConvertible { var description: String { "waitUntilAsync timed out" } }
+        let start = Date()
+        while !(await cond()) {
+            if Date().timeIntervalSince(start) > timeout { throw TimeoutError() }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
     }
 
     private func waitUntil(_ cond: @escaping () throws -> Bool, timeout: TimeInterval = 2) async throws {
