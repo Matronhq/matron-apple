@@ -213,6 +213,21 @@ final class AppendingFakeTimelineService: TimelineService, @unchecked Sendable {
 /// avoids duplication and keeps the recorded behaviours (snapshotsToEmit,
 /// paginateCalls, markReadCalls) consistent between the two suites.
 final class ChatViewModelTests: XCTestCase {
+    /// This suite once hung a local `swift test` run at 0% CPU without
+    /// saying where; a stuck test now ends the run and names itself.
+    private var watchdog: TestHangWatchdog?
+
+    override func setUp() {
+        super.setUp()
+        watchdog = TestHangWatchdog(test: name)
+    }
+
+    override func tearDown() {
+        watchdog?.cancel()
+        watchdog = nil
+        super.tearDown()
+    }
+
     @MainActor
     func test_streamReceivedItems_appearInState() async throws {
         let fake = FakeTimelineService()
