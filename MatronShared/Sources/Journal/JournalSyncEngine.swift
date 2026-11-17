@@ -245,6 +245,10 @@ public actor JournalSyncEngine {
     /// on their title: the first frame was neither the `convo_meta` that
     /// carries it nor a message (see `considerAutoOpen`).
     private var pendingAutoOpen: Set<String> = []
+    /// Live frames waiting to be written together (`bufferLiveFrame`).
+    private var liveBuffer: [JournalEvent] = []
+    /// Writes `liveBuffer` once its first frame has waited `liveFlushDelay`.
+    private var liveFlushTask: Task<Void, Never>?
     /// Session starts this device asked for and has not yet seen born —
     /// the only thing that lets a live-born conversation open itself.
     private var localStartIntents: LocalStartIntents
@@ -973,6 +977,8 @@ public actor JournalSyncEngine {
         // must not replay pre-wipe meters to post-wipe subscribers.
         lastSessionStatus.removeAll()
         caughtUpViewed.removeAll()
+        // Pre-wipe frames must never land on the wiped store.
+        dropLiveBuffer()
         try? store.wipe()
     }
 
@@ -2056,6 +2062,13 @@ public actor JournalSyncEngine {
                         // first-ever frame of a convo sees `false`, so this
                         // is true exactly once per new conversation.
                         let isNewConvo = (try? store.conversationExists(event.convoID)) == false
+                        if case .running = state, !isNewConvo, !appliesLiveFrameAtOnce(event) {
+                            try await bufferLiveFrame(event, connection: connection)
+                            continue
+                        }
+                        // Whatever is applied on its own lands after the
+                        // frames buffered before it, in journal order.
+                        try await flushLiveBuffer(connection: connection)
                         // Note: delivery-confirmed outbox deletion happens
                         // INSIDE applyJournal's transaction (atomic with the
                         // row insert) — see JournalStore.applyJournal.
@@ -2394,11 +2407,89 @@ public actor JournalSyncEngine {
     /// failed apply here just leaves the cursor where it was; the reconnect
     /// replays the same frames.
     private func flushReplayBufferOnTeardown(_ buffer: inout [JournalEvent]) {
-        guard !buffer.isEmpty else { return }
-        if let applied = try? store.applyJournalBatch(buffer) {
-            didApplyBatch(applied)
+        if !buffer.isEmpty {
+            if let applied = try? store.applyJournalBatch(buffer) {
+                didApplyBatch(applied)
+            }
+            buffer.removeAll()
         }
-        buffer.removeAll()
+        // Live frames come after the replay's, so they land second.
+        let live = liveBuffer
+        dropLiveBuffer()
+        if !live.isEmpty, let applied = try? store.applyJournalBatch(live) {
+            didApplyBatch(applied)
+            stats?.noteEvents(applied.count)
+        }
+    }
+
+    // MARK: Live frames written together
+
+    /// How long a live frame may wait to be written with the ones after it.
+    /// A phone that only follows the tracker takes in thousands of frames a
+    /// day while it is open; written one transaction each, every frame cost
+    /// over ten times the disk writes of the same frames written together.
+    static let liveFlushDelay: Duration = .seconds(1)
+    /// A buffer this full is written at once.
+    static let liveBatchMax = 200
+
+    /// Whether a live frame is written as it arrives rather than with the
+    /// next group: one the user is looking at (an open conversation), one
+    /// this device sent (its echo confirms the send and clears the outbox),
+    /// and one a pending auto-open is waiting on. The rest (tracker and
+    /// mission markers, status and titles of conversations not on screen)
+    /// shows nowhere a second's delay can be seen.
+    private func appliesLiveFrameAtOnce(_ event: JournalEvent) -> Bool {
+        event.sender == ownSender
+            || viewers.contains(where: { $0.convoID == event.convoID })
+            || pendingAutoOpen.contains(event.convoID)
+    }
+
+    private func bufferLiveFrame(_ event: JournalEvent, connection: JournalConnection) async throws {
+        liveBuffer.append(event)
+        if liveBuffer.count >= Self.liveBatchMax {
+            try await flushLiveBuffer(connection: connection)
+            return
+        }
+        guard liveFlushTask == nil else { return }
+        liveFlushTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.liveFlushDelay)
+            guard !Task.isCancelled else { return }
+            await self?.flushLiveBufferOnTimer()
+        }
+    }
+
+    /// The timer's flush, on the socket that is live now (a teardown writes
+    /// or drops the buffer and cancels the timer, so a buffer is always the
+    /// live socket's). A failed write closes the socket: the frame loop
+    /// then takes the same reconnect path as a failed single write, and the
+    /// journal replays the frames from the unchanged cursor.
+    private func flushLiveBufferOnTimer() async {
+        liveFlushTask = nil
+        guard let connection = liveConnection else { return }
+        do {
+            try await flushLiveBuffer(connection: connection)
+        } catch {
+            Self.logger.warning("live batch write failed, reconnecting: \(error.localizedDescription, privacy: .public)")
+            connection.close()
+        }
+    }
+
+    /// Writes the buffered live frames in one transaction, runs their side
+    /// effects, and acks the cursor they reached.
+    private func flushLiveBuffer(connection: JournalConnection) async throws {
+        guard !liveBuffer.isEmpty else { return }
+        let batch = liveBuffer
+        dropLiveBuffer()
+        let applied = try await applyReplayBatch(batch, connection: connection)
+        if applied > 0 {
+            try? await connection.send(.ack(cursor: store.cursor))
+        }
+    }
+
+    private func dropLiveBuffer() {
+        liveBuffer.removeAll()
+        liveFlushTask?.cancel()
+        liveFlushTask = nil
     }
 
     /// Side effects owed to every frame that actually wrote (apply returned
