@@ -562,9 +562,9 @@ public final class VoiceRecorder {
     public struct Stopped {
         public let url: URL
         public let duration: TimeInterval
-        private let waitForFile: @MainActor () async -> Void
+        private let waitForFile: @MainActor () async -> Bool
 
-        init(url: URL, duration: TimeInterval, waitForFile: @escaping @MainActor () async -> Void) {
+        init(url: URL, duration: TimeInterval, waitForFile: @escaping @MainActor () async -> Bool) {
             self.url = url
             self.duration = duration
             self.waitForFile = waitForFile
@@ -572,7 +572,13 @@ public final class VoiceRecorder {
 
         /// Returns once the file is complete on disk.
         @MainActor
-        public func finished() async { await waitForFile() }
+        public func finished() async { _ = await waitForFile() }
+
+        /// Returns once the file is complete on disk: `false` when a
+        /// recorder reported an error finishing it (an encoder error, or
+        /// a finish it didn't ask for), so the file may be incomplete.
+        @MainActor
+        public func finishedCleanly() async -> Bool { await waitForFile() }
     }
 
     /// Stops recording and hands back the note's file plus its elapsed
@@ -616,7 +622,9 @@ public final class VoiceRecorder {
                 await Self.rewriteForOlderDecoders(noteURL, using: join)
             }
             let bytes = (try? FileManager.default.attributesOfItem(atPath: noteURL.path)[.size] as? Int) ?? -1
-            Self.logger.notice("finished: after=\(Date().timeIntervalSince(began), format: .fixed(precision: 3))s bytes=\(bytes)")
+            let clean = !parts.contains { $0.recorder.hasFailed }
+            Self.logger.notice("finished: after=\(Date().timeIntervalSince(began), format: .fixed(precision: 3))s bytes=\(bytes) clean=\(clean)")
+            return clean
         }
     }
 

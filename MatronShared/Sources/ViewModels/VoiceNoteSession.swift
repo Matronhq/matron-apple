@@ -109,6 +109,7 @@ public final class VoiceNoteSession {
     public static let nothingRecordedMessage = "Nothing was recorded, try again"
     private static let logger = os.Logger(subsystem: "chat.matron", category: "voice-recorder")
     static let shortFileRechecks = 6
+    static let brokenMessage = "The recorder reported an error saving this note. Retry sends what was saved."
 
     /// The file holds under half of a note over 2 s long.
     static func isShort(_ audio: TimeInterval?, of duration: TimeInterval) -> Bool {
@@ -169,6 +170,12 @@ public final class VoiceNoteSession {
             }
             let url = lost.stopped.url
             let seconds = await measureAudio(url) ?? 0
+            // Signed out while the file was measured: the old account's
+            // note never reaches the next account's rows.
+            guard generation == self.generation else {
+                try? FileManager.default.removeItem(at: url)
+                return
+            }
             let id = UUID()
             let mic = micName ?? "The microphone"
             if seconds >= Self.minimumAudio {
@@ -281,7 +288,7 @@ public final class VoiceNoteSession {
         // The recorder may still be finishing the file: the delivery waits
         // for it, off the tap, so the bar goes and "Sending…" shows at once.
         return send(url: stopped.url, duration: stopped.duration, to: target, via: deliver,
-                    waitForFile: stopped.finished)
+                    waitForFile: stopped.finishedCleanly)
     }
 
     /// Aborts the live note and discards its file.
@@ -342,7 +349,7 @@ public final class VoiceNoteSession {
     }
 
     private func send(url: URL, duration: TimeInterval, to target: Target, via deliver: @escaping Deliver,
-                      waitForFile: @escaping @MainActor () async -> Void = {},
+                      waitForFile: @escaping @MainActor () async -> Bool = { true },
                       acceptShort: Bool = false) -> Task<Void, Never> {
         sendingTarget = target
         let generation = self.generation
@@ -350,7 +357,7 @@ public final class VoiceNoteSession {
         let task = Task { @MainActor in
             // Cancelled by `reset()` before it began: never reaches the
             // signed-out account's upload at all.
-            await waitForFile()
+            let clean = await waitForFile()
             // A file with (almost) no audio in it is never sent: it would
             // arrive as a note nobody can play or transcribe.
             var audio = Task.isCancelled ? nil : await measureAudio(url)
@@ -365,10 +372,14 @@ public final class VoiceNoteSession {
             Self.logger.notice("send: clock=\(duration, format: .fixed(precision: 2))s audio=\(audio ?? -1, format: .fixed(precision: 2))s rechecks=\(waited)")
             let empty = !Task.isCancelled && (audio ?? 0) < Self.minimumAudio
             let short = !acceptShort && !Task.isCancelled && !empty && Self.isShort(audio, of: duration)
+            // The recorder reported an error finishing the file: what is
+            // in it may be incomplete, so the user decides.
+            let broken = !acceptShort && !Task.isCancelled && !empty && !short && !clean
             if empty { try? FileManager.default.removeItem(at: url) }
             let error = Task.isCancelled ? "Cancelled"
                 : empty ? Self.nothingRecordedMessage
                 : short ? Self.shortMessage(saved: audio ?? 0, of: duration)
+                : broken ? Self.brokenMessage
                 : await deliver(url, duration)
             guard generation == self.generation, !Task.isCancelled else {
                 // Signed out meanwhile: the old account's note is dropped.

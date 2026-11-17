@@ -23,11 +23,12 @@ final class VoiceNoteRecordingRenderHarness: XCTestCase {
         return URL(fileURLWithPath: path)
     }
 
-    private func write<V: View>(_ view: V, _ name: String, to dir: URL) {
+    private func write<V: View>(_ view: V, _ name: String, to dir: URL) throws {
         for (appearance, suffix) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {
             let host = MacSnapshotHost(view.frame(width: 560).padding(12), appearance: appearance)
             defer { host.close() }
-            try? host.pngData()?.write(to: dir.appendingPathComponent("\(name)-\(suffix).png"))
+            let png = try XCTUnwrap(host.pngData(), "\(name)-\(suffix) didn't render")
+            try png.write(to: dir.appendingPathComponent("\(name)-\(suffix).png"))
         }
     }
 
@@ -36,23 +37,23 @@ final class VoiceNoteRecordingRenderHarness: XCTestCase {
         let start = Date().addingTimeInterval(-31)
         let menu = MicrophoneMenu(current: mics[0], available: mics, preferredID: nil,
                                   defaultTitle: "System default", onSelect: { _ in })
-        write(MacItemVoiceNoteBar(start: start, onCancel: {}) { EmptyView() }, "item-bar-before", to: dir)
-        write(MacItemVoiceNoteBar(start: start, onCancel: {}) { menu }, "item-bar-after", to: dir)
-        write(MacItemVoiceNoteBar(start: nil, onCancel: {}) { menu }, "item-bar-starting-after", to: dir)
-        write(VoiceNoteIndicator(mode: .recording(start: start), title: "Weekend trip itinerary",
+        try write(MacItemVoiceNoteBar(start: start, onCancel: {}) { EmptyView() }, "item-bar-before", to: dir)
+        try write(MacItemVoiceNoteBar(start: start, onCancel: {}) { menu }, "item-bar-after", to: dir)
+        try write(MacItemVoiceNoteBar(start: nil, onCancel: {}) { menu }, "item-bar-starting-after", to: dir)
+        try write(VoiceNoteIndicator(mode: .recording(start: start), title: "Weekend trip itinerary",
                                  onOpen: {}, onCancel: {}, onSend: {}), "pill-before", to: dir)
-        write(VoiceNoteIndicator(mode: .recording(start: start), title: "Weekend trip itinerary",
+        try write(VoiceNoteIndicator(mode: .recording(start: start), title: "Weekend trip itinerary",
                                  microphone: mics[0].name, onOpen: {}, onCancel: {}, onSend: {}), "pill-after", to: dir)
-        write(VoiceNoteRecordingIndicator(start: start, hotkey: .default), "panel-before", to: dir)
-        write(VoiceNoteRecordingIndicator(start: start, hotkey: .default, microphone: mics[0].name),
+        try write(VoiceNoteRecordingIndicator(start: start, hotkey: .default), "panel-before", to: dir)
+        try write(VoiceNoteRecordingIndicator(start: start, hotkey: .default, microphone: mics[0].name),
               "panel-after", to: dir)
-        write(VoiceNoteIndicator(mode: .failed(message: "Nothing was recorded, try again", canRetry: false),
+        try write(VoiceNoteIndicator(mode: .failed(message: "Nothing was recorded, try again", canRetry: false),
                                  title: "Weekend trip itinerary",
                                  onOpen: {}, onCancel: {}, onSend: {}), "empty-refused", to: dir)
-        write(VoiceNoteIndicator(mode: .failed(message: "MacBook Pro Microphone stopped at 0:12. Retry sends what was recorded.", canRetry: true),
+        try write(VoiceNoteIndicator(mode: .failed(message: "MacBook Pro Microphone stopped at 0:12. Retry sends what was recorded.", canRetry: true),
                                  title: "Weekend trip itinerary",
                                  onOpen: {}, onCancel: {}, onSend: {}), "capture-lost", to: dir)
-        write(VoiceNoteIndicator(mode: .failed(message: "Only 0:03 of 0:23 was saved. Retry sends what was saved.", canRetry: true),
+        try write(VoiceNoteIndicator(mode: .failed(message: "Only 0:03 of 0:23 was saved. Retry sends what was saved.", canRetry: true),
                                  title: "Weekend trip itinerary",
                                  onOpen: {}, onCancel: {}, onSend: {}), "short-file", to: dir)
     }

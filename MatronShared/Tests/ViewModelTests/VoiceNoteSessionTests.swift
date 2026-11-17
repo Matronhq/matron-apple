@@ -674,6 +674,37 @@ final class VoiceNoteSessionTests: XCTestCase {
     }
 }
 
+extension VoiceNoteSessionTests {
+    /// The recorder reported an error finishing the file: the note isn't
+    /// sent as if it were whole; Retry sends what was saved.
+    func test_aFileTheRecorderFailedToFinish_waitsForTheUser() async throws {
+        let fake = BrokenFinishRecording()
+        let recorder = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in fake },
+                                     observeInterruptions: interruptions.source)
+        let session = VoiceNoteSession(recorder: recorder, measureAudio: { url in
+            try? Data("AUDIO".utf8).write(to: url)
+            return 5
+        })
+        let inbox = Inbox()
+        try await session.start(chatA, deliver: inbox.deliver)
+        await session.stopAndSend()?.value
+
+        XCTAssertTrue(inbox.delivered.isEmpty)
+        let failure = try XCTUnwrap(session.failures.first)
+        XCTAssertEqual(failure.message, VoiceNoteSession.brokenMessage)
+        XCTAssertTrue(failure.canRetry)
+        await session.retry(failure.id)?.value
+        XCTAssertEqual(inbox.delivered.count, 1)
+    }
+}
+
+private final class BrokenFinishRecording: AudioRecording {
+    private var stopped = false
+    func record() -> Bool { true }
+    func stop() { stopped = true }
+    var hasFailed: Bool { stopped }
+}
+
 private actor Counter {
     private(set) var value = 0
     @discardableResult func bump() -> Int { value += 1; return value }
