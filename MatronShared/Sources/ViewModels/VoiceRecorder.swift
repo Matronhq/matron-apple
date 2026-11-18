@@ -436,7 +436,11 @@ public final class VoiceRecorder {
         var gaveUpSlow = false
         // An interruption holds the warm-up (its time doesn't count
         // towards the cap) until it ends; the mic is checked again after.
-        while let recorder, isInterrupted || !recorder.isCapturingAudio, checks < Self.maxLiveChecks {
+        // The cap doesn't cut in while a capture that has begun writing is
+        // still showing whether its clock keeps pace (settled within about
+        // a second): going live on one that turns out slow can't be undone.
+        while let recorder = self.recorder, isInterrupted || !recorder.isCapturingAudio,
+              checks < Self.maxLiveChecks || recorder.isPaceUndecided {
             await pause()
             if self.recorder !== watched {
                 // A mic pick started the capture over: it gets the whole
@@ -524,6 +528,13 @@ public final class VoiceRecorder {
             while !Task.isCancelled {
                 await watchPause()
                 guard let self, !Task.isCancelled, self.isRecordingState, let recorder = self.recorder else { return }
+                if self.incoming != nil, !self.isInterrupted, self.pausedSince == nil, recorder.isRunningSlow {
+                    // A hand-over is waiting on the new microphone, and
+                    // the old one, still the note's only record, has
+                    // stopped keeping time.
+                    self.loseCapture(reason: "the clock ran slow during a microphone hand-over")
+                    return
+                }
                 if self.isInterrupted || self.pausedSince != nil || self.incoming != nil {
                     stalled = 0
                     lastElapsed = -1
@@ -953,10 +964,14 @@ protocol AudioRecording: AnyObject {
     /// time (the Mac's capture session after a device change at its
     /// start): what is said now isn't reaching the file.
     var isRunningSlow: Bool { get }
+    /// The capture is writing but hasn't yet shown whether its clock keeps
+    /// pace (the first second or less): too soon to call it live or slow.
+    var isPaceUndecided: Bool { get }
 }
 
 extension AudioRecording {
     var isRunningSlow: Bool { false }
+    var isPaceUndecided: Bool { false }
 }
 
 extension AudioRecording {

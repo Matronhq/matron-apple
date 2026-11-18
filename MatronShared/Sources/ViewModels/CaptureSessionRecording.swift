@@ -8,13 +8,19 @@ import Foundation
 /// polled, this compares each window of at least `window` seconds with the
 /// real time it took.
 struct CapturePace {
-    /// The shortest stretch of real time judged.
+    /// The stretch of real time after which a clock is judged slow.
     static let window: TimeInterval = 1
+    /// The shortest stretch over which a clock can show it keeps pace.
+    static let quickWindow: TimeInterval = 0.2
     /// A clock advancing by less than this share of real time is slow.
     static let slowShare = 0.25
 
     private var mark: (at: TimeInterval, recorded: TimeInterval)
     private(set) var isSlow = false
+    /// The clock has been seen advancing in step with real time, and
+    /// hasn't been judged slow since. False until the first readings are
+    /// in: a capture isn't known to be good just because it has started.
+    private(set) var hasKeptPace = false
 
     /// `start`: when the capture began writing, on the clock `at` uses.
     init(start: TimeInterval) {
@@ -22,10 +28,16 @@ struct CapturePace {
     }
 
     /// Takes a reading and says whether the last whole window ran slow.
+    @discardableResult
     mutating func check(at now: TimeInterval, recorded: TimeInterval) -> Bool {
         let passed = now - mark.at
+        let advanced = recorded - mark.recorded
+        if passed >= Self.quickWindow, advanced >= passed * Self.slowShare {
+            hasKeptPace = true
+        }
         guard passed >= Self.window else { return isSlow }
-        isSlow = recorded - mark.recorded < passed * Self.slowShare
+        isSlow = advanced < passed * Self.slowShare
+        if isSlow { hasKeptPace = false }
         mark = (now, recorded)
         return isSlow
     }
@@ -99,19 +111,24 @@ final class CaptureSessionRecording: NSObject, AudioRecording, AVCaptureFileOutp
     var microphone: Microphone? { locked { _microphone } }
     var hasFailed: Bool { locked { _failed } }
 
-    /// Sound counts as arriving only once the file holds this much: a
-    /// clock running slow (see `CapturePace`) is past zero at once but
-    /// takes over a minute to get here.
-    static let liveDuration: TimeInterval = 0.05
-
+    /// Sound counts as arriving only once the clock has shown it keeps
+    /// pace: a clock running slow (see `CapturePace`) is past zero at once.
     var isCapturingAudio: Bool {
-        guard locked({ _recordingStarted }), output.recordedDuration.seconds >= Self.liveDuration,
-              !isRunningSlow else { return false }
+        guard locked({ _recordingStarted }), !isRunningSlow,
+              locked({ _pace?.hasKeptPace ?? false }) else { return false }
         let level = output.connection(with: .audio)?.audioChannels.map(\.peakHoldLevel).max() ?? -160
         return level > Self.liveFloor
     }
 
     var canSwitchMicrophoneLive: Bool { false }
+
+    var isPaceUndecided: Bool {
+        _ = isRunningSlow
+        return locked {
+            guard !_stopRequested, !_failed, let pace = _pace else { return false }
+            return !pace.hasKeptPace && !pace.isSlow
+        }
+    }
 
     var isRunningSlow: Bool {
         let recorded = elapsed

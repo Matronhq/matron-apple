@@ -22,6 +22,9 @@ private final class FakeAudioRecorder: AudioRecording {
     /// The capture's clock isn't keeping pace with real time.
     var runningSlow = false
     var isRunningSlow: Bool { runningSlow }
+    /// Writing, but too soon to say whether the clock keeps pace.
+    var paceUndecided = false
+    var isPaceUndecided: Bool { paceUndecided }
     /// Set to finish the file only when the test signals it, as the Mac's
     /// capture session finishes its file after `stop()`.
     var lateFinish: RecordingFinishSignal?
@@ -607,6 +610,99 @@ final class VoiceRecorderTests: XCTestCase {
         await waitUntil { !lost().isEmpty }
         XCTAssertEqual(lost().count, 1)
         XCTAssertEqual(fake.stopCalls, 1)
+    }
+
+    /// The capture began writing just before the warm-up cap, too late
+    /// for its clock to have been judged: the cap waits for the verdict
+    /// instead of going live on what turns out to be a slow clock.
+    @MainActor
+    func test_start_atTheWarmUpCap_waitsForTheClocksVerdict_thenRestartsASlowCapture() async throws {
+        let slow = FakeAudioRecorder()
+        slow.capturing = false
+        slow.elapsed = 0.001
+        slow.paceUndecided = true
+        let good = FakeAudioRecorder()
+        var made = [slow, good]
+        var pauses = 0
+        let rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in made.removeFirst() },
+                                pause: {
+                                    pauses += 1
+                                    if pauses == VoiceRecorder.maxLiveChecks + 20 {
+                                        slow.paceUndecided = false
+                                        slow.runningSlow = true
+                                    }
+                                },
+                                defaults: freshDefaults())
+        try await rec.start()
+        guard case .recording = rec.state else { return XCTFail("expected .recording") }
+        XCTAssertEqual(pauses, VoiceRecorder.maxLiveChecks + 20, "didn't go live at the cap")
+        XCTAssertEqual(slow.stopCalls, 1)
+        XCTAssertEqual(good.recordCalls, 1)
+        XCTAssertNotNil(rec.stop())
+    }
+
+    /// The old microphone's clock slows while a hand-over waits for the
+    /// new one: the old one is still the note's only record, so the note
+    /// is stopped and reported rather than handed over as if whole.
+    @MainActor
+    func test_recording_whoseClockRunsSlowDuringAHandover_isStoppedAndReported() async throws {
+        let old = FakeAudioRecorder()
+        old.canSwitchMicrophoneLive = false
+        old.elapsed = 5
+        let fresh = FakeAudioRecorder()
+        fresh.capturing = false
+        var made = [old, fresh]
+        var lost: [VoiceRecorder.CaptureLost] = []
+        var checks = 0
+        var holdWarmUp = false
+        let rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in made.removeFirst() },
+                                pause: { if holdWarmUp { try? await Task.sleep(for: .milliseconds(5)) } },
+                                watchPause: {
+                                    await Task.yield()
+                                    checks += 1
+                                    old.elapsed += 0.0005
+                                },
+                                defaults: freshDefaults())
+        rec.onCaptureLost = { lost.append($0) }
+        try await rec.start()
+        holdWarmUp = true
+        rec.selectMicrophone("usb")
+        old.runningSlow = true
+        await waitUntil { !lost.isEmpty }
+        XCTAssertEqual(lost.count, 1)
+        XCTAssertEqual(old.stopCalls, 1)
+    }
+
+    /// A capture isn't known to keep pace until it has been seen to.
+    func test_capturePace_keepsPace_onlyOnceSeenAdvancingInStep() {
+        var pace = CapturePace(start: 100)
+        XCTAssertFalse(pace.hasKeptPace)
+        pace.check(at: 100.1, recorded: 0.09)
+        XCTAssertFalse(pace.hasKeptPace, "too soon to judge")
+        pace.check(at: 100.25, recorded: 0.2)
+        XCTAssertTrue(pace.hasKeptPace)
+        XCTAssertFalse(pace.isSlow)
+    }
+
+    /// A clock at a tenth of real time passes 0.05 s within a second but
+    /// never counts as keeping pace, and is slow once the window is up.
+    func test_capturePace_aClockAtATenthOfRealTime_neverKeepsPace() {
+        var pace = CapturePace(start: 0)
+        for step in 1...9 {
+            pace.check(at: Double(step) / 10, recorded: Double(step) / 100)
+            XCTAssertFalse(pace.hasKeptPace)
+            XCTAssertFalse(pace.isSlow)
+        }
+        XCTAssertTrue(pace.check(at: 1, recorded: 0.1))
+        XCTAssertFalse(pace.hasKeptPace)
+    }
+
+    func test_capturePace_aClockThatSlowsLater_noLongerKeepsPace() {
+        var pace = CapturePace(start: 0)
+        pace.check(at: 1, recorded: 1)
+        XCTAssertTrue(pace.hasKeptPace)
+        XCTAssertTrue(pace.check(at: 2, recorded: 1.001))
+        XCTAssertFalse(pace.hasKeptPace)
     }
 
     func test_capturePace_aClockKeepingTime_isNotSlow() {
