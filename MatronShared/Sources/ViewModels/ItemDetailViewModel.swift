@@ -299,18 +299,40 @@ public final class ItemDetailViewModel {
               let working = item.working, working.isCurrent(at: now()) else { return nil }
         switch working.state {
         case .queued:
-            return .starting
+            return working.behindTurn ? .busyElsewhere : .starting
         case .running:
-            // The stored copy is as old as its last fetch. A device that
-            // has the owner conversation sets it against what it knows
-            // itself: once it has seen the turn end, the copy is stale,
-            // and the refetch that event started will say so. A device
-            // without the conversation waits for the opening read before
-            // it claims any work at all.
-            if ownerConvoID == item.originConvoID, ownerState.exists, let ownerSessionState {
-                return ownerSessionState == "running" ? .working : nil
+            // The bridge's own word on its queue: a reply of the user's on
+            // this item still has a live queued card, so the turn running
+            // is not about it. Said here too, for a journal that reports
+            // every turn as `running`.
+            return runningIndicator.map { $0 == .working && hasWaitingReply ? .busyElsewhere : $0 }
+        }
+    }
+
+    /// `workingIndicator` for a `running` state, before the queued cards
+    /// have their say.
+    private var runningIndicator: ItemWorkingIndicator? {
+        guard let item else { return nil }
+        // The stored copy is as old as its last fetch. A device that has
+        // the owner conversation sets it against what it knows itself:
+        // once it has seen the turn end, the copy is stale, and the refetch
+        // that event started will say so. A device without the
+        // conversation waits for the opening read before it claims any
+        // work at all.
+        if ownerConvoID == item.originConvoID, ownerState.exists, let ownerSessionState {
+            return ownerSessionState == "running" ? .working : nil
+        }
+        return loadedCommentCount != nil ? .working : nil
+    }
+
+    /// Whether one of the user's replies on this item still waits on the
+    /// agent's busy queue (its card has had no release).
+    private var hasWaitingReply: Bool {
+        queuedReplies.values.contains { state in
+            switch state {
+            case .queued, .sendFailed: return true
+            case .sending, .cancelling, .cancelled, .notDelivered: return false
             }
-            return loadedCommentCount != nil ? .working : nil
         }
     }
 

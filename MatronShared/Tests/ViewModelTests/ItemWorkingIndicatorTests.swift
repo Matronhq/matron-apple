@@ -50,6 +50,55 @@ final class ItemWorkingIndicatorTests: XCTestCase {
         vm.stop()
     }
 
+    /// A tap made while the agent is mid-turn on something else waits for
+    /// that turn: the thread says so, not that the agent is working on
+    /// it, and it does not lapse while that turn runs.
+    func testAReplyWaitingBehindAnotherTurnSaysTheAgentIsBusyElsewhere() async throws {
+        let store = Store()
+        let vm = makeViewModel(store: store)
+        vm.start()
+        try await waitUntil { store.itemCont != nil }
+        store.itemCont?.yield(Self.item(ItemWorking(json: ["state": "queued", "since": 1_000, "until": NSNull(), "behind_turn": true])))
+        try await waitUntil { vm.workingIndicator == .busyElsewhere }
+        XCTAssertEqual(vm.workingIndicator?.label, "Busy with something else. Yours is next.")
+        // Its own turn starts.
+        store.itemCont?.yield(Self.item(ItemWorking(state: .running, since: Date())))
+        try await waitUntil { vm.workingIndicator == .working }
+        vm.stop()
+    }
+
+    /// `behind_turn` only means something on `queued`, and a journal that
+    /// never sends it reads as before.
+    func testBehindTurnIsReadFromTheJournalOnlyOnAQueuedState() {
+        XCTAssertEqual(ItemWorking(json: ["state": "queued", "since": 1, "behind_turn": true])?.behindTurn, true)
+        XCTAssertEqual(ItemWorking(json: ["state": "queued", "since": 1, "until": 2])?.behindTurn, false)
+        XCTAssertEqual(ItemWorking(json: ["state": "running", "since": 1, "behind_turn": true])?.behindTurn, false)
+        // A copy stored before the field existed still decodes.
+        let old = #"{"state":"queued","since":0,"until":1}"#.data(using: .utf8)!
+        XCTAssertEqual(try JSONDecoder().decode(ItemWorking.self, from: old).behindTurn, false)
+        let new = ItemWorking(state: .queued, since: Date(timeIntervalSince1970: 0), behindTurn: true)
+        XCTAssertEqual(try JSONDecoder().decode(ItemWorking.self, from: JSONEncoder().encode(new)), new)
+    }
+
+    /// A journal that still says `running` for every turn: the bridge's
+    /// queued card for the user's tap on this item says the turn is not
+    /// about it. Once the card is released, the tap's own turn reads as
+    /// working.
+    func testALiveQueuedCardForTheTapTurnsWorkingIntoBusyElsewhere() async throws {
+        let store = Store(); let cards = Cards()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: store, api: API(), sync: Sync(), queuedCards: cards,
+                                     contextStore: ContextStore())
+        vm.start()
+        try await waitUntil { store.itemCont != nil }
+        store.itemCont?.yield(Self.item(ItemWorking(state: .running, since: Date())))
+        try await waitUntil { vm.workingIndicator == .working }
+        cards.land([Self.card(10, prompt: "pr_a", comment: "ic_tap")])
+        try await waitUntil { vm.workingIndicator == .busyElsewhere }
+        cards.land([Self.card(10, prompt: "pr_a", comment: "ic_tap"), Self.release(11, prompt: "pr_a", action: "send")])
+        try await waitUntil { vm.workingIndicator == .working }
+        vm.stop()
+    }
+
     func testAQueuedStateAlreadyPastItsDeadlineShowsNothing() async throws {
         let store = Store()
         let vm = makeViewModel(store: store)
@@ -172,6 +221,35 @@ final class ItemWorkingIndicatorTests: XCTestCase {
     }
 
     // MARK: - Fakes
+
+    private static func event(_ seq: Int64, type: String, payload: [String: Any]) -> JournalEvent {
+        JournalEvent(seq: seq, convoID: "c-origin", ts: Date(timeIntervalSince1970: Double(seq)), sender: "agent:box-a", type: type,
+                     payloadData: try! JSONSerialization.data(withJSONObject: payload))
+    }
+    private static func card(_ seq: Int64, prompt: String, comment: String) -> JournalEvent {
+        event(seq, type: JournalEventType.prompt, payload: [
+            "kind": "queued_release", "prompt_id": prompt, "items": [["id": "\(prompt)::0", "text": "📌 Item #7"]],
+            "actions": [["id": "send"], ["id": "cancel"]], "item": ["item_id": "it_1", "comment_id": comment],
+        ])
+    }
+    private static func release(_ seq: Int64, prompt: String, action: String) -> JournalEvent {
+        event(seq, type: JournalEventType.promptReply, payload: ["kind": "queued_release", "prompt_id": prompt, "action": action])
+    }
+    private final class Cards: QueuedRepliesReading, @unchecked Sendable {
+        private let lock = NSLock()
+        private var rows: [JournalEvent] = []
+        private var conts: [AsyncStream<[JournalEvent]>.Continuation] = []
+        func queuedReleaseEventsStream(convoID: String) -> AsyncStream<[JournalEvent]> {
+            AsyncStream { cont in
+                let now = self.lock.withLock { () -> [JournalEvent] in self.conts.append(cont); return self.rows }
+                cont.yield(now)
+            }
+        }
+        func land(_ rows: [JournalEvent]) {
+            let conts = lock.withLock { () -> [AsyncStream<[JournalEvent]>.Continuation] in self.rows = rows; return self.conts }
+            for c in conts { c.yield(rows) }
+        }
+    }
 
     private final class ContextStore: ItemContextReading, @unchecked Sendable {
         /// Whether this device has the owner conversation.
