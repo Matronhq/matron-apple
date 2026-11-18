@@ -208,6 +208,7 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
             cache.removeAll()
             screenHeights.removeAll()
             cardIDs.removeAll()
+            expandedFences.removeAll()
             contents = []
             rowIDs = []
             measured = []
@@ -243,6 +244,7 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
         let linkTitles = factory.environment.trackerNumberLinks?.titles
         return ItemThreadContentBuilder.contents(rows: detail.threadRows, model: detail.threadModel,
                                                  answersCommentActions: detail.answersCommentActions, now: detail.threadNow,
+                                                 expandedFences: expandedFences,
                                                  trackerLinks: { linkTitles?.lookups(for: $0) })
     }
 
@@ -539,7 +541,18 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
                                       openConversation: environment.openConversation,
                                       openPageLink: environment.openPageLink,
                                       trackerNumberLinks: environment.trackerNumberLinks,
-                                      conversationLinkHost: environment.conversationLinkHost)
+                                      conversationLinkHost: environment.conversationLinkHost,
+                                      toggleFold: { [weak self] id in self?.toggleFold(id) })
+    }
+
+    /// The `collapsed` code blocks the reader has opened (`CollapsedFences`
+    /// ids). Cleared when the controller swaps items; a toggle draws the
+    /// thread again.
+    private var expandedFences = Set<String>()
+
+    private func toggleFold(_ id: String) {
+        if expandedFences.remove(id) == nil { expandedFences.insert(id) }
+        update(factory: factory)
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { measured.count }

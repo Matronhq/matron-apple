@@ -1,5 +1,6 @@
 #if os(macOS)
 import XCTest
+import AppKit
 import MatronDesignSystem
 import MatronModels
 @testable import MatronMac
@@ -35,6 +36,50 @@ final class MacItemThreadContentTests: XCTestCase {
         XCTAssertEqual(card(10)?.captionDate, "now")
         XCTAssertEqual(card(10), card(50))
         XCTAssertNotEqual(card(50), card(15 * 60))
+    }
+
+    /// A `collapsed` code block draws folded, opens when its id is in the
+    /// expanded set, and whole-card Copy copies the body as written.
+    func test_collapsedFenceFoldsAndOpens() {
+        let body = "Send this?\n\n```json collapsed\n{\"room_id\":\"room-b\"}\n```"
+        let model = MacItemThreadFixtures.model(comments: 0, body: body)
+        func card(_ expanded: Set<String>) -> ItemCardContent? {
+            let rows = ItemThreadContentBuilder.contents(rows: ItemDetailView.rows(for: model, offersActions: false),
+                                                         model: model, answersCommentActions: false,
+                                                         expandedFences: expanded)
+            guard case .card(let card)? = rows.first(where: { $0.row == .body }) else { return nil }
+            return card
+        }
+        guard let folded = card([]), case .markdown(let drawn)? = folded.parts.first else {
+            return XCTFail("no body card")
+        }
+        XCTAssertTrue(drawn.contains("[▸ Show json](matron-fold:"), drawn)
+        XCTAssertFalse(drawn.contains("room-b"))
+        XCTAssertEqual(folded.copyText, body)
+
+        let id = CollapsedFences.foldID(key: "\(ItemThreadRow.body.id)#0", index: 0)
+        guard let open = card([id]), case .markdown(let shown)? = open.parts.first else {
+            return XCTFail("no body card")
+        }
+        XCTAssertTrue(shown.contains("▾ Hide json"), shown)
+        XCTAssertTrue(shown.contains("room-b"))
+        XCTAssertNotEqual(folded, open, "a toggle is a content change, so the row is measured again")
+        XCTAssertEqual(open.copyText, body)
+    }
+
+    /// The toggle link opens nothing outside the app: the text view's router
+    /// hands its id to the thread.
+    @MainActor
+    func test_toggleLinkGoesToTheThread() {
+        let router = MessageLinkRouter()
+        var toggled: [String] = []
+        var opened: [URL] = []
+        router.toggleFold = { toggled.append($0) }
+        router.openExternally = { opened.append($0) }
+        let url = CollapsedFences.url(for: "body#0/0")
+        XCTAssertTrue(router.textView(NSTextView(), clickedOnLink: url, at: 0))
+        XCTAssertEqual(toggled, ["body#0/0"])
+        XCTAssertEqual(opened, [])
     }
 
     func test_bareStatusCommentIsHosted() {

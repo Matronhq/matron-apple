@@ -40,13 +40,19 @@ struct ItemCardContent: Equatable {
     /// measured ("now" → "12 min ago") measures it again; otherwise the
     /// caption would run past the card's edge.
     var captionDate = ""
+    /// The text as written of each markdown part the thread drew with its
+    /// `collapsed` code blocks folded or opened (`CollapsedFences`), keyed
+    /// by the drawn text: whole-card Copy copies what was written, not the
+    /// "Show json" line.
+    var unfolded: [String: String] = [:]
 
     /// The card's text as a whole-card Copy puts it on the pasteboard: its
     /// markdown parts as written, a blank line apart. `nil` when it has no
     /// text (only attachments).
     var copyText: String? {
         let texts = parts.compactMap { part -> String? in
-            guard case .markdown(let text) = part else { return nil }
+            guard case .markdown(let drawn) = part else { return nil }
+            let text = unfolded[drawn] ?? drawn
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? nil : trimmed
         }
@@ -78,6 +84,7 @@ enum ItemThreadContentBuilder {
     /// captions are drawn against (`ItemDetailView.threadNow`).
     static func contents(rows: [ItemThreadRow], model: ItemDetailView.Model, answersCommentActions: Bool,
                          now: Date = Date(),
+                         expandedFences: Set<String> = [],
                          trackerLinks: (String) -> TrackerLinkLookups? = { _ in nil }) -> [ItemThreadRowContent] {
         let cards = cardContents(rows: rows, model: model, answersCommentActions: answersCommentActions)
         let comments = Dictionary(model.comments.map { ($0.id, $0.createdAt) }, uniquingKeysWith: { first, _ in first })
@@ -88,11 +95,37 @@ enum ItemThreadContentBuilder {
             default: model.item.createdAt
             }
             if let date { card.captionDate = ItemDetailView.relativeDate(date, now: now) }
+            card = folded(card, expanded: expandedFences)
             for case .markdown(let text) in card.parts {
                 if let lookups = trackerLinks(text), !lookups.isEmpty { card.trackerLinks[text] = lookups }
             }
             return .card(card)
         }
+    }
+
+    /// `card` with each part's `collapsed` code blocks folded, or open when
+    /// their id is in `expanded` (`CollapsedFences`). A part's key is the
+    /// row's id and the part's place in the card, so the same block stays
+    /// open while the thread updates around it.
+    static func folded(_ card: ItemCardContent, expanded: Set<String>) -> ItemCardContent {
+        var unfolded = card.unfolded
+        var changed = false
+        let parts = card.parts.enumerated().map { index, part -> ItemCardContent.Part in
+            guard case .markdown(let text) = part, CollapsedFences.mayContain(text) else { return part }
+            let drawn = CollapsedFences.present(text, key: "\(card.row.id)#\(index)", expanded: expanded)
+            guard drawn != text else { return part }
+            unfolded[drawn] = text
+            changed = true
+            return .markdown(drawn)
+        }
+        guard changed else { return card }
+        var result = ItemCardContent(row: card.row, mine: card.mine, parts: parts, hasDelivery: card.hasDelivery,
+                                     hasActions: card.hasActions, hostedSignature: card.hostedSignature)
+        result.hasStatusLine = card.hasStatusLine
+        result.trackerLinks = card.trackerLinks
+        result.captionDate = card.captionDate
+        result.unfolded = unfolded
+        return result
     }
 
     private static func cardContents(rows: [ItemThreadRow], model: ItemDetailView.Model,

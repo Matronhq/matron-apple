@@ -146,6 +146,7 @@ final class MacItemCardCell: NSTableCellView {
                 body.router.openConversation = routing.openConversation
                 body.router.openPageLink = routing.openPageLink
                 body.router.trackerNumberLinks = routing.trackerNumberLinks
+                body.router.toggleFold = routing.toggleFold
                 body.configure(source: source, rendered: MacItemCardGeometry.rendered(source, trackerLinks: links),
                                itemID: selectionID,
                                selectionController: selection)

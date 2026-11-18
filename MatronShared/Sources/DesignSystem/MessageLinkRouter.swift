@@ -28,6 +28,9 @@ public class MessageLinkRouter: NSObject, NSTextViewDelegate {
     public var openPageLink: ((MatronPageLink) -> Void)?
     /// Same, for the signed-in user's own shareable links.
     public var trackerNumberLinks: TrackerNumberLinks?
+    /// Opens or folds a `collapsed` code block (`CollapsedFences`): the
+    /// native item thread's own links. With none set they are swallowed.
+    public var toggleFold: ((String) -> Void)?
 
     /// Seam for the external opener so tests can prove a `matron://`
     /// click never reaches `NSWorkspace`.
@@ -52,6 +55,10 @@ public class MessageLinkRouter: NSObject, NSTextViewDelegate {
         default: url = nil
         }
         guard let url else { return false }
+        if let fold = CollapsedFences.foldID(from: url) {
+            toggleFold?(fold)
+            return true
+        }
         // `matron://` links open in-app, and are swallowed when no host
         // installed a handler: the scheme is not registered with the OS, so
         // it must never be handed on. Legacy matrix/mxc links, which

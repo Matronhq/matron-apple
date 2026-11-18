@@ -187,6 +187,7 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
         let linkTitles = factory.environment.trackerNumberLinks?.titles
         contents = ItemThreadContentBuilder.contents(rows: detail.threadRows, model: detail.threadModel,
                                                      answersCommentActions: detail.answersCommentActions, now: detail.threadNow,
+                                                     expandedFences: expandedFences,
                                                      trackerLinks: { linkTitles?.lookups(for: $0) })
         guard isViewLoaded, collectionView.bounds.width > 0 else { return }
         let follow = ItemDetailView.shouldFollowTail(
@@ -201,6 +202,22 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
             appeared: contents.last?.row == .working && !showedWorking, startsAtBottom: detail.threadStartsAtBottom,
             placed: geometry.placed, atBottom: geometry.atBottom, wasLoaded: wasLoaded)
         relayout(keeping: follow || pinned || followWorking ? .tail : .position)
+    }
+
+    /// The `collapsed` code blocks the reader has opened (`CollapsedFences`
+    /// ids). Kept while the item is shown; a toggle draws the thread again.
+    private var expandedFences = Set<String>()
+
+    /// The cards' link router, with this thread's fold toggles.
+    private var router: TimelineLinkRouter {
+        var router = factory.router
+        router.toggleFold = { [weak self] id in self?.toggleFold(id) }
+        return router
+    }
+
+    private func toggleFold(_ id: String) {
+        if expandedFences.remove(id) == nil { expandedFences.insert(id) }
+        update(factory: factory)
     }
 
     /// Whether the opening load had completed as of the last update.
@@ -477,12 +494,12 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
             dimmed = render.content.hasDelivery
             switch piece.kind {
             case .body(let body):
-                (cell as? ItemTextCell)?.configure(body: body, router: factory.router)
+                (cell as? ItemTextCell)?.configure(body: body, router: router)
             case .code(let language, let code):
                 (cell as? ItemCodeCell)?.configure(language: language, code: code, style: render.style.code,
                                                     cardText: render.content.copyText)
             case .table(let table):
-                (cell as? ItemTableCell)?.configure(layout: table, router: factory.router)
+                (cell as? ItemTableCell)?.configure(layout: table, router: router)
             case .hosted(let hosted):
                 guard let cell = cell as? HostedRowCell else { return }
                 // Leading in its frame, as in the card's stack.
