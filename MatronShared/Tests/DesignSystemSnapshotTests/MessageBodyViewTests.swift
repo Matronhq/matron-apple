@@ -24,17 +24,17 @@ import AppKit
 
     /// A taller block keeps its button in the top-right corner, 12pt below
     /// the first line's top.
-    func test_multiLineCodeBlockButton_sitsTopRight() {
+    func test_multiLineCodeBlockButton_sitsTopRight() throws {
         let source = "Before\n\n```\nmake test\nmake lint\nmake docs\n```"
         let rendered = MarkdownAttributed.rendered(for: source, style: .chat)
         let view = MessageBodyView()
         view.frame = NSRect(x: 0, y: 0, width: 400, height: rendered.size(width: 400).height)
         view.configure(source: source, rendered: rendered, itemID: "m1", selectionController: nil)
         view.layoutSubtreeIfNeeded()
-        let button = try? XCTUnwrap(view.subviews.compactMap { $0 as? NSButton }.first)
-        let frame = rendered.codeBlockFrames(width: 400)[0]
-        XCTAssertEqual(button?.frame.midX ?? 0, 400 - 12, accuracy: 0.5)
-        XCTAssertEqual(button?.frame.midY ?? 0, frame.rect.minY + 12, accuracy: 0.5)
+        let button = try XCTUnwrap(view.subviews.compactMap { $0 as? NSButton }.first)
+        let frame = try XCTUnwrap(rendered.codeBlockFrames(width: 400).first)
+        XCTAssertEqual(button.frame.midX, 400 - 12, accuracy: 0.5)
+        XCTAssertEqual(button.frame.midY, frame.rect.minY + 12, accuracy: 0.5)
     }
 
     /// A long first line wraps short of the pinned button rather than
