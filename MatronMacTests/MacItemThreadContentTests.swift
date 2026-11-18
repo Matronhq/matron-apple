@@ -65,6 +65,12 @@ final class MacItemThreadContentTests: XCTestCase {
         XCTAssertTrue(shown.contains("room-b"))
         XCTAssertNotEqual(folded, open, "a toggle is a content change, so the row is measured again")
         XCTAssertEqual(open.copyText, body)
+
+        // The folded block's Copy link copies the whole JSON, as written.
+        let rows = ItemThreadContentBuilder.contents(rows: ItemDetailView.rows(for: model, offersActions: false),
+                                                     model: model, answersCommentActions: false)
+        XCTAssertEqual(ItemThreadContentBuilder.foldedCode(id, in: rows), "{\"room_id\":\"room-b\"}")
+        XCTAssertTrue(drawn.contains("[Copy](\(CollapsedFences.copyURL(for: id).absoluteString))"), drawn)
     }
 
     /// The toggle link opens nothing outside the app: the text view's router
@@ -72,13 +78,13 @@ final class MacItemThreadContentTests: XCTestCase {
     @MainActor
     func test_toggleLinkGoesToTheThread() {
         let router = MessageLinkRouter()
-        var toggled: [String] = []
+        var links: [CollapsedFences.Link] = []
         var opened: [URL] = []
-        router.toggleFold = { toggled.append($0) }
+        router.foldLink = { links.append($0) }
         router.openExternally = { opened.append($0) }
-        let url = CollapsedFences.url(for: "body#0/0")
-        XCTAssertTrue(router.textView(NSTextView(), clickedOnLink: url, at: 0))
-        XCTAssertEqual(toggled, ["body#0/0"])
+        XCTAssertTrue(router.textView(NSTextView(), clickedOnLink: CollapsedFences.url(for: "body#0/0"), at: 0))
+        XCTAssertTrue(router.textView(NSTextView(), clickedOnLink: CollapsedFences.copyURL(for: "body#0/0"), at: 0))
+        XCTAssertEqual(links, [.toggle("body#0/0"), .copy("body#0/0")])
         XCTAssertEqual(opened, [])
     }
 

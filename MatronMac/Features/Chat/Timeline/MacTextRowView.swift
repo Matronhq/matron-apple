@@ -17,9 +17,9 @@ struct MacTimelineLinkRouting {
     /// at all — the table's hosting views don't inherit `MacChatView`'s
     /// environment, so it is handed over with the actions.
     var conversationLinkHost: ConversationLinkHost?
-    /// Opens or folds a `collapsed` code block (`CollapsedFences`). Only
-    /// the item thread sets it.
-    var toggleFold: ((String) -> Void)?
+    /// Opens, folds or copies a `collapsed` code block (`CollapsedFences`).
+    /// Only the item thread sets it.
+    var foldLink: ((CollapsedFences.Link) -> Void)?
 }
 
 /// The native text row of the table timeline: bubble chrome, the message body

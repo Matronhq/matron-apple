@@ -211,13 +211,18 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
     /// The cards' link router, with this thread's fold toggles.
     private var router: TimelineLinkRouter {
         var router = factory.router
-        router.toggleFold = { [weak self] id in self?.toggleFold(id) }
+        router.foldLink = { [weak self] link in self?.handleFoldLink(link) }
         return router
     }
 
-    private func toggleFold(_ id: String) {
-        if expandedFences.remove(id) == nil { expandedFences.insert(id) }
-        update(factory: factory)
+    func handleFoldLink(_ link: CollapsedFences.Link) {
+        switch link {
+        case .toggle(let id):
+            if expandedFences.remove(id) == nil { expandedFences.insert(id) }
+            update(factory: factory)
+        case .copy(let id):
+            if let code = ItemThreadContentBuilder.foldedCode(id, in: contents) { Pasteboard.copy(code) }
+        }
     }
 
     /// Whether the opening load had completed as of the last update.

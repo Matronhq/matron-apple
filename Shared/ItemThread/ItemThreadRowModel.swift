@@ -107,6 +107,21 @@ enum ItemThreadContentBuilder {
     /// their id is in `expanded` (`CollapsedFences`). A part's key is the
     /// row's id and the part's place in the card, so the same block stays
     /// open while the thread updates around it.
+    /// The code, as written, of the folded block `id` names in `contents`:
+    /// what its Copy link copies. Read from the part's original text, since
+    /// the drawn text holds only the "Show" line.
+    static func foldedCode(_ id: String, in contents: [ItemThreadRowContent]) -> String? {
+        for case .card(let card) in contents {
+            for (index, part) in card.parts.enumerated() {
+                guard case .markdown(let drawn) = part else { continue }
+                let key = "\(card.row.id)#\(index)"
+                guard id.hasPrefix(key + "/") else { continue }
+                return CollapsedFences.code(of: id, key: key, in: card.unfolded[drawn] ?? drawn)
+            }
+        }
+        return nil
+    }
+
     static func folded(_ card: ItemCardContent, expanded: Set<String>) -> ItemCardContent {
         var unfolded = card.unfolded
         var changed = false

@@ -8,7 +8,7 @@ import Foundation
 /// a description of it in plain words. The SwiftUI `CodeBlock` folds such a
 /// block itself; the native threads draw markdown as attributed text, so
 /// they fold it here, in the source: a folded block becomes one link line
-/// ("▸ Show json"), and an open one keeps its code under a "▾ Hide json"
+/// ("▸ Show json · Copy"), and an open one keeps its code under a "▾ Hide json"
 /// link. The link's URL names the block (`url(for:)`); the thread toggles
 /// it in its own set of open blocks and draws the card again, so a toggle is
 /// an ordinary content change that measures the row afresh.
@@ -42,20 +42,52 @@ public enum CollapsedFences {
         "\(key)/\(index)"
     }
 
+    /// What a fold link asks for: open or fold the block, or copy its code
+    /// (offered while it is folded; an open block has its own copy button).
+    public enum Link: Equatable {
+        case toggle(String)
+        case copy(String)
+    }
+
     /// The toggle link for a block. The id is percent-encoded down to
     /// letters and digits, so no character in it can end the markdown
     /// link or the URL early.
-    public static func url(for foldID: String) -> URL {
+    public static func url(for foldID: String) -> URL { link("toggle", foldID) }
+
+    /// The link that copies a folded block's code.
+    public static func copyURL(for foldID: String) -> URL { link("copy", foldID) }
+
+    private static func link(_ action: String, _ foldID: String) -> URL {
         let id = foldID.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
-        return URL(string: "\(scheme):toggle?id=\(id)")!
+        return URL(string: "\(scheme):\(action)?id=\(id)")!
+    }
+
+    /// What a fold link asks for, or `nil` for any other link.
+    public static func link(from url: URL) -> Link? {
+        guard url.scheme == scheme else { return nil }
+        let parts = url.absoluteString.dropFirst(scheme.count + 1).components(separatedBy: "?id=")
+        guard parts.count == 2, let id = parts[1].removingPercentEncoding, !id.isEmpty else { return nil }
+        switch parts[0] {
+        case "toggle": return .toggle(id)
+        case "copy": return .copy(id)
+        default: return nil
+        }
     }
 
     /// The block a toggle link names, or `nil` for any other link.
     public static func foldID(from url: URL) -> String? {
-        guard url.scheme == scheme,
-              let encoded = url.absoluteString.components(separatedBy: "?id=").dropFirst().first,
-              let id = encoded.removingPercentEncoding, !id.isEmpty else { return nil }
-        return id
+        if case .toggle(let id)? = link(from: url) { return id }
+        return nil
+    }
+
+    /// The code of the block `foldID` names in the text keyed `key`, as
+    /// written: what its Copy link copies.
+    public static func code(of foldID: String, key: String, in source: String) -> String? {
+        let prefix = key + "/"
+        guard foldID.hasPrefix(prefix), let index = Int(foldID.dropFirst(prefix.count)) else { return nil }
+        let blocks = fences(in: source.split(separator: "\n", omittingEmptySubsequences: false))
+        guard blocks.indices.contains(index) else { return nil }
+        return blocks[index].code.joined(separator: "\n")
     }
 
     /// `source` as a native thread draws it: each foldable block folded to
@@ -77,7 +109,8 @@ public enum CollapsedFences {
             // A link line is a paragraph of its own: blank lines round it,
             // or it would run on into the text above or below.
             if let last = out.last, !last.trimmingCharacters(in: .whitespaces).isEmpty { out.append("") }
-            out.append("[\(open ? "▾ Hide" : "▸ Show") \(name)](\(url(for: id).absoluteString))")
+            out.append(open ? "[▾ Hide \(name)](\(url(for: id).absoluteString))"
+                            : "[▸ Show \(name)](\(url(for: id).absoluteString)) · [Copy](\(copyURL(for: id).absoluteString))")
             if open {
                 out.append("")
                 out.append(fence.marker + fence.language)

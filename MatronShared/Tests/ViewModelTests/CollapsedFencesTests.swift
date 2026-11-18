@@ -14,11 +14,13 @@ final class CollapsedFencesTests: XCTestCase {
 
     func test_foldedBlockBecomesOneShowLink() {
         let drawn = CollapsedFences.present(body, key: "body#0", expanded: [])
-        let link = CollapsedFences.url(for: CollapsedFences.foldID(key: "body#0", index: 0)).absoluteString
+        let id = CollapsedFences.foldID(key: "body#0", index: 0)
+        let link = CollapsedFences.url(for: id).absoluteString
+        let copy = CollapsedFences.copyURL(for: id).absoluteString
         XCTAssertEqual(drawn, """
         Here is what runs:
 
-        [▸ Show json](\(link))
+        [▸ Show json](\(link)) · [Copy](\(copy))
 
         Allow once or Decline.
         """)
@@ -63,5 +65,18 @@ final class CollapsedFencesTests: XCTestCase {
         XCTAssertEqual(CollapsedFences.foldID(from: url), id)
         XCTAssertFalse(url.absoluteString.contains(" ") || url.absoluteString.contains(")"))
         XCTAssertNil(CollapsedFences.foldID(from: URL(string: "https://example.com/?id=x")!))
+        XCTAssertEqual(CollapsedFences.link(from: CollapsedFences.copyURL(for: id)), .copy(id))
+        XCTAssertEqual(CollapsedFences.link(from: url), .toggle(id))
+        XCTAssertNil(CollapsedFences.foldID(from: CollapsedFences.copyURL(for: id)), "a copy link toggles nothing")
+    }
+
+    /// A folded block's Copy copies its whole code, as written.
+    func test_codeOfABlockIsItsCodeAsWritten() {
+        let source = "```json collapsed\n{\"a\":1,\n \"b\":\"x y\"}\n```\n\n```sh collapsed\nls\n```"
+        XCTAssertEqual(CollapsedFences.code(of: CollapsedFences.foldID(key: "k", index: 0), key: "k", in: source),
+                       "{\"a\":1,\n \"b\":\"x y\"}")
+        XCTAssertEqual(CollapsedFences.code(of: CollapsedFences.foldID(key: "k", index: 1), key: "k", in: source), "ls")
+        XCTAssertNil(CollapsedFences.code(of: CollapsedFences.foldID(key: "k", index: 2), key: "k", in: source))
+        XCTAssertNil(CollapsedFences.code(of: CollapsedFences.foldID(key: "other", index: 0), key: "k", in: source))
     }
 }

@@ -542,7 +542,7 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
                                       openPageLink: environment.openPageLink,
                                       trackerNumberLinks: environment.trackerNumberLinks,
                                       conversationLinkHost: environment.conversationLinkHost,
-                                      toggleFold: { [weak self] id in self?.toggleFold(id) })
+                                      foldLink: { [weak self] link in self?.handleFoldLink(link) })
     }
 
     /// The `collapsed` code blocks the reader has opened (`CollapsedFences`
@@ -550,9 +550,14 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
     /// thread again.
     private var expandedFences = Set<String>()
 
-    private func toggleFold(_ id: String) {
-        if expandedFences.remove(id) == nil { expandedFences.insert(id) }
-        update(factory: factory)
+    func handleFoldLink(_ link: CollapsedFences.Link) {
+        switch link {
+        case .toggle(let id):
+            if expandedFences.remove(id) == nil { expandedFences.insert(id) }
+            update(factory: factory)
+        case .copy(let id):
+            if let code = ItemThreadContentBuilder.foldedCode(id, in: contents) { Pasteboard.copy(code) }
+        }
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { measured.count }
