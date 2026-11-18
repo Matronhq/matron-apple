@@ -1,3 +1,48 @@
+import Foundation
+
+/// Whether a capture's clock keeps pace with real time. A capture session
+/// started while the Mac's audio devices are changing (a Bluetooth headset
+/// connecting) can come up counting about a thousandth of the time that
+/// passes: its clock still creeps forward, so it never looks stopped, but
+/// almost nothing reaches the file. Fed the recorded duration as it is
+/// polled, this compares each window of at least `window` seconds with the
+/// real time it took.
+struct CapturePace {
+    /// The stretch of real time after which a clock is judged slow.
+    static let window: TimeInterval = 1
+    /// The shortest stretch over which a clock can show it keeps pace.
+    static let quickWindow: TimeInterval = 0.2
+    /// A clock advancing by less than this share of real time is slow.
+    static let slowShare = 0.25
+
+    private var mark: (at: TimeInterval, recorded: TimeInterval)
+    private(set) var isSlow = false
+    /// The clock has been seen advancing in step with real time, and
+    /// hasn't been judged slow since. False until the first readings are
+    /// in: a capture isn't known to be good just because it has started.
+    private(set) var hasKeptPace = false
+
+    /// `start`: when the capture began writing, on the clock `at` uses.
+    init(start: TimeInterval) {
+        mark = (start, 0)
+    }
+
+    /// Takes a reading and says whether the last whole window ran slow.
+    @discardableResult
+    mutating func check(at now: TimeInterval, recorded: TimeInterval) -> Bool {
+        let passed = now - mark.at
+        let advanced = recorded - mark.recorded
+        if passed >= Self.quickWindow, advanced >= passed * Self.slowShare {
+            hasKeptPace = true
+        }
+        guard passed >= Self.window else { return isSlow }
+        isSlow = advanced < passed * Self.slowShare
+        if isSlow { hasKeptPace = false }
+        mark = (now, recorded)
+        return isSlow
+    }
+}
+
 #if os(macOS)
 import AVFoundation
 import MatronModels
@@ -38,6 +83,8 @@ final class CaptureSessionRecording: NSObject, AudioRecording, AVCaptureFileOutp
     private var _recordingIssued = false
     /// Recording had been issued when `stop()` was called: a finish is owed.
     private var _finishOwed = false
+    /// Set when the output starts writing; see `isRunningSlow`.
+    private var _pace: CapturePace?
     /// Main-actor side only.
     private var started = false
     private var deviceID: String?
@@ -64,13 +111,33 @@ final class CaptureSessionRecording: NSObject, AudioRecording, AVCaptureFileOutp
     var microphone: Microphone? { locked { _microphone } }
     var hasFailed: Bool { locked { _failed } }
 
+    /// Sound counts as arriving only once the clock has shown it keeps
+    /// pace: a clock running slow (see `CapturePace`) is past zero at once.
     var isCapturingAudio: Bool {
-        guard locked({ _recordingStarted }), output.recordedDuration.seconds > 0 else { return false }
+        guard locked({ _recordingStarted }), !isRunningSlow,
+              locked({ _pace?.hasKeptPace ?? false }) else { return false }
         let level = output.connection(with: .audio)?.audioChannels.map(\.peakHoldLevel).max() ?? -160
         return level > Self.liveFloor
     }
 
     var canSwitchMicrophoneLive: Bool { false }
+
+    var isPaceUndecided: Bool {
+        _ = isRunningSlow
+        return locked {
+            guard !_stopRequested, !_failed, let pace = _pace else { return false }
+            return !pace.hasKeptPace && !pace.isSlow
+        }
+    }
+
+    var isRunningSlow: Bool {
+        let recorded = elapsed
+        let now = ProcessInfo.processInfo.systemUptime
+        return locked {
+            guard !_stopRequested, !_failed else { return false }
+            return _pace?.check(at: now, recorded: recorded) ?? false
+        }
+    }
 
     var elapsed: TimeInterval {
         let seconds = output.recordedDuration.seconds
@@ -180,7 +247,11 @@ final class CaptureSessionRecording: NSObject, AudioRecording, AVCaptureFileOutp
 
     func fileOutput(_ output: AVCaptureFileOutput, didStartRecordingTo fileURL: URL,
                     from connections: [AVCaptureConnection]) {
-        locked { _recordingStarted = true }
+        let now = ProcessInfo.processInfo.systemUptime
+        locked {
+            _recordingStarted = true
+            _pace = CapturePace(start: now)
+        }
         Self.logger.notice("capture: started writing")
     }
 
