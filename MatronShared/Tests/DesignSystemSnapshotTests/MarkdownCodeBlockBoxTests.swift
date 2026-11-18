@@ -256,9 +256,11 @@ final class MarkdownCodeBlockBoxTests: XCTestCase {
             // below the first line's top, 20pt square.
             let width: CGFloat = 400
             let frame = rendered.codeBlockFrames(width: width)[0]
-            let button = CGRect(x: min(frame.rect.maxX + 12, width - 12) - 10, y: frame.rect.minY + 2,
-                                width: 20, height: 20)
+            let center = MarkdownAttributed.codeBlockCopyButtonCenter(lines: frame.rect, width: width)
+            let button = CGRect(x: center.x - 10, y: center.y - 10, width: 20, height: 20)
             XCTAssertGreaterThanOrEqual(button.minX, width - reserve)
+            XCTAssertLessThanOrEqual(button.maxX, width)
+            XCTAssertEqual(button.minY, frame.rect.minY + 2, accuracy: 0.5)
         }
     }
 

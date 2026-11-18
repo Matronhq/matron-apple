@@ -14,9 +14,46 @@ import AppKit
         let buttons = view.subviews.compactMap { $0 as? NSButton }
         let frames = rendered.codeBlockFrames(width: 400)
         XCTAssertEqual(buttons.count, frames.count)
-        // Same centre rule as the SwiftUI overlay: x = min(maxX + 12, width - 12), y = minY + 12.
-        XCTAssertEqual(buttons[0].frame.midX, min(frames[0].rect.maxX + 12, 400 - 12), accuracy: 0.5)
-        XCTAssertEqual(buttons[0].frame.midY, frames[0].rect.minY + 12, accuracy: 0.5)
+        // Same rule as the SwiftUI overlay: pinned to the box's trailing
+        // edge, not to the end of "make test"; a one-line block's button is
+        // centred on its line, which is the box's middle.
+        XCTAssertEqual(buttons[0].frame.midX, 400 - 12, accuracy: 0.5)
+        XCTAssertGreaterThan(buttons[0].frame.minX, frames[0].rect.maxX + 100)
+        XCTAssertEqual(buttons[0].frame.midY, frames[0].rect.midY, accuracy: 0.5)
+    }
+
+    /// A taller block keeps its button in the top-right corner, 12pt below
+    /// the first line's top.
+    func test_multiLineCodeBlockButton_sitsTopRight() throws {
+        let source = "Before\n\n```\nmake test\nmake lint\nmake docs\n```"
+        let rendered = MarkdownAttributed.rendered(for: source, style: .chat)
+        let view = MessageBodyView()
+        view.frame = NSRect(x: 0, y: 0, width: 400, height: rendered.size(width: 400).height)
+        view.configure(source: source, rendered: rendered, itemID: "m1", selectionController: nil)
+        view.layoutSubtreeIfNeeded()
+        let button = try XCTUnwrap(view.subviews.compactMap { $0 as? NSButton }.first)
+        let frame = try XCTUnwrap(rendered.codeBlockFrames(width: 400).first)
+        XCTAssertEqual(button.frame.midX, 400 - 12, accuracy: 0.5)
+        XCTAssertEqual(button.frame.midY, frame.rect.minY + 12, accuracy: 0.5)
+    }
+
+    /// A long first line wraps short of the pinned button rather than
+    /// running underneath it.
+    func test_longFirstCodeLine_endsBeforeThePinnedButton() throws {
+        let long = String(repeating: "word ", count: 40)
+        let source = "```\n\(long)\nnext\n```"
+        let rendered = MarkdownAttributed.rendered(for: source, style: .chat)
+        let view = MessageBodyView()
+        view.frame = NSRect(x: 0, y: 0, width: 400, height: rendered.size(width: 400).height)
+        view.configure(source: source, rendered: rendered, itemID: "m1", selectionController: nil)
+        view.layoutSubtreeIfNeeded()
+        let button = try XCTUnwrap(view.subviews.compactMap { $0 as? NSButton }.first)
+        let text = view.textView.string as NSString
+        let firstLine = text.paragraphRange(for: NSRange(location: 0, length: 0))
+        let manager = try XCTUnwrap(view.textView.textLayoutManager)
+        let lines = try XCTUnwrap(MarkdownAttributed.lineUnion(of: firstLine, in: manager))
+        XCTAssertGreaterThan(lines.height, 20, "the long line should wrap")
+        XCTAssertLessThanOrEqual(lines.maxX, button.frame.minX)
     }
 
     /// Perf follow-ups S3: a host can switch the code-copy buttons off (a

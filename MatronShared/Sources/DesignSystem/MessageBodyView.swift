@@ -185,10 +185,8 @@ public final class MessageBodyView: NSView {
         let side = CodeCopyButton.side
         for (button, frame) in zip(codeButtons, frames) {
             button.code = frame.code
-            // The SwiftUI overlay's centre rule: just past the block's
-            // top-right corner when the block is narrow; clamped inside the
-            // message bounds for full-width blocks.
-            let center = CGPoint(x: min(frame.rect.maxX + 12, bounds.width - 12), y: frame.rect.minY + 12)
+            // The SwiftUI overlay's rule: pinned to the box's trailing edge.
+            let center = MarkdownAttributed.codeBlockCopyButtonCenter(lines: frame.rect, width: bounds.width)
             button.frame = CGRect(x: center.x - side / 2, y: center.y - side / 2, width: side, height: side)
         }
     }

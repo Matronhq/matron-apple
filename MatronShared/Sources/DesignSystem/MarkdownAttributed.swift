@@ -138,6 +138,19 @@ public enum MarkdownAttributed {
     /// How many leading lines of a block the button can reach down over.
     static let codeBlockCopyButtonLines = 2
 
+    /// Centre of a code block's copy button (Mac), for a block whose lines
+    /// span `lines` (`Rendered.CodeBlockFrame.rect`) in a body `width` wide.
+    /// Always pinned to the box's trailing edge — the box spans the body's
+    /// full width (`codeBlockBox`), so following the code's last glyph left
+    /// the button floating mid-box after a short line. 12pt in from that
+    /// edge (a 20pt button, 2pt clear of it) and 12pt below the first
+    /// line's top, which is the top-right corner of a taller block and the
+    /// box's vertical middle for a one-line block (the box is padded evenly
+    /// above and below its lines).
+    static func codeBlockCopyButtonCenter(lines: CGRect, width: CGFloat) -> CGPoint {
+        CGPoint(x: width - 12, y: lines.minY + min(12, lines.height / 2))
+    }
+
     /// The background box for one code block whose laid-out lines span
     /// `lines`: the full text width, `codeBlockPadding` above the first
     /// line and below the last (space `build` reserves in the block's
