@@ -67,6 +67,46 @@ final class ItemWorkingIndicatorTests: XCTestCase {
         vm.stop()
     }
 
+    /// A `behind_turn` copy is as old as its fetch, like a `running` one:
+    /// once this device has seen the owner's turn end, it is not shown
+    /// (the refetch that event starts brings the hand-off state).
+    func testABehindTurnCopyIsNotShownOnceTheTurnIsKnownToHaveEnded() async throws {
+        let store = Store(); let context = ContextStore()
+        context.known = true
+        let vm = makeViewModel(store: store, context: context)
+        vm.start()
+        try await waitUntil { store.itemCont != nil }
+        store.itemCont?.yield(Self.item(ItemWorking(state: .queued, since: Date(), behindTurn: true)))
+        try await waitUntil { context.sessionCont != nil && context.ownerCont != nil }
+        context.sessionCont?.yield("running")
+        try await waitUntil { vm.workingIndicator == .busyElsewhere }
+        context.sessionCont?.yield("waiting")
+        try await waitUntil { vm.workingIndicator == nil }
+        vm.stop()
+    }
+
+    /// Send now tapped on the queued tap: until the bridge's release
+    /// arrives, the tap is still waiting, and the thread still says so.
+    func testATapWhoseSendNowIsOnItsWayStillWaits() async throws {
+        let store = Store(); let cards = Cards(); let release = Release()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: store, api: API(), sync: Sync(), queuedCards: cards,
+                                     queuedRelease: release, contextStore: ContextStore())
+        vm.start()
+        try await waitUntil { store.itemCont != nil }
+        store.itemCont?.yield(Self.item(ItemWorking(state: .running, since: Date())))
+        cards.land([Self.card(10, prompt: "pr_a", comment: "ic_tap")])
+        try await waitUntil { vm.workingIndicator == .busyElsewhere }
+        release.hold()
+        let send = Task { await vm.sendQueuedReplyNow(commentID: "ic_tap") }
+        try await waitUntil { release.sent == 1 && vm.queuedReplies["ic_tap"] == .sending }
+        XCTAssertEqual(vm.workingIndicator, .busyElsewhere)
+        release.letGo()
+        cards.land([Self.card(10, prompt: "pr_a", comment: "ic_tap"), Self.release(11, prompt: "pr_a", action: "send_one")])
+        try await waitUntil { vm.workingIndicator == .working }
+        send.cancel()
+        vm.stop()
+    }
+
     /// `behind_turn` only means something on `queued`, and a journal that
     /// never sends it reads as before.
     func testBehindTurnIsReadFromTheJournalOnlyOnAQueuedState() {
@@ -234,6 +274,16 @@ final class ItemWorkingIndicatorTests: XCTestCase {
     }
     private static func release(_ seq: Int64, prompt: String, action: String) -> JournalEvent {
         event(seq, type: JournalEventType.promptReply, payload: ["kind": "queued_release", "prompt_id": prompt, "action": action])
+    }
+    private final class Release: QueuedReplySending, @unchecked Sendable {
+        private let lock = NSLock(); private var count = 0; private var held = false
+        var sent: Int { lock.withLock { count } }
+        func hold() { lock.withLock { held = true } }
+        func letGo() { lock.withLock { held = false } }
+        func sendQueuedRelease(convoID: String, targetSeq: Int64, choice: String) async throws {
+            lock.withLock { count += 1 }
+            while lock.withLock({ held }) { try? await Task.sleep(nanoseconds: 5_000_000) }
+        }
     }
     private final class Cards: QueuedRepliesReading, @unchecked Sendable {
         private let lock = NSLock()

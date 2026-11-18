@@ -298,8 +298,13 @@ public final class ItemDetailViewModel {
         guard let item, !item.originConvoID.isEmpty,
               let working = item.working, working.isCurrent(at: now()) else { return nil }
         switch working.state {
+        case .queued where working.behindTurn:
+            // The session is mid-turn on something else: as fresh as a
+            // `running` copy, so it is held to the same checks. It has no
+            // `until` to lapse at.
+            return runningIndicator.map { _ in .busyElsewhere }
         case .queued:
-            return working.behindTurn ? .busyElsewhere : .starting
+            return .starting
         case .running:
             // The bridge's own word on its queue: a reply of the user's on
             // this item still has a live queued card, so the turn running
@@ -309,8 +314,8 @@ public final class ItemDetailViewModel {
         }
     }
 
-    /// `workingIndicator` for a `running` state, before the queued cards
-    /// have their say.
+    /// `.working` while the owner session is mid-turn as far as this device
+    /// can tell, before the queued cards have their say.
     private var runningIndicator: ItemWorkingIndicator? {
         guard let item else { return nil }
         // The stored copy is as old as its last fetch. A device that has
@@ -326,12 +331,14 @@ public final class ItemDetailViewModel {
     }
 
     /// Whether one of the user's replies on this item still waits on the
-    /// agent's busy queue (its card has had no release).
+    /// agent's busy queue: its card has had no release. A Send now or
+    /// Cancel tapped here is still waiting until the bridge's release
+    /// arrives.
     private var hasWaitingReply: Bool {
         queuedReplies.values.contains { state in
             switch state {
-            case .queued, .sendFailed: return true
-            case .sending, .cancelling, .cancelled, .notDelivered: return false
+            case .queued, .sendFailed, .sending, .cancelling: return true
+            case .cancelled, .notDelivered: return false
             }
         }
     }
