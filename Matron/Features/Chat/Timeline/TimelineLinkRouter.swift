@@ -14,6 +14,9 @@ struct TimelineLinkRouter {
     var openPageLink: ((MatronPageLink) -> Void)?
     /// The signed-in user's own shareable links (`TrackerWebLinks`).
     var trackerNumberLinks: TrackerNumberLinks?
+    /// Opens, folds or copies a `collapsed` code block (`CollapsedFences`):
+    /// the item thread's own links, handled by the thread, never the OS.
+    var foldLink: ((CollapsedFences.Link) -> Void)?
     /// Seam for tests; production hands the URL to the OS.
     var openExternally: @MainActor (URL) -> Void = { UIApplication.shared.open($0) }
     /// Seam for tests; production shows `BlockedLinkPrompt` for a link the
@@ -25,9 +28,13 @@ struct TimelineLinkRouter {
     @MainActor
     @discardableResult
     func route(_ url: URL) -> Outcome {
+        if let fold = CollapsedFences.link(from: url) {
+            foldLink?(fold)
+            return .swallowed
+        }
         // A shareable link the app cannot show goes through `openExternally`
         // too, like any web link from the timeline.
-        LinkTapRouter(openTrackerItem: openTrackerItem, openConversation: openConversation,
+        return LinkTapRouter(openTrackerItem: openTrackerItem, openConversation: openConversation,
                       openPageLink: openPageLink, trackerNumberLinks: trackerNumberLinks,
                       openExternally: openExternally, openTrackerNumberOnWeb: openExternally,
                       presentBlocked: presentBlocked)

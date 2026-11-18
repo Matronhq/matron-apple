@@ -99,6 +99,31 @@ final class MarkdownAttributedTests: XCTestCase {
         XCTAssertTrue(attributed.string.contains("\u{2022} Two"))
     }
 
+    /// A list inside a quote keeps its numbers and bullets, and takes the
+    /// quote's indent and colour. The quote's own paragraphs stay quotes.
+    func test_listInsideQuote_keepsItsMarkers() {
+        let attributed = convert("> Here it is:\n>\n> 1. Tag on Thursday\n> 2. Run the release\n>\n> - a bullet\n>\n> Thanks")
+        XCTAssertTrue(attributed.string.contains("1. Tag on Thursday"), attributed.string)
+        XCTAssertTrue(attributed.string.contains("2. Run the release"), attributed.string)
+        XCTAssertTrue(attributed.string.contains("\u{2022} a bullet"), attributed.string)
+        let quoteStyle = attributes(of: attributed, atFirst: "Here it is")[.paragraphStyle] as? NSParagraphStyle
+        let itemStyle = attributes(of: attributed, atFirst: "Tag on")[.paragraphStyle] as? NSParagraphStyle
+        let plainItem = attributes(of: convert("1. Tag on Thursday"), atFirst: "Tag on")[.paragraphStyle] as? NSParagraphStyle
+        XCTAssertEqual(quoteStyle?.headIndent, 12)
+        XCTAssertEqual(itemStyle?.headIndent, (plainItem?.headIndent ?? 0) + 12)
+        XCTAssertEqual(attributes(of: attributed, atFirst: "Tag on")[.foregroundColor] as? NSColor,
+                       attributes(of: attributed, atFirst: "Here it is")[.foregroundColor] as? NSColor)
+        XCTAssertEqual(attributes(of: attributed, atFirst: "1. Tag")[.foregroundColor] as? NSColor,
+                       attributes(of: attributed, atFirst: "Here it is")[.foregroundColor] as? NSColor)
+    }
+
+    /// A quote inside a list item is still a quote.
+    func test_quoteInsideListItem_staysAQuote() {
+        let attributed = convert("1. First\n\n   > quoted")
+        let style = attributes(of: attributed, atFirst: "quoted")[.paragraphStyle] as? NSParagraphStyle
+        XCTAssertEqual(style?.headIndent, 12)
+    }
+
     func test_orderedList_getsNumberPrefix() {
         let attributed = convert("1. First\n2. Second")
         XCTAssertTrue(attributed.string.contains("1. First"))

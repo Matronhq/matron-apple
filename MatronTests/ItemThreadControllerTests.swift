@@ -65,6 +65,31 @@ final class ItemThreadControllerTests: XCTestCase {
         return item.frame.minY - controller.collectionView.contentOffset.y
     }
 
+    /// Opening a folded `collapsed` block grows its card to fit the code;
+    /// folding it again gives the height back.
+    func test_openingAFoldedBlockGrowsTheCard() throws {
+        let json = (0..<12).map { "\"key\($0)\": \"value \($0)\"" }.joined(separator: ",\n")
+        let body = "Send this?\n\n```json collapsed\n{\n\(json)\n}\n```\n\nAllow once or Decline."
+        let item = TrackerItem(id: "it_1", num: 1, kind: .question, title: "Allow once", body: body,
+                               originConvoID: "c1", createdAt: t0, updatedAt: t0)
+        let model = ItemDetailView.Model(item: item, comments: [], pending: [], availableResolutions: [.done], isBusy: false,
+                                         loadedCommentCount: 0)
+        let (controller, window) = try mount(factory(model), size: CGSize(width: 390, height: 900))
+        func cardHeight() -> CGFloat {
+            let frames = controller.itemsForTesting.filter { $0.id.hasPrefix(ItemThreadRow.body.id) }.map(\.frame)
+            return (frames.map(\.maxY).max() ?? 0) - (frames.map(\.minY).min() ?? 0)
+        }
+        let folded = cardHeight()
+        XCTAssertGreaterThan(folded, 0)
+        let id = CollapsedFences.foldID(key: "\(ItemThreadRow.body.id)#0", index: 0)
+        controller.handleFoldLink(.toggle(id))
+        settle(window)
+        XCTAssertGreaterThan(cardHeight(), folded + 12 * 10, "the open block's lines are in the card")
+        controller.handleFoldLink(.toggle(id))
+        settle(window)
+        XCTAssertEqual(cardHeight(), folded, accuracy: 0.5)
+    }
+
     func test_itOpensAtTheTop_andReportsItIsNotAtTheBottom() throws {
         let (controller, _) = try mount(factory(model(comments: 30)))
         XCTAssertEqual(controller.collectionView.contentOffset.y, -controller.collectionView.adjustedContentInset.top)

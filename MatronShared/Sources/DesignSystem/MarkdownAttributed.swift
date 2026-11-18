@@ -865,6 +865,20 @@ public enum MarkdownAttributed {
             currentCellStyle = nil
         }
 
+        // A list inside a block quote: the quote's indent on top of the
+        // list's, and its colour.
+        func quote(_ attrs: inout [NSAttributedString.Key: Any]) {
+            if let base = attrs[.paragraphStyle] as? NSParagraphStyle,
+               let style = base.mutableCopy() as? NSMutableParagraphStyle {
+                style.headIndent += quoteIndent
+                style.firstLineHeadIndent += quoteIndent
+                attrs[.paragraphStyle] = style
+            }
+            if (attrs[.foregroundColor] as? MarkdownColor) == MarkdownPalette.label {
+                attrs[.foregroundColor] = BlockKind.blockQuote.foreground
+            }
+        }
+
         for run in attributed.runs {
             let intent = run.presentationIntent
             var block = BlockKind(intent)
@@ -879,6 +893,7 @@ public enum MarkdownAttributed {
                 }
             }
             let isNewBlock = intent != previousIntent
+            let quoted: Bool = if case .listItem = block { BlockKind.isQuoted(intent) } else { false }
 
             // Block boundary: a new `presentationIntent` identity means a new
             // block. Separate it from the previous block with a newline (the
@@ -963,6 +978,7 @@ public enum MarkdownAttributed {
                 markerAttrs[Self.semanticsKey] = MarkdownRunSemantics(
                     block: block, blockIdentity: blockIdentity, inline: [], link: nil
                 )
+                if quoted { quote(&markerAttrs) }
                 let markerText = NSMutableAttributedString(string: marker, attributes: markerAttrs)
                 if renderStyle.lists == .reading {
                     styleReadingMarker(markerText, block: block, style: renderStyle)
@@ -993,6 +1009,7 @@ public enum MarkdownAttributed {
             if case .tableCell = block, let currentCellStyle {
                 attrs[.paragraphStyle] = currentCellStyle
             }
+            if quoted { quote(&attrs) }
             attrs[Self.semanticsKey] = semantics
             output.append(NSAttributedString(string: text, attributes: attrs))
         }
@@ -1444,7 +1461,7 @@ enum BlockKind: Hashable {
         var isHeaderRow = false
         var tableColumns: [PresentationIntent.TableColumn]?
 
-        for component in components {
+        scan: for component in components {
             switch component.kind {
             case .header(let level):
                 self = .header(level: level)
@@ -1453,8 +1470,15 @@ enum BlockKind: Hashable {
                 self = .codeBlock(language: languageHint)
                 return
             case .blockQuote:
-                self = .blockQuote
-                return
+                // A quote INSIDE a list item is the quote; a list inside a
+                // quote stays a list item, marker and all (the quote only
+                // adds its indent and colour, `isQuoted`). Returning here
+                // for both dropped every number and bullet of a quoted list.
+                guard listItemCount > 0 else {
+                    self = .blockQuote
+                    return
+                }
+                break scan
             case .listItem(let ordinal):
                 if listItemCount == 0 { listOrdinal = ordinal }
                 listItemCount += 1
@@ -1551,6 +1575,23 @@ enum BlockKind: Hashable {
         case .blockQuote: return MarkdownPalette.secondaryLabel
         default: return MarkdownPalette.label
         }
+    }
+
+    /// Whether a list item's block sits inside a block quote: the quote is
+    /// outside the item (a quote inside an item is a `.blockQuote` block of
+    /// its own), so the item keeps its marker and takes the quote's indent
+    /// and colour on top.
+    static func isQuoted(_ intent: PresentationIntent?) -> Bool {
+        guard let components = intent?.components else { return false }
+        var inItem = false
+        for component in components {
+            switch component.kind {
+            case .listItem: inItem = true
+            case .blockQuote: return inItem
+            default: break
+            }
+        }
+        return false
     }
 
     /// Parser identity of the innermost list item containing `intent`'s

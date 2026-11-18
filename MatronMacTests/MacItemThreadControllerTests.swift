@@ -71,6 +71,26 @@ final class MacItemThreadControllerTests: XCTestCase {
         settle()
     }
 
+    /// Opening a folded `collapsed` block grows its card's row to fit the
+    /// code; folding it again gives the height back.
+    func test_openingAFoldedBlockGrowsTheRow() throws {
+        let json = (0..<12).map { "\"key\($0)\": \"value \($0)\"" }.joined(separator: ",\n")
+        let body = "Send this?\n\n```json collapsed\n{\n\(json)\n}\n```\n\nAllow once or Decline."
+        let c = mount(MacItemThreadFixtures.model(comments: 1, body: body), height: 900)
+        func height() throws -> CGFloat {
+            c.tableView.rect(ofRow: try XCTUnwrap(c.rowIndex(of: ItemThreadRow.body.id))).height
+        }
+        let folded = try height()
+        let id = CollapsedFences.foldID(key: "\(ItemThreadRow.body.id)#0", index: 0)
+        c.handleFoldLink(.toggle(id))
+        settle()
+        let open = try height()
+        XCTAssertGreaterThan(open, folded + 12 * 10, "the open block's lines are in the row")
+        c.handleFoldLink(.toggle(id))
+        settle()
+        XCTAssertEqual(try height(), folded, accuracy: 0.5)
+    }
+
     func test_opensAtTopUnlessStartsAtBottom() {
         let top = mount(MacItemThreadFixtures.model(comments: 40))
         XCTAssertEqual(clip(top).bounds.minY, -top.scrollView.contentInsets.top, accuracy: 1)
