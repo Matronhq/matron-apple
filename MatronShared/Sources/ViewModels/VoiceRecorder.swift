@@ -238,6 +238,24 @@ public final class VoiceRecorder {
         Self.logger.notice("microphone: now \(self.microphone?.name ?? "unknown", privacy: .public)")
     }
 
+    /// Starting, with nothing captured yet: drops the capture and begins a
+    /// fresh one on the same microphone, in a file of its own (the old
+    /// recorder may still be finishing its file). False if it won't start.
+    private func restartCapture() -> Bool {
+        guard case .starting = state, let recorder, let fileURL else { return false }
+        let freshURL = Self.newFileURL()
+        guard let fresh = try? makeRecorder(freshURL) else { return false }
+        fresh.useMicrophone(preferredMicrophoneID)
+        guard fresh.record() else {
+            discard(fresh, file: freshURL)
+            return false
+        }
+        discard(recorder, file: fileURL)
+        self.recorder = fresh
+        self.fileURL = freshURL
+        return true
+    }
+
     /// Recording, on a recorder that can't move (the Mac's): a second
     /// recorder starts on the new microphone, and the first carries on
     /// until the second delivers sound. Then the first part is finished
@@ -309,6 +327,10 @@ public final class VoiceRecorder {
     /// anyway (about 4 s): a muted input delivers true silence forever,
     /// and a note that never starts is worse than one with a quiet lead-in.
     static let maxLiveChecks = 200
+
+    /// Times a note's start may begin its capture again because the
+    /// capture came up with a slow clock, before the start gives up.
+    static let maxSlowRestarts = 2
 
     static let watchInterval: Duration = .milliseconds(500)
     /// Watchdog checks with the file not growing before a recording note
@@ -410,6 +432,8 @@ public final class VoiceRecorder {
         let requested = now()
         var checks = 0
         var watched = recorder
+        var slowRestarts = 0
+        var gaveUpSlow = false
         // An interruption holds the warm-up (its time doesn't count
         // towards the cap) until it ends; the mic is checked again after.
         while let recorder, isInterrupted || !recorder.isCapturingAudio, checks < Self.maxLiveChecks {
@@ -428,8 +452,26 @@ public final class VoiceRecorder {
             // cancel() during the warm-up already tore everything down.
             guard generation == cancelGeneration else { return }
             if warmUpRefused || recorder.hasFailed { break }
+            if let current = self.recorder, current.isRunningSlow {
+                // The capture came up counting a fraction of real time
+                // (audio devices changed under it as it started). Nothing
+                // has been captured, so it starts over on a fresh capture.
+                guard slowRestarts < Self.maxSlowRestarts, restartCapture() else {
+                    gaveUpSlow = true
+                    break
+                }
+                slowRestarts += 1
+                Self.logger.error("live: the capture's clock ran slow at \(current.elapsed, format: .fixed(precision: 3))s; started it again (\(slowRestarts) of \(Self.maxSlowRestarts))")
+                watched = self.recorder
+                checks = 0
+            }
         }
         guard generation == cancelGeneration, case .starting = state else { return }
+        if gaveUpSlow {
+            Self.logger.error("live: the capture's clock still ran slow after \(slowRestarts) restarts, microphone=\(self.microphone?.name ?? "unknown", privacy: .public)")
+            cancel()
+            throw RecorderError.noAudio
+        }
         if recorder?.hasFailed == true {
             // The capture never got going (the device vanished, or it
             // refused to start): there is no note to show as live.
@@ -523,6 +565,12 @@ public final class VoiceRecorder {
                 }
                 if recorder.hasFailed {
                     self.loseCapture(reason: "the recorder failed")
+                    return
+                }
+                if recorder.isRunningSlow {
+                    // The clock still creeps, so it never looks stalled,
+                    // but what is said now isn't reaching the file.
+                    self.loseCapture(reason: "the clock ran slow at \(String(format: "%.2f", elapsed))s")
                     return
                 }
                 if elapsed > lastElapsed {
@@ -901,6 +949,14 @@ protocol AudioRecording: AnyObject {
     var canSwitchMicrophoneLive: Bool { get }
     /// How much the file holds so far, in seconds.
     var elapsed: TimeInterval { get }
+    /// The capture is running but its clock isn't keeping pace with real
+    /// time (the Mac's capture session after a device change at its
+    /// start): what is said now isn't reaching the file.
+    var isRunningSlow: Bool { get }
+}
+
+extension AudioRecording {
+    var isRunningSlow: Bool { false }
 }
 
 extension AudioRecording {

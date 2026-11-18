@@ -19,6 +19,9 @@ private final class FakeAudioRecorder: AudioRecording {
     var microphone: Microphone? { usedMicrophones.last.map { Microphone(id: $0 ?? "default", name: $0 ?? "Default") } }
     func useMicrophone(_ id: String?) { usedMicrophones.append(id) }
     var elapsed: TimeInterval = 0
+    /// The capture's clock isn't keeping pace with real time.
+    var runningSlow = false
+    var isRunningSlow: Bool { runningSlow }
     /// Set to finish the file only when the test signals it, as the Mac's
     /// capture session finishes its file after `stop()`.
     var lateFinish: RecordingFinishSignal?
@@ -520,6 +523,122 @@ final class VoiceRecorderTests: XCTestCase {
         }
         XCTAssertEqual(rec.state, .idle, "never left looking live")
         XCTAssertEqual(fake.stopCalls, 1)
+    }
+
+    // MARK: A capture whose clock runs slow
+
+    /// The bug (twice on a Mac whose Bluetooth headset connected as the note
+    /// started): the capture counted 0.03 s in 34 s, so it was past zero
+    /// and never stalled, and the bar showed "Recording" over nothing.
+    /// The start now begins the capture again and goes live on the new one.
+    @MainActor
+    func test_start_restartsACaptureWhoseClockRunsSlow_andGoesLiveOnTheNewOne() async throws {
+        let slow = FakeAudioRecorder()
+        slow.capturing = false
+        slow.runningSlow = true
+        slow.elapsed = 0.001
+        let good = FakeAudioRecorder()
+        var made = [slow, good]
+        let rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in made.removeFirst() },
+                                pause: {}, defaults: freshDefaults())
+        try await rec.start()
+        guard case .recording = rec.state else { return XCTFail("expected .recording") }
+        XCTAssertEqual(slow.stopCalls, 1, "the slow capture was dropped")
+        XCTAssertEqual(good.recordCalls, 1)
+        XCTAssertEqual(good.stopCalls, 0)
+        XCTAssertNotNil(rec.stop())
+    }
+
+    /// The restarted capture records from the microphone the user chose.
+    @MainActor
+    func test_start_restartingASlowCapture_keepsThePreferredMicrophone() async throws {
+        let slow = FakeAudioRecorder()
+        slow.capturing = false
+        slow.runningSlow = true
+        let good = FakeAudioRecorder()
+        var made = [slow, good]
+        let defaults = freshDefaults()
+        defaults.set("built-in", forKey: VoiceRecorder.preferredMicrophoneKey)
+        let rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in made.removeFirst() },
+                                pause: {}, defaults: defaults)
+        try await rec.start()
+        XCTAssertEqual(good.usedMicrophones, ["built-in"])
+        XCTAssertNotNil(rec.stop())
+    }
+
+    /// Every restart comes up slow too: the start fails, so nothing is
+    /// left looking live.
+    @MainActor
+    func test_start_failsWithNoAudio_whenEveryRestartRunsSlow() async {
+        var made: [FakeAudioRecorder] = []
+        let rec = VoiceRecorder(requestPermission: { true },
+                                makeRecorder: { _ in
+                                    let fake = FakeAudioRecorder()
+                                    fake.capturing = false
+                                    fake.runningSlow = true
+                                    fake.elapsed = 0.001
+                                    made.append(fake)
+                                    return fake
+                                },
+                                pause: {}, defaults: freshDefaults())
+        do {
+            try await rec.start()
+            XCTFail("expected .noAudio")
+        } catch {
+            XCTAssertEqual(error as? VoiceRecorder.RecorderError, .noAudio)
+        }
+        XCTAssertEqual(rec.state, .idle)
+        XCTAssertEqual(made.count, 1 + VoiceRecorder.maxSlowRestarts)
+        XCTAssertEqual(made.map(\.stopCalls), Array(repeating: 1, count: made.count), "every capture was stopped")
+    }
+
+    /// The clock starts running slow in the middle of a note: it still
+    /// creeps forward, so the stall check passes, but the note is stopped
+    /// and reported rather than left ticking.
+    @MainActor
+    func test_recording_whoseClockStartsRunningSlow_isStoppedAndReported() async throws {
+        let fake = FakeAudioRecorder()
+        fake.elapsed = 2
+        let (rec, lost) = watchedRecorder(fake) { check in
+            fake.elapsed += 0.0005
+            if check == 4 { fake.runningSlow = true }
+        }
+        try await rec.start()
+        await waitUntil { !lost().isEmpty }
+        XCTAssertEqual(lost().count, 1)
+        XCTAssertEqual(fake.stopCalls, 1)
+    }
+
+    func test_capturePace_aClockKeepingTime_isNotSlow() {
+        var pace = CapturePace(start: 100)
+        XCTAssertFalse(pace.check(at: 100.5, recorded: 0.4), "too soon to judge")
+        XCTAssertFalse(pace.check(at: 101.1, recorded: 1.0))
+        XCTAssertFalse(pace.check(at: 102.2, recorded: 2.1))
+    }
+
+    /// The readings from the failed notes: 0.03 s recorded in 34 s.
+    func test_capturePace_aClockAThousandTimesTooSlow_isSlowAfterOneWindow() {
+        var pace = CapturePace(start: 100)
+        XCTAssertFalse(pace.check(at: 100.9, recorded: 0.0009), "too soon to judge")
+        XCTAssertTrue(pace.check(at: 101.0, recorded: 0.001))
+        XCTAssertTrue(pace.check(at: 101.5, recorded: 0.0015), "holds between windows")
+    }
+
+    /// A slow start that then recovers stops counting as slow, and a
+    /// clock that slows mid-note is caught in the window where it does.
+    func test_capturePace_judgesEachWindowOnItsOwn() {
+        var pace = CapturePace(start: 0)
+        XCTAssertTrue(pace.check(at: 1, recorded: 0.001))
+        XCTAssertFalse(pace.check(at: 2, recorded: 1.0))
+        XCTAssertFalse(pace.check(at: 12, recorded: 11.0))
+        XCTAssertTrue(pace.check(at: 13, recorded: 11.001))
+    }
+
+    /// The main thread stalling between readings doesn't make a healthy
+    /// capture look slow: the window is as long as the gap.
+    func test_capturePace_aLateReading_isJudgedOverTheWholeGap() {
+        var pace = CapturePace(start: 0)
+        XCTAssertFalse(pace.check(at: 15, recorded: 14.9))
     }
 
     // MARK: Watchdog (capture dying while the note shows as recording)
