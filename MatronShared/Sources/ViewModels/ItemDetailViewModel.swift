@@ -298,19 +298,48 @@ public final class ItemDetailViewModel {
         guard let item, !item.originConvoID.isEmpty,
               let working = item.working, working.isCurrent(at: now()) else { return nil }
         switch working.state {
+        case .queued where working.behindTurn:
+            // The session is mid-turn on something else: as fresh as a
+            // `running` copy, so it is held to the same checks. It has no
+            // `until` to lapse at.
+            return runningIndicator.map { _ in .busyElsewhere }
         case .queued:
             return .starting
         case .running:
-            // The stored copy is as old as its last fetch. A device that
-            // has the owner conversation sets it against what it knows
-            // itself: once it has seen the turn end, the copy is stale,
-            // and the refetch that event started will say so. A device
-            // without the conversation waits for the opening read before
-            // it claims any work at all.
-            if ownerConvoID == item.originConvoID, ownerState.exists, let ownerSessionState {
-                return ownerSessionState == "running" ? .working : nil
+            // The bridge's own word on its queue: a reply of the user's on
+            // this item still has a live queued card, so the turn running
+            // is not about it. Said here too, for a journal that reports
+            // every turn as `running`.
+            return runningIndicator.map { $0 == .working && hasWaitingReply ? .busyElsewhere : $0 }
+        }
+    }
+
+    /// `.working` while the owner session is mid-turn as far as this device
+    /// can tell, before the queued cards have their say.
+    private var runningIndicator: ItemWorkingIndicator? {
+        guard let item else { return nil }
+        // The stored copy is as old as its last fetch. A device that has
+        // the owner conversation sets it against what it knows itself:
+        // once it has seen the turn end, the copy is stale, and the refetch
+        // that event started will say so. A device without the
+        // conversation waits for the opening read before it claims any
+        // work at all.
+        if ownerConvoID == item.originConvoID, ownerState.exists, let ownerSessionState {
+            return ownerSessionState == "running" ? .working : nil
+        }
+        return loadedCommentCount != nil ? .working : nil
+    }
+
+    /// Whether one of the user's replies on this item still waits on the
+    /// agent's busy queue: its card has had no release. A Send now or
+    /// Cancel tapped here is still waiting until the bridge's release
+    /// arrives.
+    private var hasWaitingReply: Bool {
+        queuedReplies.values.contains { state in
+            switch state {
+            case .queued, .sendFailed, .sending, .cancelling: return true
+            case .cancelled, .notDelivered: return false
             }
-            return loadedCommentCount != nil ? .working : nil
         }
     }
 

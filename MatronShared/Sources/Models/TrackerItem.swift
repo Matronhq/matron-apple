@@ -98,7 +98,7 @@ public struct ItemWorking: Equatable, Hashable, Sendable, Codable {
         /// The user wrote something on the item that reaches the agent as
         /// a turn, and no turn has started since: the box is being
         /// started, the session resumed, or the reply is waiting behind
-        /// the turn in flight.
+        /// the turn in flight (`behindTurn`).
         case queued
     }
 
@@ -107,16 +107,32 @@ public struct ItemWorking: Equatable, Hashable, Sendable, Codable {
     /// the user wrote (`queued`).
     public let since: Date?
     /// When a `queued` state lapses if nothing else happens; `nil` while
-    /// `running`.
+    /// `running`, and while `behindTurn`.
     public let until: Date?
+    /// `queued` only: the session is mid-turn on something that started
+    /// before the user wrote, so the reply waits for that turn to end.
+    /// The journal's `behind_turn`; `false` from a journal without it.
+    public let behindTurn: Bool
 
-    public init(state: State, since: Date? = nil, until: Date? = nil) {
+    public init(state: State, since: Date? = nil, until: Date? = nil, behindTurn: Bool = false) {
         self.state = state; self.since = since; self.until = until
+        self.behindTurn = state == .queued && behindTurn
     }
 
     public init?(json: [String: Any]?) {
         guard let json, let state = (json["state"] as? String).flatMap(State.init(rawValue:)) else { return nil }
-        self.init(state: state, since: msDate(json["since"]), until: msDate(json["until"]))
+        self.init(state: state, since: msDate(json["since"]), until: msDate(json["until"]),
+                  behindTurn: json["behind_turn"] as? Bool ?? false)
+    }
+
+    private enum CodingKeys: String, CodingKey { case state, since, until, behindTurn }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(state: try c.decode(State.self, forKey: .state),
+                  since: try c.decodeIfPresent(Date.self, forKey: .since),
+                  until: try c.decodeIfPresent(Date.self, forKey: .until),
+                  behindTurn: try c.decodeIfPresent(Bool.self, forKey: .behindTurn) ?? false)
     }
 
     /// Whether the state still stands at `now`: a `queued` state stops
@@ -132,12 +148,16 @@ public struct ItemWorking: Equatable, Hashable, Sendable, Codable {
 public enum ItemWorkingIndicator: Equatable, Hashable, Sendable {
     /// The reply is on its way to the agent; its turn has not started.
     case starting
+    /// The agent is mid-turn on something that started before the reply,
+    /// which waits for that turn to end and then goes next.
+    case busyElsewhere
     /// The agent is mid-turn.
     case working
 
     public var label: String {
         switch self {
         case .starting: return "Starting…"
+        case .busyElsewhere: return "Busy with something else. Yours is next."
         case .working: return "Working…"
         }
     }
