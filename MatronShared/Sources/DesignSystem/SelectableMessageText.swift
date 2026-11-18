@@ -126,13 +126,10 @@ public struct SelectableMessageText: View {
                     ForEach(frames.indices, id: \.self) { index in
                         let frame = frames[index]
                         CodeBlockCopyButton(code: frame.code)
-                            // Just past the block's top-right corner when the
-                            // block is narrow; clamped inside the message
-                            // bounds for full-width blocks.
-                            .position(
-                                x: min(frame.rect.maxX + 12, proxy.size.width - 12),
-                                y: frame.rect.minY + 12
-                            )
+                            // Pinned to the box's trailing edge, whatever
+                            // the length of the block's lines.
+                            .position(MarkdownAttributed.codeBlockCopyButtonCenter(
+                                lines: frame.rect, width: proxy.size.width))
                     }
                 }
             }
