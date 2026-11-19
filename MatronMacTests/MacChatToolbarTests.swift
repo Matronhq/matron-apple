@@ -88,9 +88,9 @@ final class MacChatToolbarTests: XCTestCase {
         let filed = ConversationMissionLink(mission: Mission(id: "ms_1", num: 61, title: "M", originConvoID: "c1",
                                                              projectID: "pj_1"), isCurrent: true)
         let missions = ConversationMissions(links: [filed])
-        XCTAssertEqual(MacChatToolbar.menuProjectID(missions: missions, projectTitles: ["pj_1": "Promo"]), "pj_1")
+        XCTAssertEqual(MacChatToolbar.menuProjectID(missions: missions, projectTitles: ["pj_1": "Docs"]), "pj_1")
         XCTAssertNil(MacChatToolbar.menuProjectID(missions: missions, projectTitles: [:]))
-        XCTAssertNil(MacChatToolbar.menuProjectID(missions: ConversationMissions(), projectTitles: ["pj_1": "Promo"]))
+        XCTAssertNil(MacChatToolbar.menuProjectID(missions: ConversationMissions(), projectTitles: ["pj_1": "Docs"]))
     }
 
     /// PR4 review M3: titles come from the observed projects list, so a
@@ -103,10 +103,10 @@ final class MacChatToolbarTests: XCTestCase {
         let missions = ConversationMissions(links: [filed, unfiled])
         XCTAssertEqual(MacChatView.missionProjectTitles(missions: missions, projects: []), [:],
                        "nothing known yet: no Open project")
-        let projects = [Project(id: "pj_1", num: 1, title: "Promo"), Project(id: "pj_9", num: 9, title: "Other")]
-        XCTAssertEqual(MacChatView.missionProjectTitles(missions: missions, projects: projects), ["pj_1": "Promo"])
-        let renamed = [Project(id: "pj_1", num: 1, title: "Promo launch")]
-        XCTAssertEqual(MacChatView.missionProjectTitles(missions: missions, projects: renamed), ["pj_1": "Promo launch"])
+        let projects = [Project(id: "pj_1", num: 1, title: "Docs"), Project(id: "pj_9", num: 9, title: "Other")]
+        XCTAssertEqual(MacChatView.missionProjectTitles(missions: missions, projects: projects), ["pj_1": "Docs"])
+        let renamed = [Project(id: "pj_1", num: 1, title: "Docs site launch")]
+        XCTAssertEqual(MacChatView.missionProjectTitles(missions: missions, projects: renamed), ["pj_1": "Docs site launch"])
         XCTAssertEqual(MacChatView.missionProjectTitles(missions: ConversationMissions(), projects: projects), [:])
     }
 

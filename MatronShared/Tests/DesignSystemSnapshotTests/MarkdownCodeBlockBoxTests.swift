@@ -434,13 +434,13 @@ final class ItemTableCellWidthTests: XCTestCase {
 
     func test_longCell_wrapsAtTheCap_withAnUnspecifiedWidth() {
         let oneLine = size("x").height
-        let long = size("backfilled 72, cost re-snapshotted as v3, and several more words besides")
+        let long = size("resized 72, thumbnails rebuilt as v3, and several more words besides")
         XCTAssertLessThanOrEqual(long.width, 120)
         XCTAssertGreaterThan(long.height, oneLine * 1.5, "long cell did not wrap")
     }
 
     func test_narrowerColumnProposal_wins() {
-        let narrow = size("backfilled 72, cost re-snapshotted", proposal: 60)
+        let narrow = size("resized 72, thumbnails rebuilt", proposal: 60)
         XCTAssertLessThanOrEqual(narrow.width, 60)
     }
 }

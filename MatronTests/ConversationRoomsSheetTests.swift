@@ -48,11 +48,11 @@ final class ConversationRoomsSheetTests: XCTestCase {
 
     /// The header's second line counts the rooms chip as a chip.
     func test_theHeaderSubtitleShowsTheRoomsChip() {
-        XCTAssertEqual(ChatView.headerSubtitleLayout(context: "pat · ~/yearly-app", missions: ConversationMissions(),
+        XCTAssertEqual(ChatView.headerSubtitleLayout(context: "box-a · ~/acme-app", missions: ConversationMissions(),
                                                      roomCount: 2), .contextAndChip)
         XCTAssertEqual(ChatView.headerSubtitleLayout(context: nil, missions: ConversationMissions(), roomCount: 1),
                        .chipOnly)
-        XCTAssertEqual(ChatView.headerSubtitleLayout(context: "pat · ~/yearly-app", missions: ConversationMissions()),
+        XCTAssertEqual(ChatView.headerSubtitleLayout(context: "box-a · ~/acme-app", missions: ConversationMissions()),
                        .contextOnly, "a chat in no room is today's header")
     }
 }

@@ -5,16 +5,16 @@ import XCTest
 /// agents' links with the same rule, so these cases mirror the web's.
 final class TrackerLinkTitleRuleTests: XCTestCase {
     func test_titleMatches_acceptsTheTitle_aPrefix_anAbbreviation_orACloseParaphrase() {
-        XCTAssertTrue(TrackerLinkTitleRule.titleMatches("Merge: printer XML…", "Merge: printer XML export for the run"))
-        XCTAssertTrue(TrackerLinkTitleRule.titleMatches("late-orders item", "Late orders shipped after the cut-off: options"))
+        XCTAssertTrue(TrackerLinkTitleRule.titleMatches("Merge: billing CSV…", "Merge: billing CSV export for the report"))
+        XCTAssertTrue(TrackerLinkTitleRule.titleMatches("slow-uploads item", "Slow uploads on the hotel wifi: options"))
         XCTAssertTrue(TrackerLinkTitleRule.titleMatches("CAFÉ menu", "Cafe menu update"))
         XCTAssertTrue(TrackerLinkTitleRule.titleMatches("Ship the release...", "Ship the release notes"))
         XCTAssertTrue(TrackerLinkTitleRule.titleMatches("Ship the rel", "Ship the release notes"))
     }
 
     func test_titleMatches_refusesATitleAboutSomethingElse_andAnEmptyOne() {
-        XCTAssertFalse(TrackerLinkTitleRule.titleMatches("the new merge question", "Late orders shipped after the cut-off"))
-        XCTAssertFalse(TrackerLinkTitleRule.titleMatches("here", "Merge: printer XML export"))
+        XCTAssertFalse(TrackerLinkTitleRule.titleMatches("the new merge question", "Slow uploads on the hotel wifi"))
+        XCTAssertFalse(TrackerLinkTitleRule.titleMatches("here", "Merge: billing CSV export"))
         XCTAssertFalse(TrackerLinkTitleRule.titleMatches("", "Merge"))
         XCTAssertFalse(TrackerLinkTitleRule.titleMatches("Merge", ""))
     }
@@ -77,11 +77,11 @@ final class TrackerLinkChipTests: XCTestCase {
     }
 
     func test_writtenTitleThatIsNotTheTargets_isFlagged() {
-        let chip = TrackerLinkChip(lookup: found("item", "Late orders after the cut-off"), num: 12,
-                                   linkText: "#12 Merge: printer export")
-        XCTAssertEqual(chip?.text, "item · Late orders after the cut-off")
+        let chip = TrackerLinkChip(lookup: found("item", "Slow uploads on hotel wifi"), num: 12,
+                                   linkText: "#12 Merge: billing export")
+        XCTAssertEqual(chip?.text, "item · Slow uploads on hotel wifi")
         XCTAssertEqual(chip?.isMismatch, true)
-        XCTAssertEqual(chip?.hint, "#12 is not \"Merge: printer export\": it is the item \"Late orders after the cut-off\".")
+        XCTAssertEqual(chip?.hint, "#12 is not \"Merge: billing export\": it is the item \"Slow uploads on hotel wifi\".")
     }
 
     func test_textNumberDifferentFromTheLinks_isFlagged() {
@@ -146,9 +146,9 @@ final class TrackerLinkMarkdownAnnotationTests: XCTestCase {
 
     func test_writesEachChipAfterItsLink_andFlagsAWrongOne() {
         XCTAssertEqual(
-            annotate("See [#12](matron://item/12) and [#13 Merge: printer export](matron://item/13).",
-                     [12: .found(kind: "item", title: "Ship *it*"), 13: .found(kind: "item", title: "Late orders")]),
-            "See [#12](matron://item/12) *item · Ship \\*it\\** and [#13 Merge: printer export](matron://item/13) **⚠︎ item · Late orders**.")
+            annotate("See [#12](matron://item/12) and [#13 Merge: billing export](matron://item/13).",
+                     [12: .found(kind: "item", title: "Ship *it*"), 13: .found(kind: "item", title: "Slow uploads")]),
+            "See [#12](matron://item/12) *item · Ship \\*it\\** and [#13 Merge: billing export](matron://item/13) **⚠︎ item · Slow uploads**.")
     }
 
     func test_leavesCodeAndUnansweredLinksAlone() {
@@ -336,10 +336,10 @@ final class TrackerLinkRenderingTests: XCTestCase {
 
     func test_mismatchedChip_isInTheErrorColour() {
         let rendered = MarkdownAttributed.rendered(
-            for: "[#12 Merge: printer export](matron://item/12)", style: .chat, cache: false,
-            trackerLinks: lookups([12: .found(kind: "item", title: "Late orders after the cut-off")]))
+            for: "[#12 Merge: billing export](matron://item/12)", style: .chat, cache: false,
+            trackerLinks: lookups([12: .found(kind: "item", title: "Slow uploads on hotel wifi")]))
         let chips = chipRanges(rendered.attributed)
-        XCTAssertEqual(chips.map(\.0), ["item · Late orders after the cut-off"])
+        XCTAssertEqual(chips.map(\.0), ["item · Slow uploads on hotel wifi"])
         let attrs = rendered.attributed.attributes(at: chips[0].1.location, effectiveRange: nil)
         XCTAssertEqual(attrs[.foregroundColor] as? NSColor, MarkdownPalette.error)
     }

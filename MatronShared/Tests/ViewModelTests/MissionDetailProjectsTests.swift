@@ -15,7 +15,7 @@ final class MissionDetailProjectsTests: XCTestCase {
     func testProjectAndMoveTargetsFollowTheStreams() async {
         let (vm, store, projectsStore, _) = make()
         vm.start()
-        projectsStore.projects.send([Project(id: "pj_1", num: 1, title: "Promo"),
+        projectsStore.projects.send([Project(id: "pj_1", num: 1, title: "Docs"),
                                      Project(id: "pj_x", num: 2, state: .closed, title: "Old")])
         store.mission.send(Mission(id: "ms_1", num: 61, title: "M", originConvoID: "c1", projectID: "pj_1"))
         await waitForProjects { vm.project?.id == "pj_1" }
@@ -106,7 +106,7 @@ final class MissionDetailProjectsTests: XCTestCase {
     func testMoveToProjectFilesThroughTheSync() async {
         let (vm, _, projectsStore, projects) = make()
         vm.start()
-        projectsStore.projects.send([Project(id: "pj_2", num: 2, title: "Promo")])
+        projectsStore.projects.send([Project(id: "pj_2", num: 2, title: "Docs")])
         await waitForProjects { vm.moveTargets.map(\.id) == ["pj_2"] }
         XCTAssertTrue(vm.canMove)
         await vm.moveToProject("pj_2")
@@ -139,7 +139,7 @@ final class MissionDetailProjectsTests: XCTestCase {
     func testMoveToProjectRefusesAClosedTarget() async {
         let (vm, _, projectsStore, projects) = make()
         vm.start()
-        projectsStore.projects.send([Project(id: "pj_1", num: 1, title: "Promo"),
+        projectsStore.projects.send([Project(id: "pj_1", num: 1, title: "Docs"),
                                      Project(id: "pj_x", num: 2, state: .closed, title: "Old")])
         await waitForProjects { vm.moveTargets.map(\.id) == ["pj_1"] }
         await vm.moveToProject("pj_x")
@@ -150,7 +150,7 @@ final class MissionDetailProjectsTests: XCTestCase {
     func testMoveToProjectRefusesAnUnknownTarget() async {
         let (vm, _, projectsStore, projects) = make()
         vm.start()
-        projectsStore.projects.send([Project(id: "pj_1", num: 1, title: "Promo")])
+        projectsStore.projects.send([Project(id: "pj_1", num: 1, title: "Docs")])
         await waitForProjects { vm.moveTargets.map(\.id) == ["pj_1"] }
         await vm.moveToProject("pj_unheard_of")
         XCTAssertTrue(projects.filed.isEmpty, "a project this device has never cached is never a valid move target")

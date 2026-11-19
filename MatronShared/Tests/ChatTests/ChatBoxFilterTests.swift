@@ -17,19 +17,19 @@ final class ChatBoxFilterTests: XCTestCase {
         chat("2", "Docs desk", box: "lab-mac"),
         chat("3", "Release notes", box: "lab-mac"),
         chat("4", "Untagged"),
-        chat("5", "Desk room", box: "lab-mac", room: ["lab-mac", "pat"]),
+        chat("5", "Desk room", box: "lab-mac", room: ["lab-mac", "box-a"]),
     ]
 
     func test_counts_mostFirstThenByName_roomsCountOnEachBox_untaggedLeftOut() {
         XCTAssertEqual(ChatBoxFilter.counts(chats), [
             ProjectBoxCount(box: "lab-mac", count: 3),
-            ProjectBoxCount(box: "pat", count: 1),
+            ProjectBoxCount(box: "box-a", count: 1),
             ProjectBoxCount(box: "triage-box", count: 1),
         ])
     }
 
     func test_boxes_dedupesARoomsOwnBox() {
-        XCTAssertEqual(ChatBoxFilter.boxes(of: chats[4]), ["lab-mac", "pat"])
+        XCTAssertEqual(ChatBoxFilter.boxes(of: chats[4]), ["lab-mac", "box-a"])
         XCTAssertEqual(ChatBoxFilter.boxes(of: chats[0]), ["triage-box"])
         XCTAssertEqual(ChatBoxFilter.boxes(of: chats[3]), [])
     }
@@ -43,7 +43,7 @@ final class ChatBoxFilterTests: XCTestCase {
 
     func test_filtered_byBox_includesRoomsOnThatBox() {
         XCTAssertEqual(ChatBoxFilter.filtered(chats, query: "", box: "lab-mac").map(\.id), ["2", "3", "5"])
-        XCTAssertEqual(ChatBoxFilter.filtered(chats, query: "", box: "pat").map(\.id), ["5"])
+        XCTAssertEqual(ChatBoxFilter.filtered(chats, query: "", box: "box-a").map(\.id), ["5"])
         XCTAssertEqual(ChatBoxFilter.filtered(chats, query: "", box: nil).count, 5)
     }
 
@@ -55,7 +55,7 @@ final class ChatBoxFilterTests: XCTestCase {
 
     func test_activeBox_fallsBackToAllWhenTheBoxIsGone() {
         let counts = ChatBoxFilter.counts(chats)
-        XCTAssertEqual(ChatBoxFilter.activeBox("pat", in: counts), "pat")
+        XCTAssertEqual(ChatBoxFilter.activeBox("box-a", in: counts), "box-a")
         XCTAssertNil(ChatBoxFilter.activeBox("docs-box", in: counts))
         XCTAssertNil(ChatBoxFilter.activeBox(nil, in: counts))
     }

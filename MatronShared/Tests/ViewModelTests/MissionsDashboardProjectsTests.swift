@@ -23,7 +23,7 @@ final class MissionsDashboardProjectsTests: XCTestCase {
         let (vm, store, projectsStore, _) = make()
         vm.start()
         vm.pageDidAppear()  // the Projects home shows
-        projectsStore.projects.send([Project(id: "pj_1", num: 1, title: "Promo")])
+        projectsStore.projects.send([Project(id: "pj_1", num: 1, title: "Docs")])
         store.missions.send([Mission(id: "ms_1", num: 10, title: "Filed", originConvoID: "c1", projectID: "pj_1"),
                              Mission(id: "ms_2", num: 11, title: "Loose", originConvoID: "c1", activity: .running)])
         store.needsYou.send([:])
@@ -55,9 +55,9 @@ final class MissionsDashboardProjectsTests: XCTestCase {
         XCTAssertNil(none)
         XCTAssertEqual(vm.error, "Give the project a title.")
         vm.error = nil
-        let made = await vm.createProject(title: "  Promo launch ", body: "site")
-        XCTAssertEqual(made?.title, "Promo launch")
-        XCTAssertEqual(projects.created.first?.0, "Promo launch")
+        let made = await vm.createProject(title: "  Docs site launch ", body: "site")
+        XCTAssertEqual(made?.title, "Docs site launch")
+        XCTAssertEqual(projects.created.first?.0, "Docs site launch")
     }
 
     /// Preflight R6: the journal answers 400 over its 200 UTF-16 unit title cap.
@@ -164,7 +164,7 @@ final class MissionsDashboardProjectsTests: XCTestCase {
         let (vm, store, projectsStore, projects) = make()
         vm.start()
         vm.pageDidAppear()  // the Projects home shows
-        projectsStore.projects.send([Project(id: "pj_1", num: 1, title: "Promo")])
+        projectsStore.projects.send([Project(id: "pj_1", num: 1, title: "Docs")])
         store.missions.send([Mission(id: "ms_1", num: 10, title: "Loose", originConvoID: "c1")])
         store.needsYou.send([:])
         await waitForProjects { vm.home.cards.count == 1 }
@@ -182,7 +182,7 @@ final class MissionsDashboardProjectsTests: XCTestCase {
         let (vm, store, projectsStore, projects) = make()
         vm.start()
         vm.pageDidAppear()  // the Projects home shows
-        projectsStore.projects.send([Project(id: "pj_1", num: 1, title: "Promo"),
+        projectsStore.projects.send([Project(id: "pj_1", num: 1, title: "Docs"),
                                      Project(id: "pj_3", num: 3, state: .closed, title: "Old")])
         store.missions.send([Mission(id: "ms_1", num: 10, title: "Loose", originConvoID: "c1")])
         store.needsYou.send([:])

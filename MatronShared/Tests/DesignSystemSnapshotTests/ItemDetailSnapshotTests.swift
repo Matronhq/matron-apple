@@ -55,14 +55,14 @@ final class ItemDetailSnapshotTests: XCTestCase {
     /// caps to the same width so its accessory buttons sit on the column's
     /// text edges with the field inset between them.
     func testWideHostCapsAndCentresTheColumn() {
-        let item = TrackerItem(id: "it_3", num: 28, kind: .question, awaiting: .user, title: "aspen re-pin prunes editor/node_modules — patch-package then fails",
-                               body: "The re-pin step runs `npm ci` in `editor/`, which prunes `node_modules` before `patch-package` has applied the `@cantoo/pdf-lib` patch. The next build then fails on the unpatched module.\n\nTwo options: run `patch-package` as a `postinstall` hook, or move the patch into a fork. I recommend the hook — it is one line in `package.json` and matches how the web app does it.",
+        let item = TrackerItem(id: "it_3", num: 28, kind: .question, awaiting: .user, title: "A clean install drops the local patch — the next build then fails",
+                               body: "The setup step runs `npm ci` in `web/`, which clears `node_modules` before `patch-package` has applied the `example-chart` patch. The next build then fails on the unpatched module.\n\nTwo options: run `patch-package` as a `postinstall` hook, or move the patch into a fork. I recommend the hook — it is one line in `package.json` and matches how the web app does it.",
                                originConvoID: "c1", createdBy: .agent,
                                createdAt: .init(timeIntervalSince1970: 1_770_000_000), updatedAt: .init(timeIntervalSince1970: 1_770_000_000), commentCount: 1)
         let comments = [
             TrackerComment(id: "c1", itemID: "it_3", author: .user, body: "Hook is fine.", createdAt: .init(timeIntervalSince1970: 1_770_000_100)),
         ]
-        let model = ItemDetailView.Model(item: item, comments: comments, pending: [], context: .init(owner: .init(id: "c1", label: "aspen walkthrough")),
+        let model = ItemDetailView.Model(item: item, comments: comments, pending: [], context: .init(owner: .init(id: "c1", label: "build setup")),
                                          availableResolutions: [.answered], isBusy: false)
         let view = ItemDetailView(model: model, draft: .constant(""), image: { _ in nil },
                                   onOpenAttachment: { _ in }, onOpenLink: { _ in }, onOpenConversation: { _ in },
@@ -74,13 +74,13 @@ final class ItemDetailSnapshotTests: XCTestCase {
 
     /// A fenced ASCII diagram renders as ONE code box (no per-line strips,
     /// no gaps between lines), and a GFM table as a table — the two bodies
-    /// that broke in a tracker thread (2026-09-29).
+    /// that once broke in a tracker thread.
     func testCodeDiagramAndTable() {
         let diagram = """
         The proposed layout:
 
         ```
-        ┌ #3778  Save memories ──────────── [Overview | Timeline] ┐
+        ┌ #2240  Save memories ──────────── [Overview | Timeline] ┐
         │ STATUS (17pt, full paragraph)                            │
         ├─────────────────────────────┬────────────────────────────┤
         │ Latest step (large)         │ Needs you (items)          │
@@ -90,13 +90,13 @@ final class ItemDetailSnapshotTests: XCTestCase {
         Two columns above about 900 pt.
         """
         let table = """
-        Done at 07:48 UTC on `production-20260929074753`, for the three approved batches only.
+        Done at 07:48 UTC on `staging`, for the three approved folders only.
 
-        | Batch | Dry run | Real run | Re-check |
+        | Folder | Dry run | Real run | Re-check |
         |---|---|---|---|
-        | 31205 Harlaw | would backfill 72 | backfilled 72, cost re-snapshotted as v3 | nothing to backfill |
-        | 31240 Freemen's | would backfill 96 | backfilled 96, cost re-snapshotted as v3 | nothing to backfill |
-        | 31242 Francis Holland | would backfill 68 | backfilled 68, cost re-snapshotted as v3 | nothing to backfill |
+        | 101 Guides | would resize 72 | resized 72, thumbnails rebuilt as v3 | nothing to resize |
+        | 102 Reference | would resize 96 | resized 96, thumbnails rebuilt as v3 | nothing to resize |
+        | 103 Tutorials | would resize 68 | resized 68, thumbnails rebuilt as v3 | nothing to resize |
 
         0 failed.
         """

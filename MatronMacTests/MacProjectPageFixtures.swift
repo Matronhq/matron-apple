@@ -3,7 +3,7 @@ import Foundation
 @testable import MatronMac
 import MatronModels
 
-/// The "Promo launch" project of mockup 02, at a fixed `now`.
+/// A made-up "Docs site launch" project, at a fixed `now`.
 enum MacProjectPageFixtures {
     static let now = Date(timeIntervalSince1970: 1_800_000_000)
     static func ago(_ s: TimeInterval) -> Date { now.addingTimeInterval(-s) }
@@ -11,7 +11,7 @@ enum MacProjectPageFixtures {
     static func row(_ num: Int, _ title: String, _ status: String?, _ activity: MissionActivity, needsYou: Int = 0,
                     age: TimeInterval) -> MissionRowModel {
         MissionRowModel(mission: Mission(id: "ms_\(num)", num: num, title: title, originConvoID: "c1",
-                                         lastMilestone: MissionLastMilestone(num: num + 1, title: "PR 8601 merged…",
+                                         lastMilestone: MissionLastMilestone(num: num + 1, title: "Search page merged…",
                                                                              kind: .progress, createdAt: ago(86_400)),
                                          status: status, projectID: "pj_1"),
                         activity: activity, needsYouCount: needsYou, lastActivity: ago(age))
@@ -23,77 +23,77 @@ enum MacProjectPageFixtures {
                     createdAt: ago(age + 3_600), updatedAt: ago(age), missionID: "ms_\(mission)", missionNum: mission)
     }
 
-    static let needsYou = [item(8666, "Pricing page PR 8666 — ship with launch?", mission: 4791),
-                           item(8667, "Claims on the homepage copy", mission: 4791),
-                           item(8668, "Cloudflare: page rule for /blog", mission: 4907)]
+    static let needsYou = [item(2301, "Getting-started copy: ship it with the launch?", mission: 2171),
+                           item(2302, "Approve the wording on the home page", mission: 2171),
+                           item(2303, "Which pages does search leave out?", mission: 2173)]
 
     /// Ten items Needs you does not show: more than the fold's eight.
     static let otherItems: [TrackerItem] = [
-        item(8701, "Infra PR 605: blog nginx line", mission: 4791, kind: .task, awaiting: .agent, age: 600),
-        item(8702, "Re-run the R2 redirect check after deploy", mission: 4791, kind: .task, awaiting: .agent, age: 7_200),
-        item(8703, "Keep /proto behind basic auth until launch", mission: 4791, kind: .decision, awaiting: nil, age: 90_000),
-        item(8704, "Smoke-test the sales chat on staging", mission: 4907, kind: .task, awaiting: .agent, age: 300),
-        item(8705, "Launch checklist: DNS TTLs down to 300", mission: 4907, kind: .task, awaiting: .agent, age: 4_000),
-        item(8706, "Fallback date is 13 Oct", mission: 4907, kind: .decision, awaiting: nil, age: 50_000),
-        item(8707, "Post-launch: watch 404s for a day", mission: 4907, kind: .task, awaiting: nil, age: 60_000),
-        item(8708, "Gather the branch's open PRs", mission: 4083, kind: .task, awaiting: .agent, age: 86_400),
-        item(8709, "Report back on merge order", mission: 4083, kind: .task, awaiting: .agent, age: 90_000),
-        item(8710, "Drop the old promo assets", mission: 4083, kind: .task, awaiting: nil, age: 100_000),
+        item(2311, "Add the changelog to the search index", mission: 2171, kind: .task, awaiting: .agent, age: 600),
+        item(2312, "Re-check the old links after the switch-over", mission: 2171, kind: .task, awaiting: .agent, age: 7_200),
+        item(2313, "Keep the new site on staging until launch", mission: 2171, kind: .decision, awaiting: nil, age: 90_000),
+        item(2314, "Try search on a phone before launch", mission: 2173, kind: .task, awaiting: .agent, age: 300),
+        item(2315, "Launch checklist: check every redirect", mission: 2173, kind: .task, awaiting: .agent, age: 4_000),
+        item(2316, "A second launch day is set aside", mission: 2173, kind: .decision, awaiting: nil, age: 50_000),
+        item(2317, "After launch: watch for broken links for a day", mission: 2173, kind: .task, awaiting: nil, age: 60_000),
+        item(2318, "List the pages still to move", mission: 2172, kind: .task, awaiting: .agent, age: 86_400),
+        item(2319, "Report back on what is left", mission: 2172, kind: .task, awaiting: .agent, age: 90_000),
+        item(2320, "Delete the old page images", mission: 2172, kind: .task, awaiting: nil, age: 100_000),
     ]
 
     /// The current project — open, so it is one of its own "Move to…" targets
     /// (`ProjectDetailViewModel.rebuild()`: `moveTargets` is every open
     /// project, not gated the way `mergeTargets`/`unfiledMissions` are).
-    static let project = Project(id: "pj_1", num: 4000, title: "Promo launch",
-                                 body: "New promo site, blog, pricing page and sales chat, launched from promo/integration.",
-                                 status: "Launch Wed 7 Oct, 07:00 (fallback 13 Oct; checkpoint Sun 4 Oct 18:00). The branch meets the launch gate.",
+    static let project = Project(id: "pj_1", num: 2100, title: "Docs site launch",
+                                 body: "A new docs site with search, a getting-started guide and faster pages.",
+                                 status: "Launch on Wednesday at 07:00, after a rehearsal on Monday. Search works on staging and pages load in under a second.",
                                  statusBy: .agent, statusUpdatedAt: ago(660),
                                  missions: ProjectMissionCounts(running: 2, waiting: 2, idle: 1), needsYou: 6, openItems: 43)
-    static let otherOpenProject = Project(id: "pj_2", num: 4001, title: "Matron apps")
+    static let otherOpenProject = Project(id: "pj_2", num: 2101, title: "Matron apps")
 
     static let page = ProjectPageModel(
         project: project,
         missions: [
-            row(4791, "Promo branch: /proto design at the base URLs",
-                "R2 redirect test done on 328 addresses; infra PR 605 needs the blog nginx line.", .waiting, needsYou: 2, age: 660),
-            row(4907, "Launch day: Wed 7 Oct 07:00", "Branch green at b6794bffa8; S7 confirmed.", .running, age: 660),
-            row(4083, "Combined promo branch: gather and report", nil, .idle, age: 86_400),
+            row(2171, "Search on the docs site: the index and the results page",
+                "Search works on staging; the changelog is not in the index yet.", .waiting, needsYou: 2, age: 660),
+            row(2173, "Launch day: rehearsal, then the switch-over", "Staging is green; the rehearsal is booked.", .running, age: 660),
+            row(2172, "Move the old pages across: list and report", nil, .idle, age: 86_400),
         ],
         needsYou: needsYou,
         openItems: needsYou + otherItems,
         recentMilestones: [
-            Milestone(id: "ml_1", missionID: "ms_4907", num: 9001, kind: .progress,
-                      title: "S7 confirmed: no Cloudflare rule caches HTML", convoID: "c1", seq: 1, createdAt: ago(660)),
-            Milestone(id: "ml_2", missionID: "ms_4907", num: 9002, kind: .userInput,
-                      title: "Alice chose Wed 7 Oct, 07:00, fallback 13 Oct", convoID: "c1", seq: 2, createdAt: ago(13 * 3_600)),
+            Milestone(id: "ml_1", missionID: "ms_2173", num: 2401, kind: .progress,
+                      title: "Every page loads in under a second on staging", convoID: "c1", seq: 1, createdAt: ago(660)),
+            Milestone(id: "ml_2", missionID: "ms_2173", num: 2402, kind: .userInput,
+                      title: "Alice chose a Wednesday morning launch", convoID: "c1", seq: 2, createdAt: ago(13 * 3_600)),
         ],
-        missionNums: ["ms_4791": 4791, "ms_4907": 4907, "ms_4083": 4083],
-        sessionsByBox: ["slate": 2, "pat": 1, "lab-mac": 1, "reef": 1, "aspen": 1],
+        missionNums: ["ms_2171": 2171, "ms_2173": 2173, "ms_2172": 2172],
+        sessionsByBox: ["slate": 2, "box-a": 1, "lab-mac": 1, "reef": 1, "aspen": 1],
         sessionsByMission: [
-            "ms_4907": [
-                DashboardSession(id: "c-g", title: "sales-chat", state: .running, lastActivity: ago(120),
+            "ms_2173": [
+                DashboardSession(id: "c-g", title: "search page", state: .running, lastActivity: ago(120),
                                  tag: SessionTagInputs(boxLetter: "S", boxName: "slate", sessionShort: "13"),
                                  model: "opus", context: SessionStatus.Context(tokens: 265_000, window: 1_000_000, pct: 27)),
-                DashboardSession(id: "c-d", title: "Cloudflare", state: .running, lastActivity: ago(600),
+                DashboardSession(id: "c-d", title: "redirects", state: .running, lastActivity: ago(600),
                                  tag: SessionTagInputs(boxLetter: "L", boxName: "lab-mac", sessionShort: "16"),
                                  model: "sonnet", context: SessionStatus.Context(tokens: 88_000, window: 200_000, pct: 44)),
                 DashboardSession(id: "c-x", title: "old", state: .done, boxName: "aspen"),
             ],
-            "ms_4791": [
-                DashboardSession(id: "c-p", title: "promo/integration owner", state: .waiting, lastActivity: ago(660),
-                                 tag: SessionTagInputs(boxLetter: "P", boxName: "pat", sessionShort: "ad"),
+            "ms_2171": [
+                DashboardSession(id: "c-p", title: "docs-site owner", state: .waiting, lastActivity: ago(660),
+                                 tag: SessionTagInputs(boxLetter: "B", boxName: "box-a", sessionShort: "ad"),
                                  model: "opus", context: SessionStatus.Context(tokens: 912_000, window: 1_000_000, pct: 91),
                                  isStalled: true),
-                DashboardSession(id: "c-g2", title: "blog migration", state: .waiting, lastActivity: ago(3_000),
+                DashboardSession(id: "c-g2", title: "page migration", state: .waiting, lastActivity: ago(3_000),
                                  tag: SessionTagInputs(boxLetter: "S", boxName: "slate", sessionShort: "2f"), model: "opus"),
-                DashboardSession(id: "c-g", title: "sales-chat", state: .running, lastActivity: ago(120),
+                DashboardSession(id: "c-g", title: "search page", state: .running, lastActivity: ago(120),
                                  tag: SessionTagInputs(boxLetter: "S", boxName: "slate", sessionShort: "13"),
                                  model: "opus", context: SessionStatus.Context(tokens: 265_000, window: 1_000_000, pct: 27)),
             ],
         ],
         mergeTargets: [otherOpenProject],
         moveTargets: [project, otherOpenProject],
-        unfiledMissions: [Mission(id: "ms_5148", num: 5148, title: "Convert to editor v2", originConvoID: "c1")])
+        unfiledMissions: [Mission(id: "ms_2190", num: 2190, title: "Translate the docs", originConvoID: "c1")])
 
     // MARK: Projects view v2 roll-up
 
@@ -108,18 +108,18 @@ enum MacProjectPageFixtures {
 
     /// Newest first: an answered question, decisions, a reversed one.
     static let decisions = ProjectFeedPage(total: 23, rows: [
-        decision(8690, "Approve the sales chat for launch: answers questions about plans and billing, hands off to support",
-                 mission: 2407, age: 11 * 3_600, kind: .question, answer: "Yes, ship it with the chat on. Support answers from 9 to 5."),
-        decision(8691, "Home \"How it works\": 2 single beats + 2 swipeable groups, smaller shots, phone browser bar",
-                 mission: 2407, age: 3 * 86_400),
-        decision(8692, "Home: product screenshots show the Blue theme as the app renders it, not the hero's navy",
-                 mission: 2407, age: 3 * 86_400 + 600),
-        decision(8693, "Launch date: Wed 7 Oct at 07:00, or wait for the blog?", mission: 4907, age: 4 * 86_400,
-                 kind: .question, answer: "7 Oct. The blog can follow."),
-        decision(8694, "/contacts redirects to /product", mission: 4791, age: 4 * 86_400 + 900, resolution: .reversed),
-        decision(8695, "/contacts redirects to /about#contact", mission: 4791, age: 4 * 86_400 + 600, resolution: .decided),
-        decision(8696, "Stories links held back: /case-studies is placeholder content", mission: 4791, age: 5 * 86_400),
-    ], nextBefore: "1799500000000:it_8696")
+        decision(2331, "Approve the search results page: titles, a short extract, and the section each page is in",
+                 mission: 2160, age: 11 * 3_600, kind: .question, answer: "Yes, ship it. Put the section first."),
+        decision(2332, "Home \"How it works\": 2 single steps + 2 swipeable groups, smaller shots, phone browser bar",
+                 mission: 2160, age: 3 * 86_400),
+        decision(2333, "Home: screenshots show the light theme as the app renders it, not the hero's navy",
+                 mission: 2160, age: 3 * 86_400 + 600),
+        decision(2334, "Launch on Wednesday morning, or wait for the changelog?", mission: 2173, age: 4 * 86_400,
+                 kind: .question, answer: "Wednesday. The changelog can follow."),
+        decision(2335, "/help redirects to /start", mission: 2171, age: 4 * 86_400 + 900, resolution: .reversed),
+        decision(2336, "/help redirects to /guide#help", mission: 2171, age: 4 * 86_400 + 600, resolution: .decided),
+        decision(2337, "Examples links held back: those pages are still placeholders", mission: 2171, age: 5 * 86_400),
+    ], nextBefore: "1799500000000:it_2337")
 
     static func file(_ blob: String, _ name: String, _ type: String, _ source: ProjectFileSource,
                      age: TimeInterval) -> ProjectFile {
@@ -127,11 +127,11 @@ enum MacProjectPageFixtures {
     }
 
     static let files = ProjectFeedPage(total: 37, rows: [
-        file("b1", "Pricing page, desktop.png", "image/png", .item(num: 5008), age: 86_400),
-        file("b2", "Pricing page, phone.png", "image/png", .item(num: 5008), age: 90_000),
-        file("b3", "Claims list for sign-off.pdf", "application/pdf", .item(num: 5090), age: 2 * 86_400),
-        file("b4", "How it works, 4 beats.png", "image/png", .chat(convoID: "c-reef", seq: 812), age: 5 * 86_400),
-        file("b5", "Hero: slate flat-lay.jpg", "image/jpeg", .item(num: 2915), age: 6 * 86_400),
+        file("b1", "Search results, desktop.png", "image/png", .item(num: 2301), age: 86_400),
+        file("b2", "Search results, phone.png", "image/png", .item(num: 2301), age: 90_000),
+        file("b3", "Home page wording for sign-off.pdf", "application/pdf", .item(num: 2302), age: 2 * 86_400),
+        file("b4", "How it works, 4 steps.png", "image/png", .chat(convoID: "c-reef", seq: 812), age: 5 * 86_400),
+        file("b5", "Hero: guide on a desk.jpg", "image/jpeg", .item(num: 2338), age: 6 * 86_400),
         file("b6", "Launch checklist.csv", "text/csv", .chat(convoID: "c-reef", seq: 640), age: 6 * 86_400 + 600),
     ], nextBefore: "1799400000000:b6")
 
@@ -144,30 +144,30 @@ enum MacProjectPageFixtures {
 
     /// Two days: this morning, and yesterday evening. (`now` is 08:00 UTC.)
     static let milestones = ProjectFeedPage(total: 151, rows: [
-        milestone(9101, "Thu 1 Oct sweep: branch complete and green; only Alice's two approvals gate the Sunday checkpoint",
-                  mission: 4907, age: 6 * 60),
-        milestone(9100, "Branch complete and green with the chat merged: a2e29634ef, CI, review, zero threads, mergeable",
-                  mission: 4907, age: 10 * 3_600 + 56 * 60),
-        milestone(9099, "Head a2e29634ef green on all six CI jobs and review: the sales chat is on the branch",
-                  mission: 4791, age: 10 * 3_600 + 57 * 60),
-        milestone(9098, "Batch 4 pushed: the sales chat (PR 8560) and a fourth master merge are on promo/integration",
-                  mission: 4791, age: 12 * 3_600 + 12 * 60),
-        milestone(9097, "Alice: the chat answers plans and billing only; anything about a specific account goes to support",
-                  mission: 2407, age: 14 * 3_600 + 58 * 60, kind: .userInput),
-    ], nextBefore: "1799946000000:ml_9097")
+        milestone(2405, "Morning check: staging is green; only Alice's two approvals come before Monday's rehearsal",
+                  mission: 2173, age: 6 * 60),
+        milestone(2404, "Search page merged: tests, review and the staging check all pass",
+                  mission: 2173, age: 10 * 3_600 + 56 * 60),
+        milestone(2403, "The search index now covers every guide page",
+                  mission: 2171, age: 10 * 3_600 + 57 * 60),
+        milestone(2402, "The results page shows the section each page is in",
+                  mission: 2171, age: 12 * 3_600 + 12 * 60),
+        milestone(2401, "Alice: search covers the guides and the reference; the blog stays out",
+                  mission: 2160, age: 14 * 3_600 + 58 * 60, kind: .userInput),
+    ], nextBefore: "1799946000000:ml_2401")
 
     /// `page` as a journal with the roll-up sends it, one closed mission
     /// in the fold.
     static var pageWithFeed: ProjectPageModel {
         var page = page
-        page.project = Project(id: project.id, num: project.num, title: "Promo site launch on 7 Oct",
-                               body: "Done when the new promo site is live on example.com and the launch checklist is complete. Launch needs your go on the day; fallback 13 Oct.",
-                               status: "On track for Wed 7 Oct, 07:00 (fallback Tue 13 Oct). The branch is complete and green with the sales chat merged; Cloudflare and ship-box are briefed for Monday's rehearsal. Your approvals of the pricing page and the site's claims gate Sunday's 18:00 checkpoint; the final master merge and the go-ahead question follow on Tuesday.",
+        page.project = Project(id: project.id, num: project.num, title: "Docs site launch on Wednesday",
+                               body: "Done when the new docs site is live on example.com and the launch checklist is complete. Launch needs your go on the day; a second day is set aside.",
+                               status: "On track for Wednesday at 07:00. Search works on staging, pages load in under a second, and the getting-started guide is drafted. Your approvals of the guide's copy and the home page wording come before Monday's rehearsal; the go-ahead question follows on Tuesday.",
                                statusBy: .agent, statusUpdatedAt: ago(1_200),
                                missions: ProjectMissionCounts(running: 2, waiting: 2, idle: 1, closed: 1), needsYou: 3,
                                openItems: 13, lastActivityAt: ago(6 * 60))
-        page.closedMissions = [Mission(id: "ms_1758", num: 1758, state: .closed, title: "Reword the trial-length copy",
-                                       closeSummary: "Shipped in PR 8420.", originConvoID: "c1", closedAt: ago(9 * 86_400))]
+        page.closedMissions = [Mission(id: "ms_2150", num: 2150, state: .closed, title: "Fix the broken anchor links",
+                                       closeSummary: "Fixed and checked on staging.", originConvoID: "c1", closedAt: ago(9 * 86_400))]
         page.decisions = decisions
         page.files = files
         page.milestonesPage = milestones

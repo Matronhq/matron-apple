@@ -32,8 +32,8 @@ final class RecentStartFoldersTests: XCTestCase {
     @MainActor
     func test_record_thenMatch_returnsRecordedFolder() {
         let store = makeStore()
-        store.record("~/yearly-app")
-        XCTAssertEqual(store.matches(prefix: "~/y"), ["~/yearly-app"])
+        store.record("~/acme-app")
+        XCTAssertEqual(store.matches(prefix: "~/a"), ["~/acme-app"])
     }
 
     @MainActor

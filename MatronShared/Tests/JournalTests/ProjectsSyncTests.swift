@@ -339,9 +339,9 @@ final class ProjectsSyncTests: XCTestCase {
     func testWritesLandInTheStore() async throws {
         let api = FakeProjects()
         let (sync, store, _, _) = try make(api: api)
-        let created = try await sync.createProject(title: "Promo", body: nil)
+        let created = try await sync.createProject(title: "Docs", body: nil)
         XCTAssertEqual(created.id, "pj_new")
-        XCTAssertEqual(try store.project(id: "pj_new")?.title, "Promo")
+        XCTAssertEqual(try store.project(id: "pj_new")?.title, "Docs")
         XCTAssertFalse(api.created[0].2.isEmpty, "an idempotency key is always sent")
         let filed = try await sync.setMissionProject(missionID: "ms_1", project: "pj_new")
         XCTAssertEqual(filed.projectID, "pj_new")

@@ -1,7 +1,7 @@
 import SwiftUI
 import MatronModels
 
-/// "P:ad pat · waiting   A:13 box-a · running  +1 more  +2 rooms" — a
+/// "B:ad box-b · waiting   A:13 box-a · running  +1 more  +2 rooms" — a
 /// mission row's sessions on the project page (spec §2: "2 session
 /// chips"), then its agent-chat rooms as a count (they never take a chip).
 public struct SessionChipLine: View {

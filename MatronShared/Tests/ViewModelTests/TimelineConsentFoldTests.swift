@@ -245,7 +245,7 @@ final class TimelineConsentFoldTests: XCTestCase {
     private func peopleCard(_ seq: Int, kind: String = "person_room", direction: String = "in",
                             id: String = "pr_1") -> TimelineItem {
         var payload: [String: Any] = ["kind": kind, "direction": direction, "person": ["name": "alice"],
-                                      "topic": "the cover editor"]
+                                      "topic": "the theme editor"]
         switch kind {
         case "contact_request": payload["contact_id"] = id
         case "mission_share": payload["grant_id"] = id

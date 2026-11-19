@@ -172,16 +172,16 @@ final class MissionModelTests: XCTestCase {
     /// an entry without its identity is dropped, the rest kept.
     func testMissionConversationDecodesOtherMissions() throws {
         let c = try XCTUnwrap(MissionConversation(json: [
-            "id": "c1", "title": "promo/integration owner", "state": "running",
+            "id": "c1", "title": "docs-site owner", "state": "running",
             "other_missions": [
-                ["id": "ms_4791", "num": 4791, "title": "Promo branch", "current": true, "active": true,
+                ["id": "ms_2171", "num": 2171, "title": "Docs search", "current": true, "active": true,
                  "joined_at": 1_700_000_001_000],
-                ["id": "ms_4083", "num": 4083, "title": "Combined promo branch", "current": false, "active": false,
+                ["id": "ms_2172", "num": 2172, "title": "Move the old pages", "current": false, "active": false,
                  "joined_at": 1_700_000_000_000, "ended_at": 1_700_000_002_000],
                 ["title": "no id"],
             ],
         ]))
-        XCTAssertEqual(c.otherMissions.map(\.num), [4791, 4083])
+        XCTAssertEqual(c.otherMissions.map(\.num), [2171, 2172])
         XCTAssertTrue(c.otherMissions[0].isCurrent); XCTAssertTrue(c.otherMissions[0].isActive)
         XCTAssertFalse(c.otherMissions[1].isActive)
         XCTAssertEqual(c.otherMissions[1].endedAt, Date(timeIntervalSince1970: 1_700_000_002))
@@ -199,18 +199,18 @@ final class MissionModelTests: XCTestCase {
         XCTAssertNil(try XCTUnwrap(Mission(json: json)).name)
         json["name"] = ""
         XCTAssertNil(try XCTUnwrap(Mission(json: json)).name, "empty reads as none")
-        json["name"] = "Promo launch"
-        XCTAssertEqual(try XCTUnwrap(Mission(json: json)).name, "Promo launch")
+        json["name"] = "Docs site launch"
+        XCTAssertEqual(try XCTUnwrap(Mission(json: json)).name, "Docs site launch")
     }
 
     func testMissionConversationDecodesAutoTitleAndSplitsTheShort() throws {
         let named = try XCTUnwrap(MissionConversation(json: [
-            "id": "c1", "title": "[b5] Promo launch", "auto_title": "[b5] Fix the promo base URLs", "state": "running",
+            "id": "c1", "title": "[b5] Docs site launch", "auto_title": "[b5] Fix the docs base URLs", "state": "running",
         ]))
-        XCTAssertEqual(named.autoTitle, "[b5] Fix the promo base URLs")
+        XCTAssertEqual(named.autoTitle, "[b5] Fix the docs base URLs")
         XCTAssertEqual(named.sessionShort, "b5")
-        XCTAssertEqual(named.displayTitle, "Promo launch")
-        XCTAssertEqual(named.displayAutoTitle, "Fix the promo base URLs")
+        XCTAssertEqual(named.displayTitle, "Docs site launch")
+        XCTAssertEqual(named.displayAutoTitle, "Fix the docs base URLs")
 
         let same = try XCTUnwrap(MissionConversation(json: [
             "id": "c2", "title": "🐣 [ab] Topic", "auto_title": "🐣 [ab] Topic", "state": "idle",
@@ -228,9 +228,9 @@ final class MissionModelTests: XCTestCase {
     /// says — and falls back to the title when there is no topic.
     func testMissionRowTitleIsTheTopicElseTheTitle() throws {
         let named = try XCTUnwrap(MissionConversation(json: [
-            "id": "c1", "title": "[b5] Promo launch", "auto_title": "[b5] Fix the promo base URLs", "state": "running",
+            "id": "c1", "title": "[b5] Docs site launch", "auto_title": "[b5] Fix the docs base URLs", "state": "running",
         ]))
-        XCTAssertEqual(named.missionRowTitle, "Fix the promo base URLs")
+        XCTAssertEqual(named.missionRowTitle, "Fix the docs base URLs")
 
         let same = try XCTUnwrap(MissionConversation(json: [
             "id": "c2", "title": "🐣 [ab] Topic", "auto_title": "🐣 [ab] Topic", "state": "idle",
@@ -241,9 +241,9 @@ final class MissionModelTests: XCTestCase {
         XCTAssertEqual(noTopic.missionRowTitle, "Older chat")
 
         let blankTopic = try XCTUnwrap(MissionConversation(json: [
-            "id": "c4", "title": "[ef] Promo launch", "auto_title": "", "state": "idle",
+            "id": "c4", "title": "[ef] Docs site launch", "auto_title": "", "state": "idle",
         ]))
-        XCTAssertEqual(blankTopic.missionRowTitle, "Promo launch", "an empty topic is no topic")
+        XCTAssertEqual(blankTopic.missionRowTitle, "Docs site launch", "an empty topic is no topic")
 
         let untitled = try XCTUnwrap(MissionConversation(json: ["id": "c5", "title": "", "state": "idle"]))
         XCTAssertEqual(untitled.missionRowTitle, "c5")

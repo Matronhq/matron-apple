@@ -64,11 +64,11 @@ final class ProjectFeedFormatTests: XCTestCase {
     }
 
     func testFeedCount() {
-        XCTAssertEqual(ProjectFeedFormat.feedCount(total: 23, missionNums: [2407, 2407, 4907, nil, 4791], complete: true),
+        XCTAssertEqual(ProjectFeedFormat.feedCount(total: 23, missionNums: [2160, 2160, 2173, nil, 2171], complete: true),
                        "23 across 3 missions")
-        XCTAssertEqual(ProjectFeedFormat.feedCount(total: 23, missionNums: [2407, 4907], complete: false),
+        XCTAssertEqual(ProjectFeedFormat.feedCount(total: 23, missionNums: [2160, 2173], complete: false),
                        "23 across 2+ missions", "more pages may name more missions")
-        XCTAssertEqual(ProjectFeedFormat.feedCount(total: 1, missionNums: [2407], complete: true), "1 across 1 mission")
+        XCTAssertEqual(ProjectFeedFormat.feedCount(total: 1, missionNums: [2160], complete: true), "1 across 1 mission")
         XCTAssertEqual(ProjectFeedFormat.feedCount(total: 4, missionNums: [nil], complete: true), "4")
     }
 

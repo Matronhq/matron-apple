@@ -7,7 +7,7 @@ import MatronEvents
 /// draws a link with nothing behind it.
 final class PersonConsentRequestCardTests: XCTestCase {
     private let talk = PersonConsentCard(kind: .personRoom, direction: .incoming, personName: "alice",
-                                         askID: "pr_1", topic: "the cover editor", talk: true)
+                                         askID: "pr_1", topic: "the theme editor", talk: true)
 
     func testAnOpenMirrorIsALinkToAnswerIt() {
         XCTAssertEqual(PersonConsentRequestCard.footer(for: talk.withMirror(.open(itemID: "it_1")), canOpen: true),
@@ -30,6 +30,6 @@ final class PersonConsentRequestCardTests: XCTestCase {
 
     func testTheSummaryCarriesWhoWhichWayAndTopic() {
         XCTAssertEqual(PersonConsentRequestCard.accessibilitySummary(for: talk),
-                       "Talk request. alice's agent wants to talk. About: the cover editor.")
+                       "Talk request. alice's agent wants to talk. About: the theme editor.")
     }
 }

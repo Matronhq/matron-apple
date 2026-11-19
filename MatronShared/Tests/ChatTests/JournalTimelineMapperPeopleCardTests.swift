@@ -33,13 +33,13 @@ final class JournalTimelineMapperPeopleCardTests: XCTestCase {
             ["kind": "contact_request", "direction": "out", "contact_id": "ct_2", "peer": ["name": "bob"],
              "from_device_id": 3, "from_name": "box-a"],
             ["kind": "mission_share", "direction": "in", "grant_id": "gr_1",
-             "owner": ["name": "alice"], "grantee": ["name": "bob"], "mission": ["title": "Cover editor"]],
+             "owner": ["name": "alice"], "grantee": ["name": "bob"], "mission": ["title": "Theme editor"]],
             ["kind": "session_share", "direction": "out", "session_share_id": "ss_1",
              "person": ["name": "bob"], "session_title": "release notes"],
             ["kind": "person_room", "direction": "in", "room_link_id": "pr_1",
-             "person": ["name": "alice"], "topic": "the cover editor"],
+             "person": ["name": "alice"], "topic": "the theme editor"],
             ["kind": "person_room", "direction": "in", "room_link_id": "pr_2", "talk": true,
-             "person": ["name": "alice"], "topic": "the cover editor", "session_title": NSNull(),
+             "person": ["name": "alice"], "topic": "the theme editor", "session_title": NSNull(),
              "contact_pending": true, "choices": ["New session", "Decline"]],
         ]
         for payload in payloads {
@@ -54,7 +54,7 @@ final class JournalTimelineMapperPeopleCardTests: XCTestCase {
     func testTheCardKeepsItsSeqAsEventID() {
         guard let (eventID, card) = peopleCard(map([
             "kind": "person_room", "direction": "in", "room_link_id": "pr_1", "talk": true,
-            "person": ["name": "alice"], "topic": "the cover editor",
+            "person": ["name": "alice"], "topic": "the theme editor",
         ], seq: 77)) else { return }
         XCTAssertEqual(eventID, "77")
         XCTAssertTrue(card.talk)
