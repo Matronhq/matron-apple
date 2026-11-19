@@ -144,11 +144,13 @@ public final class ItemDetailViewModel {
                 queuedCards: (any QueuedRepliesReading)? = nil, queuedRelease: (any QueuedReplySending)? = nil,
                 contextStore: (any ItemContextReading)? = nil,
                 refreshMission: (@Sendable (String) async -> Void)? = nil,
+                sessionLiveness: (any SessionStateLiveness)? = nil,
                 now: @escaping @Sendable () -> Date = { Date() }) {
         self.itemID = itemID; self.store = store; self.api = api; self.sync = sync
         self.events = events; self.agentSpawn = agentSpawn; self.seen = seen
         self.queuedCards = queuedCards; self.queuedRelease = queuedRelease
         self.contextStore = contextStore; self.refreshMission = refreshMission
+        self.sessionLiveness = sessionLiveness
         self.now = now
     }
 
@@ -254,9 +256,18 @@ public final class ItemDetailViewModel {
     private func subscribeOwner(_ convoID: String) {
         ownerTask?.cancel(); ownerTask = nil
         ownerSessionTask?.cancel(); ownerSessionTask = nil
+        ownerLivenessTask?.cancel(); ownerLivenessTask = nil
         ownerSessionState = nil
+        ownerStateLive = sessionLiveness == nil
         guard let contextStore, !convoID.isEmpty else { return }
         let itemID = itemID
+        if let sessionLiveness {
+            ownerLivenessTask = Task { [weak self] in
+                let live = await sessionLiveness.followsSessionStateLive(convoID: convoID)
+                guard let self, !Task.isCancelled, self.contextOriginID == convoID else { return }
+                if self.ownerStateLive != live { self.ownerStateLive = live }
+            }
+        }
         ownerSessionTask = Task { [weak self] in
             for await state in contextStore.sessionStateStream(convoID: convoID) {
                 guard let self, !Task.isCancelled else { return }
@@ -323,8 +334,11 @@ public final class ItemDetailViewModel {
         // once it has seen the turn end, the copy is stale, and the refetch
         // that event started will say so. A device without the
         // conversation waits for the opening read before it claims any
-        // work at all.
-        if ownerConvoID == item.originConvoID, ownerState.exists, let ownerSessionState {
+        // work at all. So does one whose stored state is not kept current
+        // (a phone on "For you only" hears no other session's turns start
+        // or end): there the journal's copy is the fresher of the two, and
+        // the re-read in `start()` keeps it so.
+        if ownerStateLive, ownerConvoID == item.originConvoID, ownerState.exists, let ownerSessionState {
             return ownerSessionState == "running" ? .working : nil
         }
         return loadedCommentCount != nil ? .working : nil
@@ -348,6 +362,13 @@ public final class ItemDetailViewModel {
     /// its stream has delivered.
     private var ownerSessionState: String?
     private var ownerSessionTask: Task<Void, Never>?
+    /// Whether `ownerSessionState` follows the journal as it changes
+    /// (`SessionStateLiveness`). `false` until the answer arrives, so a
+    /// stale state never hides the journal's copy in between; always
+    /// `true` without a source to ask.
+    private var ownerStateLive = true
+    private let sessionLiveness: (any SessionStateLiveness)?
+    private var ownerLivenessTask: Task<Void, Never>?
     /// Counts `queued` states that have run out, so `workingIndicator`
     /// is read again when one does.
     private var workingLapses = 0
@@ -884,6 +905,7 @@ public final class ItemDetailViewModel {
         contextTask?.cancel(); contextTask = nil
         ownerTask?.cancel(); ownerTask = nil
         ownerSessionTask?.cancel(); ownerSessionTask = nil; ownerSessionState = nil
+        ownerLivenessTask?.cancel(); ownerLivenessTask = nil
         workingLapseTask?.cancel(); workingLapseTask = nil; workingLapseDate = nil
         contextSubscribed = false; contextOriginID = nil
         commentConvosTask?.cancel(); commentConvosTask = nil; commentConvoIDs = []

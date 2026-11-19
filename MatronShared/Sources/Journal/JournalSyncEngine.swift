@@ -959,6 +959,20 @@ public actor JournalSyncEngine {
         await sendViewing()
     }
 
+    /// Whether this device's stored `session_state` for `convoID` follows
+    /// the journal as it changes. On `everything` the socket carries every
+    /// conversation's `session_status`. On `forYou` it carries only the
+    /// Coordinator conversation's (protocol "Sync scope"); any other
+    /// conversation's state is whatever the last `/snapshot` said, which
+    /// may be long out of date. A chat on screen is left out too: its
+    /// socket carries what changes from now on, but the state it opened
+    /// with came from that same snapshot.
+    public func followsSessionStateLive(convoID: String) -> Bool {
+        guard syncScope == .forYou else { return true }
+        if case .snapshot(let coordinator)? = lastCoordinatorSnapshot, coordinator == convoID { return true }
+        return false
+    }
+
     // MARK: Sync scope
 
     /// Switches this device's sync scope and reconnects under it.

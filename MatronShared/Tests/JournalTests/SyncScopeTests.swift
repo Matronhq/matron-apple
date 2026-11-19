@@ -474,6 +474,32 @@ final class SyncScopeEngineTests: XCTestCase {
         await engine.endSync()
     }
 
+    /// On "For you only" the socket carries `session_status` for the
+    /// Coordinator conversation and no other, so only its stored state is
+    /// live. On "Everything" every conversation's is.
+    func testOnlyTheCoordinatorsSessionStateIsLiveOnForYou() async throws {
+        let socket = FakeWebSocketConnection()
+        let store = try seededStore(cursor: 10)
+        let engine = JournalSyncEngine(api: stubbedAPI(), store: store, connector: FakeConnector([socket]), token: "t",
+                                       ownSender: "user:alice", search: nil, backoffBaseSeconds: 0.01,
+                                       syncScope: .forYou)
+        socket.serve(#"{"kind":"control","op":"hello_ok","seq":10,"sync":"for_you","coordinator_convo_id":"c-coord"}"#)
+        socket.serve(#"{"kind":"control","op":"cursor","seq":10}"#)
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        let coordinator = await engine.followsSessionStateLive(convoID: "c-coord")
+        let other = await engine.followsSessionStateLive(convoID: "c1")
+        XCTAssertTrue(coordinator)
+        XCTAssertFalse(other)
+        await engine.endSync()
+
+        let everything = JournalSyncEngine(api: stubbedAPI(), store: try seededStore(cursor: 10),
+                                           connector: FakeConnector([]), token: "t", ownSender: "user:alice",
+                                           search: nil, syncScope: .everything)
+        let live = await everything.followsSessionStateLive(convoID: "c1")
+        XCTAssertTrue(live)
+    }
+
     func testSwitchingBackToEverythingRebuildsTheMirror() async throws {
         let first = FakeWebSocketConnection()
         let second = FakeWebSocketConnection()

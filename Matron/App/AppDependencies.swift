@@ -556,7 +556,10 @@ final class AppDependencies {
                                    // a mission this device lacks is fetched once so the row can
                                    // name it.
                                    contextStore: c.store,
-                                   refreshMission: { [missions = c.missions] id in await missions.refreshMission(id: id) })
+                                   refreshMission: { [missions = c.missions] id in await missions.refreshMission(id: id) },
+                                   // Whether the owner's stored session state is
+                                   // live: on "For you only" only the Coordinator's is.
+                                   sessionLiveness: c.engine)
         vm.approvalSigner = approvalSigner(for: session)
         return vm
     }
