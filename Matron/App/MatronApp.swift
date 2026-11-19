@@ -232,6 +232,15 @@ struct MatronApp: App {
             // front decides when the app lock's idle countdown starts.
             .onChange(of: scenePhase, initial: true) { _, phase in
                 CarPlayLink.shared.phoneInFront = phase != .background
+                // Main-thread stalls of 250 ms or more go to the unified log
+                // (subsystem `chat.matron`, category `main-stall`), as on the
+                // Mac. Only while the app is on screen: the monitor's 10 Hz
+                // ping has no business waking a phone in the background.
+                if phase == .active {
+                    MainThreadStallMonitor.shared.start()
+                } else {
+                    MainThreadStallMonitor.shared.stop()
+                }
             }
             .onChange(of: scenePhase) { _, phase in
                 // App level, so the sign-in screen gets it too: a fresh-login

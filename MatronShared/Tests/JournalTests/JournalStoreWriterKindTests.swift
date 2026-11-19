@@ -54,6 +54,20 @@ final class JournalStoreWriterKindTests: XCTestCase {
         for _ in 0..<6 { release.signal() }
     }
 
+    /// The iPhone opens a pool unless `store.pool` says otherwise; the Mac
+    /// keeps a queue until its switch is turned on.
+    func testThePoolSettingFallsBackToEachAppsDefaultOnlyWhenUnset() throws {
+        let suite = "store-pool-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertTrue(JournalStore.usesPool(defaults, default: true))
+        XCTAssertFalse(JournalStore.usesPool(defaults, default: false))
+        defaults.set(false, forKey: JournalStore.poolFlagKey)
+        XCTAssertFalse(JournalStore.usesPool(defaults, default: true), "turned off by hand")
+        defaults.set(true, forKey: JournalStore.poolFlagKey)
+        XCTAssertTrue(JournalStore.usesPool(defaults, default: false), "turned on by hand")
+    }
+
     func testThePoolFlagKeyMatchesTheLaunchArgument() {
         // The rig passes `-store.pool YES`; the apps read this key.
         XCTAssertEqual(JournalStore.poolFlagKey, "store.pool")

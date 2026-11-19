@@ -269,11 +269,13 @@ final class AppDependencies {
                              accountLocks: { [accountLock] lock in accountLock.note(lock: lock) })
         let dbURL = journalDirectory.appendingPathComponent("\(session.userID).sqlite")
         LaunchTimeline.shared.beginStoreOpen()
-        // `store.pool` (off by default; `-store.pool YES`) opens the mirror
-        // as a `DatabasePool`, so reads stop waiting behind sync writes.
+        // The mirror opens as a `DatabasePool`, so reads stop waiting
+        // behind sync writes and behind each other: on a queue, Settings'
+        // storage count held a main-thread read for seconds. `store.pool`
+        // (`-store.pool NO`) can still turn it off.
         let store = try! JournalStore(
             databaseURL: dbURL, ownSender: "user:\(session.userID)",
-            usesPool: UserDefaults.standard.bool(forKey: JournalStore.poolFlagKey))
+            usesPool: JournalStore.usesPool(UserDefaults.standard, default: true))
         LaunchTimeline.shared.endStoreOpen()
         // Un-gated, like MainThreadStallMonitor: a once-a-minute line per
         // store observation and hot write (category `store-observation`).
