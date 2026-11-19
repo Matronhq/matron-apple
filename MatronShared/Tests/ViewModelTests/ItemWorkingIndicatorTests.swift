@@ -302,15 +302,39 @@ final class ItemWorkingIndicatorTests: XCTestCase {
         vm.stop()
     }
 
+    /// The owner stops being followed live while the page is open (the
+    /// Coordinator role moved, or the device switched to For you only):
+    /// the next re-read asks again, and the journal's copy stands.
+    func testLivenessIsAskedAgainOnEachReRead() async throws {
+        let store = Store(); let context = ContextStore(); let liveness = Liveness(live: true)
+        context.known = true
+        let vm = ItemDetailViewModel(itemID: "it_1", store: store, api: API(), sync: Sync(), contextStore: context,
+                                     sessionLiveness: liveness)
+        vm.workingRecheckInterval = .milliseconds(50)
+        vm.start()
+        try await waitUntil { store.itemCont != nil }
+        store.itemCont?.yield(Self.item(ItemWorking(state: .queued, since: Date(), behindTurn: true)))
+        try await waitUntil { context.sessionCont != nil && context.ownerCont != nil && !liveness.asked.isEmpty }
+        context.sessionCont?.yield("waiting")
+        // A live state that says the turn ended wins.
+        try await waitUntil { vm.loadedCommentCount != nil && vm.workingIndicator == nil }
+        liveness.live = false
+        try await waitUntil { vm.workingIndicator == .busyElsewhere }
+        XCTAssertEqual(Set(liveness.asked), ["c-origin"])
+        vm.stop()
+    }
+
     // MARK: - Fakes
     private final class Liveness: SessionStateLiveness, @unchecked Sendable {
-        private let lock = NSLock(); private var convos: [String] = []
-        let live: Bool
-        init(live: Bool) { self.live = live }
+        private let lock = NSLock(); private var convos: [String] = []; private var answer: Bool
+        init(live: Bool) { answer = live }
+        var live: Bool {
+            get { lock.withLock { answer } }
+            set { lock.withLock { answer = newValue } }
+        }
         var asked: [String] { lock.withLock { convos } }
         func followsSessionStateLive(convoID: String) async -> Bool {
-            lock.withLock { convos.append(convoID) }
-            return live
+            lock.withLock { convos.append(convoID); return answer }
         }
     }
 

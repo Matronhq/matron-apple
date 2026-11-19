@@ -261,13 +261,7 @@ public final class ItemDetailViewModel {
         ownerStateLive = sessionLiveness == nil
         guard let contextStore, !convoID.isEmpty else { return }
         let itemID = itemID
-        if let sessionLiveness {
-            ownerLivenessTask = Task { [weak self] in
-                let live = await sessionLiveness.followsSessionStateLive(convoID: convoID)
-                guard let self, !Task.isCancelled, self.contextOriginID == convoID else { return }
-                if self.ownerStateLive != live { self.ownerStateLive = live }
-            }
-        }
+        checkOwnerLiveness(convoID)
         ownerSessionTask = Task { [weak self] in
             for await state in contextStore.sessionStateStream(convoID: convoID) {
                 guard let self, !Task.isCancelled else { return }
@@ -294,6 +288,20 @@ public final class ItemDetailViewModel {
                 if self.ownerConvoID != convoID { self.ownerConvoID = convoID }
                 if self.ownerState != state { self.ownerState = state }
             }
+        }
+    }
+
+    /// Asks whether `convoID`'s stored session state is live. Asked again
+    /// on each re-read while the item shows its session busy, so a switch
+    /// of sync scope or of the Coordinator role while the page is open is
+    /// picked up within one re-read.
+    private func checkOwnerLiveness(_ convoID: String) {
+        guard let sessionLiveness, !convoID.isEmpty else { return }
+        ownerLivenessTask?.cancel()
+        ownerLivenessTask = Task { [weak self] in
+            let live = await sessionLiveness.followsSessionStateLive(convoID: convoID)
+            guard let self, !Task.isCancelled, self.contextOriginID == convoID else { return }
+            if self.ownerStateLive != live { self.ownerStateLive = live }
         }
     }
 
@@ -836,9 +844,10 @@ public final class ItemDetailViewModel {
         // stay up until the item changes or the page is opened again.
         tasks.append(Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: Self.workingRecheckInterval)
+                try? await Task.sleep(for: self?.workingRecheckInterval ?? .seconds(30))
                 guard let self, !Task.isCancelled else { return }
                 guard self.item?.working != nil, AppActivity.shared.isActive else { continue }
+                if let origin = self.contextOriginID { self.checkOwnerLiveness(origin) }
                 await self.sync.refreshItem(id: id)
             }
         })
@@ -875,7 +884,7 @@ public final class ItemDetailViewModel {
     /// its slot): stop observing, and delete the reply's staged copies —
     /// nothing will send them now, and they are our files to clean up.
     /// How often an open item that shows its session working is re-read.
-    static let workingRecheckInterval: Duration = .seconds(30)
+    var workingRecheckInterval: Duration = .seconds(30)
 
     public func stop() {
         onScreenHosts.removeAll()
