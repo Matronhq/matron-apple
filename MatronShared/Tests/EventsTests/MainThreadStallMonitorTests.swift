@@ -31,6 +31,27 @@ final class MainThreadStallMonitorTests: XCTestCase {
         XCTAssertGreaterThan(reported.first ?? 0, 0.3, "the report carries the stall's duration")
         XCTAssertEqual(announced.values.count, 1, "a block longer than unresponsiveAfter is announced once, while it is happening")
     }
+
+    /// The iPhone stops the monitor when the app leaves the screen and starts
+    /// it on return. A ping still queued on the main thread at the stop runs
+    /// after it, and its hop spans the stop: it must not be reported.
+    @MainActor
+    func testAPingStillQueuedWhenTheMonitorStopsIsNotReported() async throws {
+        let monitor = MainThreadStallMonitor()
+        let stalls = StallBox()
+        monitor.start(interval: 0.05, threshold: 0.2, unresponsiveAfter: 10, onStall: { stalls.append($0) })
+        defer { monitor.stop() }
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        // Hold the main thread so a ping queues behind it, stop the monitor
+        // from another thread meanwhile, then start it again.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) { monitor.stop() }
+        Thread.sleep(forTimeInterval: 0.6)
+        monitor.start(interval: 0.05, threshold: 0.2, unresponsiveAfter: 10, onStall: { stalls.append($0) })
+        try await Task.sleep(nanoseconds: 400_000_000)
+
+        XCTAssertEqual(stalls.values, [], "the hop spanned a stop; nothing stalled while the monitor ran")
+    }
 }
 
 private final class StallBox: @unchecked Sendable {

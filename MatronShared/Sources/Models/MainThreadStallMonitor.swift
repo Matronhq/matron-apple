@@ -33,6 +33,10 @@ public final class MainThreadStallMonitor: @unchecked Sendable {
     /// When the main thread last ran a ping: the start of the window a
     /// stall's causes are read from.
     private var lastAnswered: UInt64 = 0
+    /// Bumped by `stop()`. A ping still waiting on the main queue when the
+    /// monitor stops answers into a run that has ended: its hop spans the
+    /// stop (on iOS, the app's time in the background), so it is dropped.
+    private var run = 0
     private let causes: StallCauseRecorder
 
     public init(causes: StallCauseRecorder = .shared) {
@@ -69,10 +73,12 @@ public final class MainThreadStallMonitor: @unchecked Sendable {
                 announcedUnresponsive = false
                 let sent = DispatchTime.now()
                 pingSent = sent
+                let pingRun = run
                 DispatchQueue.main.async { [self] in
                     let ran = DispatchTime.now().uptimeNanoseconds
                     let hop = TimeInterval(ran - sent.uptimeNanoseconds) / 1_000_000_000
                     queue.async { [self] in
+                        guard pingRun == run else { return }
                         pingOutstanding = false
                         let start = lastAnswered
                         lastAnswered = ran
@@ -95,6 +101,7 @@ public final class MainThreadStallMonitor: @unchecked Sendable {
             timer?.cancel()
             timer = nil
             pingOutstanding = false
+            run += 1
         }
     }
 }

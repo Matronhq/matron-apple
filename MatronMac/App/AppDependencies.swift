@@ -141,7 +141,7 @@ final class AppDependencies {
         // as a `DatabasePool`, so reads stop waiting behind sync writes.
         let store = try! JournalStore(
             databaseURL: dbURL, ownSender: "user:\(session.userID)",
-            usesPool: UserDefaults.standard.bool(forKey: JournalStore.poolFlagKey))
+            usesPool: JournalStore.usesPool(UserDefaults.standard, default: false))
         LaunchTimeline.shared.endStoreOpen()
         // Un-gated, like MainThreadStallMonitor: a once-a-minute line per
         // store observation and hot write (category `store-observation`).

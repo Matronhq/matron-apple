@@ -13,6 +13,11 @@ struct CoordinatorSettingRow: View {
     @State private var showingChooser = false
     @State private var saveError: String?
     @State private var consent: CoordinatorConsentStore
+    /// The coordinator chat's stored title, loaded by the `.task` below.
+    /// Never read from the store in `body`: a read on the main thread
+    /// waits behind whatever else holds the database, and the screen
+    /// cannot scroll meanwhile.
+    @State private var storedTitle: (convoID: String, title: String?)?
 
     init(session: UserSession, deps: AppDependencies) {
         self.session = session
@@ -21,10 +26,11 @@ struct CoordinatorSettingRow: View {
         _consent = State(initialValue: CoordinatorConsentStore(api: deps.coordinatorConsentService(for: session)))
     }
 
+    /// The title once loaded, the conversation id until then.
     private var title: String? {
         guard let convoID else { return nil }
-        let stored = (try? deps.journalStore(for: session).conversation(id: convoID))?.title
-        return (stored?.isEmpty == false) ? stored : convoID
+        guard let storedTitle, storedTitle.convoID == convoID else { return convoID }
+        return storedTitle.title ?? convoID
     }
 
     private func save(_ id: String?) {
@@ -50,6 +56,14 @@ struct CoordinatorSettingRow: View {
             .accessibilityIdentifier("settings.routines")
         }
         .task { await consent.load() }
+        .task(id: convoID) {
+            guard let convoID else { return }
+            let title = try? await deps.journalStore(for: session).conversationTitle(id: convoID)
+            // A read for a conversation the user has since changed away
+            // from finishes anyway; its title must not land.
+            guard !Task.isCancelled else { return }
+            storedTitle = (convoID, title.flatMap { $0.isEmpty ? nil : $0 })
+        }
         .sheet(isPresented: $showingChooser) {
             CoordinatorChooserSheet(deps: deps, session: session) { id in
                 showingChooser = false
