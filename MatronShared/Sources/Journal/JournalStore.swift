@@ -369,9 +369,10 @@ public final class JournalStore: @unchecked Sendable {
 
     /// The `store.pool` setting, or `defaultValue` when it was never set.
     /// The iPhone passes `true`; the Mac keeps its Advanced switch, off
-    /// until turned on.
+    /// until turned on. Read with `bool(forKey:)` once present: a launch
+    /// argument (`-store.pool NO`) arrives as the string "NO", not a Bool.
     public static func usesPool(_ defaults: UserDefaults, default defaultValue: Bool) -> Bool {
-        (defaults.object(forKey: poolFlagKey) as? Bool) ?? defaultValue
+        defaults.object(forKey: poolFlagKey) == nil ? defaultValue : defaults.bool(forKey: poolFlagKey)
     }
 
     /// Reader connections a pooled store may open; see `init`.

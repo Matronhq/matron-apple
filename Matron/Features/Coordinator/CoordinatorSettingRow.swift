@@ -59,6 +59,9 @@ struct CoordinatorSettingRow: View {
         .task(id: convoID) {
             guard let convoID else { return }
             let title = try? await deps.journalStore(for: session).conversationTitle(id: convoID)
+            // A read for a conversation the user has since changed away
+            // from finishes anyway; its title must not land.
+            guard !Task.isCancelled else { return }
             storedTitle = (convoID, title.flatMap { $0.isEmpty ? nil : $0 })
         }
         .sheet(isPresented: $showingChooser) {

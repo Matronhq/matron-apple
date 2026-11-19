@@ -66,6 +66,11 @@ final class JournalStoreWriterKindTests: XCTestCase {
         XCTAssertFalse(JournalStore.usesPool(defaults, default: true), "turned off by hand")
         defaults.set(true, forKey: JournalStore.poolFlagKey)
         XCTAssertTrue(JournalStore.usesPool(defaults, default: false), "turned on by hand")
+        // A launch argument lands as a string.
+        defaults.set("NO", forKey: JournalStore.poolFlagKey)
+        XCTAssertFalse(JournalStore.usesPool(defaults, default: true), "-store.pool NO")
+        defaults.set("YES", forKey: JournalStore.poolFlagKey)
+        XCTAssertTrue(JournalStore.usesPool(defaults, default: false), "-store.pool YES")
     }
 
     func testThePoolFlagKeyMatchesTheLaunchArgument() {
