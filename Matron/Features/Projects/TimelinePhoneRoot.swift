@@ -45,6 +45,8 @@ struct TimelinePhoneRoot: View {
                           onOpenProject: onOpenStory) {
             footRows
         }
+        // The title menu names the week, so the page shows only its dates.
+        .environment(\.timelineWeekTitleInBar, true)
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbarTitleMenu { weekMenu }

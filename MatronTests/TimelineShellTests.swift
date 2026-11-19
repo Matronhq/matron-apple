@@ -5,8 +5,7 @@ import MatronModels
 import MatronViewModels
 @testable import Matron
 
-/// The Projects timeline on iPad and iPhone, behind the `projects.timeline`
-/// flag: with it on and the journal answering, the iPad lists the weeks
+/// The Projects timeline on iPad and iPhone: with the journal answering, the iPad lists the weeks
 /// beside Projects and the iPhone's Projects root is the week page;
 /// otherwise both keep the Projects home they have today. The state's reads
 /// and what a place shows are shared and tested in MatronShared

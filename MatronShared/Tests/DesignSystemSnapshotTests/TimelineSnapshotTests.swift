@@ -528,6 +528,17 @@ final class TimelineSnapshotTests: XCTestCase {
         assertVariants(of: phone(weekPage(D.thisWeek, extras: extras, layout: .list)), named: "timeline-week-list-phone")
     }
 
+    /// On the iPhone the title menu names the week, so the page starts
+    /// with one short row: the dates and an icon-only layout switch.
+    func testWeekWithTheTitleInTheBar() {
+        let extras = TimelineWeekExtras(week: D.thisWeek.week, projects: D.thisWeekExtras, status: .more)
+        assertVariants(of: phone(weekPage(D.thisWeek).environment(\.timelineWeekTitleInBar, true)),
+                       named: "timeline-week-titlebar-tiles-phone")
+        assertVariants(of: phone(weekPage(D.thisWeek, extras: extras, layout: .list)
+                                    .environment(\.timelineWeekTitleInBar, true)),
+                       named: "timeline-week-titlebar-list-phone")
+    }
+
     /// The week as tiles: the stories' cards, then a card for each paged
     /// project, and Retry where the next page failed. Tall enough to show the end.
     func testWeekTilesWithPagedProjects() {

@@ -26,6 +26,7 @@ public struct TimelineWeekView<Footer: View>: View {
 
     @State private var showsAlso = false
     @AppStorage private var layout: TimelineWeekLayout
+    @Environment(\.timelineWeekTitleInBar) private var titleInBar
 
     /// `layoutStore` nil keeps the layout in the standard defaults.
     public init(week: TimelineWeek, extras: TimelineWeekExtras? = nil, now: Date, images: [String: Image],
@@ -74,20 +75,29 @@ public struct TimelineWeekView<Footer: View>: View {
     }
 
     /// The title and dates, and the layout switch beside them where it
-    /// fits, else under them.
+    /// fits, else under them. With the title in the bar (the iPhone): one
+    /// short row, the dates and an icon-only switch.
     @ViewBuilder private var top: some View {
-        if TimelineFormat.movedNothing(week) {
+        if titleInBar {
+            HStack(alignment: .center, spacing: 12) {
+                if let dates = TimelineFormat.pageDates(week, now: now) {
+                    Text(dates).font(TimelinePage.datesFont).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer(minLength: 12)
+                if !TimelineFormat.movedNothing(week) { layoutSwitch(iconsOnly: true) }
+            }
+        } else if TimelineFormat.movedNothing(week) {
             header
         } else {
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .center, spacing: 12) {
                     header
                     Spacer(minLength: 12)
-                    layoutSwitch
+                    layoutSwitch()
                 }
                 VStack(alignment: .leading, spacing: 12) {
                     header
-                    layoutSwitch
+                    layoutSwitch()
                 }
             }
         }
@@ -103,11 +113,18 @@ public struct TimelineWeekView<Footer: View>: View {
         }
     }
 
-    private var layoutSwitch: some View {
+    private func layoutSwitch(iconsOnly: Bool = false) -> some View {
         Picker(TimelineFormat.layoutSwitchLabel, selection: $layout) {
             ForEach(TimelineWeekLayout.allCases, id: \.self) { choice in
-                Label(choice.title, systemImage: choice.symbol).labelStyle(.titleOnly).tag(choice)
-                    .accessibilityIdentifier("timeline.week.layout.\(choice.rawValue)")
+                Group {
+                    if iconsOnly {
+                        Image(systemName: choice.symbol).accessibilityLabel(choice.title)
+                    } else {
+                        Label(choice.title, systemImage: choice.symbol).labelStyle(.titleOnly)
+                    }
+                }
+                .tag(choice)
+                .accessibilityIdentifier("timeline.week.layout.\(choice.rawValue)")
             }
         }
         .pickerStyle(.segmented)
@@ -260,4 +277,10 @@ enum TimelinePage {
     static let cardSpacing: CGFloat = 16
     static let sectionSpacing: CGFloat = 20
     #endif
+}
+
+public extension EnvironmentValues {
+    /// The host's bar already names the week (the iPhone's title menu), so
+    /// the week page leaves out its own title.
+    @Entry var timelineWeekTitleInBar = false
 }

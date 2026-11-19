@@ -133,7 +133,7 @@ struct MacChatListView: View {
     /// (a mission page replaces it) so Back reuses it and its detail-pass
     /// throttle applies (PR4 review M1). Reset with the session.
     @State private var projectPageSlot = MacProjectPageSlot<ProjectDetailViewModel>()
-    /// The Projects timeline (behind `TimelineViewModel.flagKey`): built on
+    /// The Projects timeline: built on
     /// the first visit to Projects; until the journal answers, Projects
     /// stays today's home (`MacTimelineHost.swift`).
     @State private var timeline = MacTimelineState()

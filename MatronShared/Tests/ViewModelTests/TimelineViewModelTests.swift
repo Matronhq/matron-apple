@@ -805,10 +805,6 @@ final class TimelineViewModelTests: XCTestCase {
         XCTAssertTrue(vm.showsAllProjects)
     }
 
-    func testFlagKey() {
-        XCTAssertEqual(TimelineViewModel.flagKey, "projects.timeline")
-    }
-
     // MARK: A week's other projects
 
     private func weekWithAlso(_ key: String, stories: [Int] = [1], also: [Int] = [2, 3, 4, 5, 6]) -> TimelineWeek {
