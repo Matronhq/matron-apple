@@ -1693,4 +1693,60 @@ final class ComposerViewModelTests: XCTestCase {
         XCTAssertNil(vm.paletteSelection)
         XCTAssertFalse(vm.confirmPaletteSelection())
     }
+
+    // MARK: Unsent message kept on disk
+
+    /// The chat composer's half of the fix: a voice note whose send failed
+    /// is back in the tray, and the tray and text survive the composer
+    /// going away (evicted from the chat cache) and the app restarting.
+    @MainActor
+    func test_unsentMessage_survivesARestart_withTheNoteStillLeadingItsBatch() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("unsent-\(UUID())")
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let fake = FakeTimelineService()
+        struct Boom: Error, LocalizedError { var errorDescription: String? { "boom" } }
+        fake.nextSendError = Boom()
+        var vm: ComposerViewModel? = ComposerViewModel(roomID: "!room:s", timeline: fake, commands: [],
+                                                       unsentReplies: UnsentReplyStore(directory: directory))
+        vm?.input = "typed"
+        await vm?.attachFiles([try makeTempFile(named: "pic.png")])
+        _ = await vm?.sendVoiceNote(url: try makeRecording(), duration: 1)
+        XCTAssertEqual(vm?.stagedAttachments.map(\.filename), ["voice-note.m4a", "pic.png"])
+        let tag = try XCTUnwrap(vm?.stagedAttachments.first?.batchTag)
+        vm = nil
+
+        let relaunched = ComposerViewModel(roomID: "!room:s", timeline: fake, commands: [],
+                                           unsentReplies: UnsentReplyStore(directory: directory))
+        XCTAssertEqual(relaunched.input, "typed")
+        XCTAssertEqual(relaunched.stagedAttachments.map(\.filename), ["voice-note.m4a", "pic.png"])
+        XCTAssertEqual(relaunched.stagedAttachments.first?.batchTag, tag, "a retry re-forms the same message")
+        XCTAssertEqual(try relaunched.stagedAttachments.first.map { try Data(contentsOf: $0.url) }, Data("AUDIO".utf8))
+        let other = ComposerViewModel(roomID: "!other:s", timeline: fake, commands: [],
+                                      unsentReplies: UnsentReplyStore(directory: directory))
+        XCTAssertEqual(other.input, "")
+
+        await relaunched.send()
+        XCTAssertEqual(fake.sentFiles.last?.filename, "voice-note.m4a")
+        let after = ComposerViewModel(roomID: "!room:s", timeline: fake, commands: [],
+                                      unsentReplies: UnsentReplyStore(directory: directory))
+        XCTAssertEqual(after.input, "", "Send clears the saved message")
+        XCTAssertTrue(after.stagedAttachments.isEmpty)
+    }
+
+    /// Up/Down shows a sent line in the field; what is saved stays the
+    /// draft it was walking away from.
+    @MainActor
+    func test_unsentMessage_isNotOverwrittenByARecalledLine() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("unsent-\(UUID())")
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(), commands: [],
+                                   recentFolders: emptyRecentFolders(),
+                                   unsentReplies: UnsentReplyStore(directory: directory))
+        vm.input = "sent earlier"
+        await vm.send()
+        vm.input = "my draft"
+        vm.recallOlder()
+        XCTAssertEqual(vm.input, "sent earlier")
+        XCTAssertEqual(UnsentReplyStore(directory: directory).reply(for: .conversation("!r")).text, "my draft")
+    }
 }

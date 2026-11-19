@@ -26,13 +26,13 @@ public final class ItemDetailViewModel {
     /// Outbox replies Cancel has withdrawn (or is withdrawing) on this view
     /// model, by local id.
     private var withdrawnOutboxIDs: Set<String> = []
-    public var draft = ""
+    public var draft = "" { didSet { saveBox() } }
     /// Files dropped, pasted or picked into the reply composer but not yet
     /// sent, in the order they were added — the same tray the chat composer
     /// keeps (`ComposerViewModel.stagedAttachments`). They leave with the
     /// typed text as ONE comment on Send (`submitComment()`), rather than
     /// each posting on arrival as its own bodiless comment.
-    public private(set) var stagedAttachments: [StagedAttachment] = []
+    public private(set) var stagedAttachments: [StagedAttachment] = [] { didSet { saveBox() } }
     public var error: String?
     /// Replies between Send and the thread showing them, oldest first. Send
     /// clears the field and tray at the tap (as chat does), and a reply
@@ -144,12 +144,49 @@ public final class ItemDetailViewModel {
                 queuedCards: (any QueuedRepliesReading)? = nil, queuedRelease: (any QueuedReplySending)? = nil,
                 contextStore: (any ItemContextReading)? = nil,
                 refreshMission: (@Sendable (String) async -> Void)? = nil,
+                unsentReplies: UnsentReplyStore? = nil,
                 now: @escaping @Sendable () -> Date = { Date() }) {
         self.itemID = itemID; self.store = store; self.api = api; self.sync = sync
         self.events = events; self.agentSpawn = agentSpawn; self.seen = seen
         self.queuedCards = queuedCards; self.queuedRelease = queuedRelease
         self.contextStore = contextStore; self.refreshMission = refreshMission
         self.now = now
+        self.unsentReplies = unsentReplies
+        self.unsentEpoch = unsentReplies?.epoch ?? 0
+        if let saved = unsentReplies?.reply(for: .item(itemID)) {
+            draft = saved.text
+            stagedAttachments = saved.attachments
+        }
+        loadedBox = true
+    }
+
+    // MARK: Unsent reply
+
+    /// Keeps the reply box on disk (text and staged files), so leaving the
+    /// item, or the app restarting, never loses a reply that hasn't been
+    /// sent. `nil` in tests and previews that don't need it: the box then
+    /// lives in memory only and `stop()` deletes its files.
+    private let unsentReplies: UnsentReplyStore?
+    private let unsentEpoch: Int
+    /// Set once `init` has read the saved box, so reading it doesn't
+    /// write it straight back.
+    private var loadedBox = false
+    private var unsentPlace: UnsentReplyStore.Place { .item(itemID) }
+
+    /// Saves the box after every change. While Edit has a queued reply's
+    /// text in the box, what was typed before Edit is saved instead: that
+    /// is what comes back if the edit is never sent.
+    private func saveBox() {
+        guard loadedBox, !isStopped, let unsentReplies else { return }
+        let text = editingQueuedReplyID != nil ? preEditDraft : draft
+        unsentReplies.save(UnsentReply(text: text, attachments: stagedAttachments), for: unsentPlace, epoch: unsentEpoch)
+    }
+
+    /// Whether this view model is the one showing its item's reply box now
+    /// (started, and not stopped since). A reply that comes back to one
+    /// that isn't goes to the store instead (`restoreUnsent`).
+    private var isLiveBox: Bool {
+        unsentReplies?.box(for: unsentPlace) === self
     }
 
     // MARK: Context
@@ -402,9 +439,9 @@ public final class ItemDetailViewModel {
     public private(set) var editableQueuedReplies: Set<String> = []
     /// The queued reply being edited in the reply box, held on the agent's
     /// queue until the edited reply is sent or the edit is cancelled.
-    public private(set) var editingQueuedReplyID: String?
+    public private(set) var editingQueuedReplyID: String? { didSet { saveBox() } }
     /// What the reply box held before Edit put the reply's text in it.
-    private var preEditDraft = ""
+    private var preEditDraft = "" { didSet { saveBox() } }
     /// Whether Edit has put the reply's text in the box yet: not while its
     /// hold is still on its way.
     private var editTextInBox = false
@@ -785,6 +822,7 @@ public final class ItemDetailViewModel {
     public func start() {
         cancelSubscriptions()
         isStopped = false
+        unsentReplies?.register(self, for: unsentPlace)
         let id = itemID
         tasks.append(Task { [weak self] in
             guard let s = self?.store.itemStream(id: id) else { return }
@@ -850,18 +888,24 @@ public final class ItemDetailViewModel {
         }
     }
 
-    /// The item is closing (its view went away, or the Mac pane released
-    /// its slot): stop observing, and delete the reply's staged copies —
-    /// nothing will send them now, and they are our files to clean up.
     /// How often an open item that shows its session working is re-read.
     static let workingRecheckInterval: Duration = .seconds(30)
 
+    /// The item is closing (its view went away, or the Mac pane released
+    /// its slot): stop observing. With an `UnsentReplyStore` the reply box
+    /// is already saved and stays for the next time the item opens;
+    /// without one nothing will send the staged copies now, so they are
+    /// deleted.
     public func stop() {
         onScreenHosts.removeAll()
         seen?.removeItem(itemID)
         cancelSubscriptions()
         isStopped = true
-        discardAttachments()
+        if let unsentReplies {
+            unsentReplies.unregister(self, for: unsentPlace)
+        } else {
+            discardAttachments()
+        }
         // Safety: nothing will settle them once the streams are gone.
         sendingReplies = []
     }
@@ -1128,6 +1172,10 @@ public final class ItemDetailViewModel {
         replacingCommentID = nil
         draft = ""
         stagedAttachments = []
+        // Kept on disk until it is queued or back in a box: if the app
+        // stops while it uploads, the next launch puts it back.
+        unsentReplies?.beginSend(localID, UnsentReply(text: pending, attachments: attachments),
+                                 for: unsentPlace, epoch: unsentEpoch)
         // The reply it stands in for leaves the thread, so its files go
         // with the edit: already uploaded, they are named again, not re-sent.
         let carried = replaces.flatMap { id in comments.first { $0.id == id } }?.attachments ?? []
@@ -1156,6 +1204,7 @@ public final class ItemDetailViewModel {
             return "Couldn't queue your reply."
         }
         attachments.forEach { $0.deleteStagedCopy() }
+        unsentReplies?.endSend(localID, for: unsentPlace, epoch: unsentEpoch)
         // The sending row stays until the thread can show the reply itself.
         if let index = sendingReplies.firstIndex(where: { $0.localID == localID }) {
             sendingReplies[index].isQueued = true
@@ -1174,13 +1223,26 @@ public final class ItemDetailViewModel {
 
     /// Puts a reply that didn't go out back in the composer: its
     /// attachments at the front of the tray, ahead of anything attached
-    /// meanwhile, and its text unless something new has been typed. A
-    /// closed item has no tray to go back to: its staged copies are
-    /// deleted, and a leading voice note is moved back to the recorder's
-    /// file instead, for `VoiceNoteSession`'s Retry.
+    /// meanwhile, and its text unless something new has been typed.
+    ///
+    /// When this view model no longer shows the item (its page closed
+    /// while the reply uploaded), the reply goes to the item's saved box
+    /// instead (`UnsentReplyStore.giveBack`) — into the page showing the
+    /// item now, if one is, or onto disk for the next time it opens.
+    /// Without a store a closed item has no tray to go back to: its staged
+    /// copies are deleted, and a leading voice note is moved back to the
+    /// recorder's file instead, for `VoiceNoteSession`'s Retry.
     private func restoreUnsent(_ attachments: [StagedAttachment], text pending: String,
                                note: LeadingVoiceNote?, localID: String) {
         removeSendingReply(localID)
+        if let unsentReplies {
+            defer { unsentReplies.endSend(localID, for: unsentPlace, epoch: unsentEpoch) }
+            if isStopped || (!isLiveBox && unsentReplies.box(for: unsentPlace) != nil) {
+                unsentReplies.giveBack(UnsentReply(text: pending, attachments: attachments),
+                                       to: unsentPlace, epoch: unsentEpoch)
+                return
+            }
+        }
         if draft.isEmpty { draft = pending }
         guard isStopped else {
             stagedAttachments = attachments + stagedAttachments
@@ -1545,7 +1607,9 @@ public final class ItemDetailViewModel {
         guard let failure = await sendReply(leading: LeadingVoiceNote(attachment: staged, recording: url)) else {
             return nil
         }
-        return isStopped ? failure : "\(failure) — it's back in the reply."
+        // With a store the note is always back in the item's reply box,
+        // even when this page has closed.
+        return isStopped && unsentReplies == nil ? failure : "\(failure) — it's back in the reply."
     }
 
     /// The note alone, from the recorder's own file, which is deleted once
@@ -1576,6 +1640,16 @@ public final class ItemDetailViewModel {
         defer { busyCount -= 1 }
         do { try await op(); await sync.refreshItem(id: itemID) }
         catch { self.error = error.localizedDescription }
+    }
+}
+
+extension ItemDetailViewModel: UnsentReplyBox {
+    /// A reply an earlier page for this item couldn't send, back in this
+    /// box: its files ahead of the tray, its text after what is typed.
+    public func takeBack(_ reply: UnsentReply) {
+        let merged = UnsentReplyStore.merge(reply, into: UnsentReply(text: draft, attachments: stagedAttachments))
+        draft = merged.text
+        stagedAttachments = merged.attachments
     }
 }
 
@@ -1624,9 +1698,16 @@ extension ItemDetailViewModel: AttachmentStaging {
             }.value
             switch staged {
             case .success(let attachment):
-                // The item closed while this was copying: nothing will
-                // show or send it.
-                if isStopped { attachment.deleteStagedCopy() } else { stagedAttachments.append(attachment) }
+                // The item closed while this was copying: it goes to the
+                // item's saved box, or, without one, nothing will show or
+                // send it.
+                if !isStopped {
+                    stagedAttachments.append(attachment)
+                } else if let unsentReplies {
+                    unsentReplies.giveBack(UnsentReply(attachments: [attachment]), to: unsentPlace, epoch: unsentEpoch)
+                } else {
+                    attachment.deleteStagedCopy()
+                }
             case .failure(let failure):
                 error = failure.message
             }

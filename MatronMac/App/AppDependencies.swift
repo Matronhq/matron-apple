@@ -21,6 +21,9 @@ import MatronViewModels
 @MainActor
 final class AppDependencies {
     let auth: AuthService
+    /// Every reply box's unsent text and files, kept on disk per item and
+    /// conversation until sent or cleared; wiped on sign-out.
+    let unsentReplies: UnsentReplyStore
     /// Phase 6 (Search): the local FTS index. Optional — `nil` only if the
     /// SQLite store can't be opened (rare); the journal services all treat
     /// search as optional, so the app degrades to "search disabled" rather
@@ -89,6 +92,7 @@ final class AppDependencies {
         //                      session itself lives in the Keychain (see
         //                      `SessionStores.live`); a file here is moved
         //                      into it on first read. Never wiped.
+        unsentReplies = UnsentStorage.makeStore()
         sessionsDirectory = container.appendingPathComponent("sessions")
         journalDirectory = container.appendingPathComponent("journal-store")
         try? FileManager.default.createDirectory(at: sessionsDirectory, withIntermediateDirectories: true)
@@ -370,7 +374,9 @@ final class AppDependencies {
                                    // a mission this device lacks is fetched once so the row can
                                    // name it.
                                    contextStore: c.store,
-                                   refreshMission: { [missions = c.missions] id in await missions.refreshMission(id: id) })
+                                   refreshMission: { [missions = c.missions] id in await missions.refreshMission(id: id) },
+                                   // The reply box, kept on disk until sent.
+                                   unsentReplies: unsentReplies)
         vm.approvalSigner = approvalSigner(for: session)
         return vm
     }
@@ -455,6 +461,9 @@ final class AppDependencies {
     /// new session). Mirrors iOS `AppDependencies.signOut()`.
     func signOut() {
         let oldCores = Array(cores.values)
+        // Unsent replies go with the account, like its outbox: the next
+        // account must not find them in its reply boxes.
+        unsentReplies.wipeAll()
         // Disarm first: the teardown below still talks to the server with
         // the old token (push deregistration), and a revoked token's 401s
         // must not ask for a second sign-out.

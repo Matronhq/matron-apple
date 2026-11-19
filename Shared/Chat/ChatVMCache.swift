@@ -44,7 +44,8 @@ final class ChatVMCache {
             chat: chat,
             composer: ComposerViewModel(roomID: roomID, timeline: timelineSvc,
                                         commands: BotCommandCatalog.claudeBridge,
-                                        sessionStatus: { [weak chat] in chat?.sessionStatus })
+                                        sessionStatus: { [weak chat] in chat?.sessionStatus },
+                                        unsentReplies: deps.unsentReplies)
         )
         entries[roomID] = pair
         order.append(roomID)

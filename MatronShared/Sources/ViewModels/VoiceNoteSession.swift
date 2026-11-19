@@ -22,8 +22,8 @@ import os
 @Observable
 public final class VoiceNoteSession {
     /// Where a note goes. `title` is what the indicator shows.
-    public struct Target: Equatable, Sendable {
-        public enum Kind: Hashable, Sendable {
+    public struct Target: Equatable, Sendable, Codable {
+        public enum Kind: Hashable, Sendable, Codable {
             case conversation(String)
             case item(String)
         }
@@ -94,7 +94,24 @@ public final class VoiceNoteSession {
     /// overwrite the target. The indicator shows it as "Starting
     /// microphone…".
     public private(set) var startingTarget: Target?
-    private var failedNotes: [UUID: (url: URL, duration: TimeInterval, deliver: Deliver)] = [:]
+    /// Each retryable failure's file and where it goes. `deliver` is `nil`
+    /// for a failure read back from disk at launch: Retry asks
+    /// `resolveDeliver` for the target's delivery then.
+    private var failedNotes: [UUID: (url: URL, duration: TimeInterval, deliver: Deliver?)] = [:]
+
+    /// Builds the delivery for a target whose original closure didn't
+    /// survive a relaunch (`restoreSavedFailures`).
+    private var resolveDeliver: ((Target) -> Deliver?)?
+    /// Set once `restoreSavedFailures` has read the saved list: until
+    /// then nothing writes it, so a failure can't overwrite rows not yet
+    /// read back.
+    private var restoredSavedFailures = false
+
+    /// Where failures that can be retried are kept, with their files, so
+    /// Retry survives the app restarting. `nil` keeps them in memory only
+    /// (tests, and the stand-in sessions views make when none is in their
+    /// environment).
+    private let failedNotesDirectory: URL?
     /// Bumped by `reset()`: a send still uploading for the signed-out
     /// account settles into nothing rather than into the next account's
     /// failures.
@@ -133,11 +150,24 @@ public final class VoiceNoteSession {
 
     public init(recorder: VoiceRecorder,
                 measureAudio: @escaping @Sendable (URL) async -> TimeInterval? = VoiceNoteSession.audioDuration,
-                settle: @escaping @Sendable () async -> Void = { try? await Task.sleep(for: .milliseconds(500)) }) {
+                settle: @escaping @Sendable () async -> Void = { try? await Task.sleep(for: .milliseconds(500)) },
+                failedNotesDirectory: URL? = nil) {
         self.recorder = recorder
         self.measureAudio = measureAudio
         self.settle = settle
+        self.failedNotesDirectory = failedNotesDirectory
         recorder.onCaptureLost = { [weak self] lost in self?.captureLost(lost) }
+    }
+
+    /// Signed in: puts back the failures an earlier launch saved, each with
+    /// Retry, which sends through `resolveDeliver` (the closure that
+    /// started the note didn't survive the restart). Reads the saved list
+    /// once; later calls (a new account) only replace `resolveDeliver`.
+    public func restoreSavedFailures(resolveDeliver: @escaping (Target) -> Deliver?) {
+        self.resolveDeliver = resolveDeliver
+        guard !restoredSavedFailures else { return }
+        restoredSavedFailures = true
+        loadSavedFailures()
     }
 
     public convenience init() {
@@ -179,11 +209,11 @@ public final class VoiceNoteSession {
             let id = UUID()
             let mic = micName ?? "The microphone"
             if seconds >= Self.minimumAudio {
-                failedNotes[id] = (url, seconds, deliver)
                 let length = Duration.seconds(seconds.rounded()).formatted(.time(pattern: .minuteSecond))
-                failures.append(Failure(id: id, target: target,
-                                        message: "\(mic) stopped at \(length). Retry sends what was recorded.",
-                                        canRetry: true))
+                keepForRetry(id, url: url, duration: seconds, deliver: deliver,
+                             failure: Failure(id: id, target: target,
+                                              message: "\(mic) stopped at \(length). Retry sends what was recorded.",
+                                              canRetry: true))
             } else {
                 try? FileManager.default.removeItem(at: url)
                 failures.append(Failure(id: id, target: target,
@@ -308,10 +338,11 @@ public final class VoiceNoteSession {
     @discardableResult
     public func retry(_ id: Failure.ID) -> Task<Void, Never>? {
         guard let failure = failures.first(where: { $0.id == id }), failure.canRetry,
-              let note = failedNotes[id] else { return nil }
+              let note = failedNotes[id],
+              let deliver = note.deliver ?? resolveDeliver?(failure.target) else { return nil }
         forget(id)
         // The user has seen what the file holds: a short one goes as it is.
-        return send(url: note.url, duration: note.duration, to: failure.target, via: note.deliver,
+        return send(url: note.url, duration: note.duration, to: failure.target, via: deliver,
                     acceptShort: true)
     }
 
@@ -325,6 +356,14 @@ public final class VoiceNoteSession {
     public func reset() {
         cancel()
         failures.map(\.id).forEach(discard)
+        // Including any saved rows not read back yet: the next account
+        // must not get them.
+        if let failedNotesDirectory {
+            for file in (try? FileManager.default.contentsOfDirectory(at: failedNotesDirectory, includingPropertiesForKeys: nil)) ?? [] {
+                try? FileManager.default.removeItem(at: file)
+            }
+        }
+        resolveDeliver = nil
         generation &+= 1
         deliveries.values.forEach { $0.cancel() }
         deliveries = [:]
@@ -335,6 +374,85 @@ public final class VoiceNoteSession {
     private func forget(_ id: Failure.ID) {
         failedNotes[id] = nil
         failures.removeAll { $0.id == id }
+        saveFailures()
+    }
+
+    /// Records a failure whose file can be sent again. With a
+    /// `failedNotesDirectory` the file moves there (out of tmp, which the
+    /// system may empty) and the row is saved, so Retry is still there
+    /// after the app restarts.
+    private func keepForRetry(_ id: UUID, url: URL, duration: TimeInterval, deliver: Deliver?, failure: Failure) {
+        var kept = url
+        if let failedNotesDirectory {
+            let destination = failedNotesDirectory.appendingPathComponent("\(id.uuidString).\(url.pathExtension.isEmpty ? "m4a" : url.pathExtension)")
+            try? FileManager.default.createDirectory(at: failedNotesDirectory, withIntermediateDirectories: true)
+            if (try? FileManager.default.moveItem(at: url, to: destination)) != nil { kept = destination }
+        }
+        failedNotes[id] = (kept, duration, deliver)
+        failures.append(failure)
+        saveFailures()
+    }
+
+    // MARK: Saved failures
+
+    private struct SavedFailure: Codable {
+        var id: UUID
+        var target: Target
+        var message: String
+        var duration: TimeInterval
+        /// The file's name inside `failedNotesDirectory`.
+        var file: String
+    }
+
+    private var failuresFile: URL? {
+        failedNotesDirectory?.appendingPathComponent("failures.json")
+    }
+
+    /// Writes the retryable failures whose files are in
+    /// `failedNotesDirectory`; deletes the list when there are none.
+    private func saveFailures() {
+        guard restoredSavedFailures, let failedNotesDirectory, let failuresFile else { return }
+        let saved: [SavedFailure] = failures.compactMap { failure in
+            guard failure.canRetry, let note = failedNotes[failure.id],
+                  note.url.deletingLastPathComponent().standardizedFileURL == failedNotesDirectory.standardizedFileURL
+            else { return nil }
+            return SavedFailure(id: failure.id, target: failure.target, message: failure.message,
+                                duration: note.duration, file: note.url.lastPathComponent)
+        }
+        if saved.isEmpty {
+            try? FileManager.default.removeItem(at: failuresFile)
+            return
+        }
+        guard let data = try? JSONEncoder().encode(saved) else { return }
+        try? FileManager.default.createDirectory(at: failedNotesDirectory, withIntermediateDirectories: true)
+        try? data.write(to: failuresFile, options: .atomic)
+    }
+
+    /// The failures an earlier launch left, each with Retry. A file that
+    /// has gone drops its row; a file no row names is deleted.
+    private func loadSavedFailures() {
+        guard let failedNotesDirectory, let failuresFile else { return }
+        let fm = FileManager.default
+        try? fm.createDirectory(at: failedNotesDirectory, withIntermediateDirectories: true)
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        var dir = failedNotesDirectory
+        try? dir.setResourceValues(values)
+        let saved = (try? Data(contentsOf: failuresFile)).flatMap { try? JSONDecoder().decode([SavedFailure].self, from: $0) } ?? []
+        // Files this launch has already kept count as named too.
+        var named = Set(failedNotes.values.map(\.url.lastPathComponent))
+        for entry in saved {
+            let url = failedNotesDirectory.appendingPathComponent(entry.file)
+            guard fm.fileExists(atPath: url.path), failedNotes[entry.id] == nil else { continue }
+            named.insert(entry.file)
+            failedNotes[entry.id] = (url, entry.duration, nil)
+            failures.append(Failure(id: entry.id, target: entry.target, message: entry.message, canRetry: true))
+        }
+        for file in (try? fm.contentsOfDirectory(at: failedNotesDirectory, includingPropertiesForKeys: nil)) ?? []
+        where file.lastPathComponent != failuresFile.lastPathComponent && !named.contains(file.lastPathComponent) {
+            try? fm.removeItem(at: file)
+        }
+        saveFailures()
     }
 
     /// A composer for `kind` is on screen with its own recording bar.
@@ -391,8 +509,12 @@ public final class VoiceNoteSession {
             if let error {
                 let id = UUID()
                 let canRetry = FileManager.default.fileExists(atPath: url.path)
-                if canRetry { failedNotes[id] = (url, duration, deliver) }
-                failures.append(Failure(id: id, target: target, message: error, canRetry: canRetry))
+                let failure = Failure(id: id, target: target, message: error, canRetry: canRetry)
+                if canRetry {
+                    keepForRetry(id, url: url, duration: duration, deliver: deliver, failure: failure)
+                } else {
+                    failures.append(failure)
+                }
             } else {
                 try? FileManager.default.removeItem(at: url)
             }
