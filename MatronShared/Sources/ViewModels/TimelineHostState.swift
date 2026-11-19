@@ -2,11 +2,10 @@ import Foundation
 import Observation
 import MatronModels
 
-/// A shell's Projects timeline, one per window, behind
-/// `TimelineViewModel.flagKey`: the view model (built on the first visit
-/// to Projects, and only with the flag on) and the place picked in the
-/// list or the week menu. With the flag off, or on a journal without the
-/// timeline routes, Projects stays the home it is today.
+/// A shell's Projects timeline, one per window: the view model (built on
+/// the first visit to Projects) and the place picked in the list or the
+/// week menu. On a journal without the timeline routes, Projects stays
+/// the plain home.
 @MainActor @Observable
 public final class TimelineHostState {
     public private(set) var viewModel: TimelineViewModel?
@@ -18,14 +17,6 @@ public final class TimelineHostState {
     private var pickedWeek: String?
 
     public init() {}
-
-    public static func flagOn(_ defaults: UserDefaults = .standard) -> Bool {
-        defaults.bool(forKey: TimelineViewModel.flagKey)
-    }
-
-    /// Settings → the switch for the flag, on iPhone, iPad and Mac.
-    public static let previewTitle = "Projects preview"
-    public static let previewFooter = "Shows Projects as weekly cards, one per project: what got done, what's next and what went quiet. Takes effect the next time you open Projects."
 
     /// The timeline replaces the home only once the journal has answered
     /// the weeks list: until then (nil) there is nothing to show instead.
@@ -39,15 +30,15 @@ public final class TimelineHostState {
         return pickedWeek ?? viewModel?.weeks.first?.week
     }
 
-    /// Projects came on screen: the first time (flag on; nil reads it)
-    /// builds and starts the view model, then reads the counts; later
+    /// Projects came on screen: the first time builds and starts the view model, then reads the counts; later
     /// visits re-read what is on screen and the counts, unless the journal
     /// has no timeline (its 404 would only come again). A visit with the
     /// flag turned off since drops the timeline, so Projects is the home
-    /// again. Returns the reads' task.
+    /// again (tests only: the timeline is always on in the apps). Returns the
+    /// reads' task.
     @discardableResult
-    public func projectsShown(flagOn: Bool? = nil, build: () -> TimelineViewModel) -> Task<Void, Never>? {
-        guard flagOn ?? Self.flagOn() else {
+    public func projectsShown(flagOn: Bool = true, build: () -> TimelineViewModel) -> Task<Void, Never>? {
+        guard flagOn else {
             if viewModel != nil { reset() }
             return nil
         }

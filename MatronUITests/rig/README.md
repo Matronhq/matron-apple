@@ -238,16 +238,14 @@ picture: the week page then pages them in after its written cards (a
 journal with `GET /timeline/weeks/:week/projects`).
 
 Give each app its own login (`device_name`) and write the session file as
-`rebuild-rig.sh` does, with `homeserverURL` on the rig's port. The
-Projects screens are behind a setting; a launch argument turns it on for
-one run without writing it anywhere:
+`rebuild-rig.sh` does, with `homeserverURL` on the rig's port:
 
 ```bash
 # Mac (Debug build), in a throwaway container:
 MATRON_APP_SUPPORT_OVERRIDE=$RIG/mac-support <Debug MatronMac binary> \
-  -projects.timeline YES -ApplePersistenceIgnoreState YES
+  -ApplePersistenceIgnoreState YES
 # Simulator:
-xcrun simctl launch <udid> chat.matron.app -projects.timeline YES
+xcrun simctl launch <udid> chat.matron.app
 ```
 
 ## Launch timing rig (cold launch and return to the foreground)

@@ -12,9 +12,6 @@ import MatronJournal
 /// A read that was called off sets no `error`: nothing failed.
 @MainActor @Observable
 public final class TimelineViewModel {
-    /// The remote flag that turns the timeline on.
-    public static let flagKey = "projects.timeline"
-
     public private(set) var weeks: [TimelineWeekSummary] = []
     /// nil until the first load, then the newest week.
     public private(set) var place: TimelinePlace?

@@ -9,13 +9,13 @@ import MatronJournal
 final class TimelineHostStateTests: XCTestCase {
     // MARK: Visits
 
-    func testTheFlagIsTheDefaultsKey() throws {
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: "TimelineHostStateTests"))
-        defaults.removePersistentDomain(forName: "TimelineHostStateTests")
-        defer { defaults.removePersistentDomain(forName: "TimelineHostStateTests") }
-        XCTAssertFalse(TimelineHostState.flagOn(defaults))
-        defaults.set(true, forKey: "projects.timeline")
-        XCTAssertTrue(TimelineHostState.flagOn(defaults))
+    /// The timeline is on by default: a plain visit builds it.
+    func testOnByDefault() async {
+        let state = TimelineHostState()
+        var built = false
+        await state.projectsShown { built = true; return Self.viewModel(StubTimeline()) }?.value
+        XCTAssertTrue(built)
+        XCTAssertNotNil(state.viewModel)
     }
 
     /// Flag off: no view model, so nothing asks the journal.

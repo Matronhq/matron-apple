@@ -273,7 +273,7 @@ extension AppDependencies {
         return RoutinesViewModel(api: c.api, markers: { engine.routineMarkers() })
     }
 
-    /// The Projects timeline (behind `TimelineViewModel.flagKey`). Reads
+    /// The Projects timeline. Reads
     /// nothing until the host calls `start()`. "Ask the Coordinator" sends
     /// to the Coordinator conversation `coordinatorConvoID` names when
     /// asked, the way the dashboard's Ask does.

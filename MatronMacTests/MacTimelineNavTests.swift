@@ -5,8 +5,7 @@ import MatronModels
 import MatronViewModels
 @testable import MatronMac
 
-/// The Projects timeline on the Mac, behind the `projects.timeline` flag:
-/// with it on and the journal answering, Projects gets a list column and
+/// The Projects timeline on the Mac: with the journal answering, Projects gets a list column and
 /// its places join the Back/Forward history; otherwise Projects stays as
 /// it is today. The state's reads and what a place shows are shared and
 /// tested in MatronShared (`TimelineHostStateTests`); this pins the Mac's

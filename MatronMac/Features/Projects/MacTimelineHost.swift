@@ -5,8 +5,8 @@ import MatronModels
 import MatronViewModels
 
 /// The Projects timeline's rules for the shell, pure so tests can pin them.
-/// Behind `TimelineViewModel.flagKey`: with it off, or on a journal without
-/// the timeline routes, Projects stays the full-width home it is today.
+/// On a journal without the timeline routes, Projects stays the full-width
+/// plain home.
 @MainActor enum MacTimelineNav {
     /// What the timeline adds to a Projects place.
     struct PlaceInput: Equatable {
@@ -132,7 +132,7 @@ final class MacTimelineState {
 
     /// Projects came on screen (`TimelineHostState.projectsShown`).
     @discardableResult
-    func projectsShown(flagOn: Bool? = nil, build: () -> TimelineViewModel) -> Task<Void, Never>? {
+    func projectsShown(flagOn: Bool = true, build: () -> TimelineViewModel) -> Task<Void, Never>? {
         host.projectsShown(flagOn: flagOn, build: build)
     }
 
