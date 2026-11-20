@@ -38,6 +38,7 @@ func assertVariants<V: View>(
     if ["MATRON_SKIP_SNAPSHOT_TESTS", "TEST_RUNNER_MATRON_SKIP_SNAPSHOT_TESTS"].contains(where: { env[$0] == "1" }) {
         return
     }
+    pinSnapshotLocale()
     #if canImport(UIKit) && !os(macOS)
     assertSnapshot(
         of: view,
@@ -81,12 +82,34 @@ func assertVariants<V: View>(
     #endif
 }
 
+/// Captions with times and dates render in the process's locale and time
+/// zone, so a baseline recorded on one Mac failed on a Mac set to another
+/// language or region ("7:13 pm" against "7:13 PM", "2 hr ago" against
+/// "2h ago"). Every snapshot renders in US English on London time, whatever
+/// the machine is set to. US English is also what CI runs in, so the string
+/// tests in this target that run after the first snapshot still see the
+/// forms they expect. The language goes in the argument domain, which
+/// outranks the user's own settings and is never written to disk;
+/// `Locale.current` reads it from then on.
+func pinSnapshotLocale() {
+    _ = snapshotLocalePin
+}
+
+private let snapshotLocalePin: Void = {
+    var arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
+    arguments["AppleLocale"] = "en_US"
+    arguments["AppleLanguages"] = ["en-US"]
+    UserDefaults.standard.setVolatileDomain(arguments, forName: UserDefaults.argumentDomain)
+    NSTimeZone.default = TimeZone(identifier: "Europe/London")!
+}()
+
 #if os(macOS)
 import AppKit
 
 /// Renders `view` through the Mac harness and returns the captured bitmap.
 @MainActor
 func macSnapshotImage<V: View>(of view: V, appearance: NSAppearance.Name) -> NSBitmapImageRep? {
+    pinSnapshotLocale()
     let host = MacSnapshotHost(view, appearance: appearance)
     defer { host.close() }
     return host.bitmap()
