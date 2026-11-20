@@ -65,6 +65,16 @@ func assertVariants<V: View>(
         let light = MacSnapshotHost(view, appearance: .aqua)
         let dark = MacSnapshotHost(view, appearance: .darkAqua)
         defer { light.close(); dark.close() }
+        // The references are 2× (Retina) captures, and a capture takes the
+        // scale of the screen the window lands on: on a 1× screen, or with
+        // no screen, every image differs, and recording would write 1×
+        // references that fail on every other Mac.
+        let scale = light.window.backingScaleFactor
+        guard scale == 2 else {
+            XCTFail("mac-\(base): the screen renders at \(scale)×; Mac snapshots need a 2× (Retina) main display",
+                    file: file, line: line)
+            return
+        }
         // A dark capture identical to the light one means the appearance
         // never reached the view (every Mac pair was).
         if light.pngData() == dark.pngData() {

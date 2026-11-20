@@ -36,7 +36,11 @@ final class ItemDetailSnapshotTests: XCTestCase {
 
     func testClosedDecision() {
         let item = TrackerItem(id: "it_2", num: 4, kind: .decision, state: .closed, resolution: .reversed, title: "Use SQLite for the cache",
-                               body: "Because it is already a dependency.", originConvoID: "c1", closedAt: .init(timeIntervalSince1970: 1_770_000_300))
+                               body: "Because it is already a dependency.", originConvoID: "c1",
+                               // Fixed, like `now` below: left to default, the date came
+                               // from the real clock and the caption drifted every month.
+                               createdAt: .init(timeIntervalSince1970: 1_770_000_000), updatedAt: .init(timeIntervalSince1970: 1_770_000_300),
+                               closedAt: .init(timeIntervalSince1970: 1_770_000_300))
         let status = TrackerComment(id: "s", itemID: "it_2", author: .user, kind: .status, body: "Postgres after all",
                                     statusFrom: .init(state: .open, resolution: nil, awaiting: nil), statusTo: .init(state: .closed, resolution: .reversed, awaiting: nil),
                                     createdAt: .init(timeIntervalSince1970: 1_770_000_300))
