@@ -85,9 +85,9 @@ public struct LatestBriefing: Equatable, Hashable, Sendable {
     }
 }
 
-/// What the "Latest briefing" card at the top of Projects draws. Built by
-/// `LatestBriefingStore` (MatronViewModels), drawn by `LatestBriefingCard`
-/// (MatronDesignSystem). `nil` wherever a card is expected means no card:
+/// What the "Latest briefing" card showed at the top of the old Projects
+/// home. Built by `LatestBriefingStore` (MatronViewModels); no view draws
+/// it now that Projects is the timeline. `nil` wherever a card is expected means no card:
 /// an older journal, or no Coordinator.
 public struct BriefingCardModel: Equatable, Hashable, Sendable {
     public enum State: Equatable, Hashable, Sendable {

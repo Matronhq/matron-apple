@@ -26,6 +26,10 @@ extension TimelineViewModel {
         case .projects:
             return allProjects.map { .projects($0, hasMore: hasMoreProjects) } ?? unloaded
         case nil:
+            // Before the weeks list has answered there is nothing to say
+            // yet, only to wait: "nothing has moved" is for an answer with
+            // no weeks in it.
+            guard isSupported != nil else { return unloaded }
             return weeks.isEmpty && error == nil ? .nothingYet : unloaded
         }
     }

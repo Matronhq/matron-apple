@@ -150,15 +150,4 @@ final class MacProjectPageSlotTests: XCTestCase {
         slot.show(projectID: "pj_a", owner: a) { FakeModel("pj_a") }
         XCTAssertNil(slot.redirect(to: nil, pageProjectID: "pj_a"))
     }
-
-    // MARK: - I1: the page's bodies, in order
-
-    func testContentStateOrder() {
-        typealias P = MacProjectPage
-        XCTAssertEqual(P.contentState(hasPage: true, isMissing: true, loadFailed: true), .page)
-        XCTAssertEqual(P.contentState(hasPage: false, isMissing: true, loadFailed: true), .missing)
-        XCTAssertEqual(P.contentState(hasPage: false, isMissing: false, loadFailed: true), .loadFailed,
-                       "a failed cold load offers Try again, not an endless spinner")
-        XCTAssertEqual(P.contentState(hasPage: false, isMissing: false, loadFailed: false), .loading)
-    }
 }

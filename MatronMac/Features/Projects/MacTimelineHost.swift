@@ -5,8 +5,8 @@ import MatronModels
 import MatronViewModels
 
 /// The Projects timeline's rules for the shell, pure so tests can pin them.
-/// On a journal without the timeline routes, Projects stays the full-width
-/// plain home.
+/// On a journal too old for the timeline, Projects is the full-width
+/// missions dashboard.
 @MainActor enum MacTimelineNav {
     /// What the timeline adds to a Projects place.
     struct PlaceInput: Equatable {
@@ -17,18 +17,15 @@ import MatronViewModels
     }
 
     /// The Projects place: a mission page first. While the timeline is
-    /// shown, the timeline's place with the project open over it, which is
-    /// the one the shell selected (a chip, a link, search) or else the one
-    /// opened from the timeline, so today's project page is never a place.
-    /// With the timeline hidden, today's project page or the home.
-    static func projectsDetail(selectedMissionID: String?, selectedProjectID: String?,
-                               timeline: PlaceInput?) -> MacPlace.Detail {
+    /// shown, the timeline's place with the project open over it (from the
+    /// timeline, a chip, a link or search). With the timeline hidden, the
+    /// missions dashboard.
+    static func projectsDetail(selectedMissionID: String?, timeline: PlaceInput?) -> MacPlace.Detail {
         if let selectedMissionID { return .mission(id: selectedMissionID) }
         if let timeline {
-            let story = selectedProjectID ?? timeline.story
-            return .timeline(place: timeline.place, story: story, section: story == nil ? nil : timeline.section)
+            return .timeline(place: timeline.place, story: timeline.story,
+                             section: timeline.story == nil ? nil : timeline.section)
         }
-        if let selectedProjectID { return .project(id: selectedProjectID) }
         return .mission(id: nil)
     }
 
@@ -39,16 +36,18 @@ import MatronViewModels
     }
 
     /// Whether `next` is the place `current` already was, filling in: the
-    /// home shown before the journal answered, or the timeline before its
-    /// first week loaded, becoming the timeline; and likewise today's
-    /// project page becoming the project's page over the timeline. That is
+    /// dashboard shown before the timeline was built, or the timeline
+    /// before its first week loaded, becoming the timeline. That is
     /// not a move, so Back goes where the user was before, and never onto
-    /// a place that turns straight back into this one.
+    /// a place that turns straight back into this one. The timeline before
+    /// its first answer (a project open over it or not) turning into the
+    /// missions dashboard, on a journal too old for the timeline, fills in
+    /// the same way.
     static func fillsIn(from current: MacPlace?, to next: MacPlace) -> Bool {
+        if case .mission(nil) = next.detail, case .timeline(nil, _, _)? = current?.detail { return true }
         guard case .timeline(let place, let story, let section) = next.detail, let current else { return false }
         switch current.detail {
         case .mission(nil): return story == nil
-        case .project(let id): return story == id && section == nil
         case .timeline(nil, let was, let wasSection): return place != nil && was == story && wasSection == section
         default: return false
         }
@@ -66,16 +65,12 @@ import MatronViewModels
     enum ProjectContent: Equatable {
         case summary
         case section(ProjectSection)
-        /// The journal has no project-page route: the project page it had.
-        case todaysPage
         case missing, loadFailed, loading
     }
 
-    /// An older journal first (it has nothing to show a section of), then
-    /// the page or its section, then why there is none.
-    static func projectContent(hasPage: Bool, isMissing: Bool, isUnsupported: Bool, loadFailed: Bool,
+    /// The page or its section, else why there is none.
+    static func projectContent(hasPage: Bool, isMissing: Bool, loadFailed: Bool,
                                section: ProjectSection?) -> ProjectContent {
-        if isUnsupported { return .todaysPage }
         if hasPage { return section.map { .section($0) } ?? .summary }
         if isMissing { return .missing }
         return loadFailed ? .loadFailed : .loading
@@ -132,8 +127,8 @@ final class MacTimelineState {
 
     /// Projects came on screen (`TimelineHostState.projectsShown`).
     @discardableResult
-    func projectsShown(flagOn: Bool = true, build: () -> TimelineViewModel) -> Task<Void, Never>? {
-        host.projectsShown(flagOn: flagOn, build: build)
+    func projectsShown(build: () -> TimelineViewModel) -> Task<Void, Never>? {
+        host.projectsShown(build: build)
     }
 
     func select(_ place: TimelinePlace?) { host.select(place) }
@@ -180,9 +175,6 @@ struct MacTimelineDetail: View {
     let session: UserSession
     let missionsViewModel: MissionsDashboardViewModel
     @Binding var slot: MacProjectPageSlot<ProjectDetailViewModel>
-    /// A project the shell selected itself (before the timeline answered,
-    /// or by Back onto such a place): shown like one opened from the timeline.
-    let selectedProjectID: String?
     let actions: MacProjectPageActions
     let onOpenStory: (String) -> Void
     /// A section of the open project's page, or nil for the page itself.
@@ -190,7 +182,7 @@ struct MacTimelineDetail: View {
     let onRedirectStory: (String) -> Void
 
     var body: some View {
-        if let projectID = selectedProjectID ?? state.storyProjectID {
+        if let projectID = state.storyProjectID {
             MacTimelineProjectHost(projectID: projectID, section: state.storySection, session: session,
                                    missionsViewModel: missionsViewModel, slot: $slot, actions: actions,
                                    onOpenSection: onOpenSection, onRedirectStory: onRedirectStory,
@@ -251,8 +243,7 @@ struct MacTimelinePlaceView: View {
 /// one of the page's three sections under a row back to the page. Where
 /// the project stands and its history come from a `ProjectSummaryViewModel`;
 /// its missions, its files and the "···" actions from the shell's
-/// `ProjectDetailViewModel`. On a journal without the project-page route
-/// it shows the project page that journal has.
+/// `ProjectDetailViewModel`.
 struct MacTimelineProjectHost: View {
     let projectID: String
     let section: ProjectSection?
@@ -292,28 +283,21 @@ struct MacTimelineProjectHost: View {
     }
 
     var body: some View {
-        Group {
-            if content == .todaysPage {
-                MacProjectPage(projectID: projectID, session: session, missionsViewModel: missionsViewModel,
-                               slot: $slot, actions: actions, onRedirect: onRedirectStory, ownsSlot: false)
-            } else {
-                page
+        page
+            .task(id: projectID) {
+                guard let deps else { return }
+                slot.show(projectID: projectID, owner: owner, page: pageToken) {
+                    deps.makeProjectDetailViewModel(for: session, projectID: projectID)
+                }
+                await load()
             }
-        }
-        .task(id: projectID) {
-            guard let deps else { return }
-            slot.show(projectID: projectID, owner: owner, page: pageToken) {
-                deps.makeProjectDetailViewModel(for: session, projectID: projectID)
+            .onDisappear { slot.pageDidDisappear(owner: owner, page: pageToken) }
+            // ⌘R, or back in the app: the page again. The history keeps the
+            // weeks it has paged.
+            .onChange(of: refreshCount) {
+                guard let summary, summary.page != nil else { return }
+                Task { await summary.refreshPage() }
             }
-            await load()
-        }
-        .onDisappear { slot.pageDidDisappear(owner: owner, page: pageToken) }
-        // ⌘R, or back in the app: the page again. The history keeps the
-        // weeks it has paged.
-        .onChange(of: refreshCount) {
-            guard let summary, summary.page != nil else { return }
-            Task { await summary.refreshPage() }
-        }
     }
 
     private var owner: ObjectIdentifier { ObjectIdentifier(missionsViewModel) }
@@ -322,7 +306,7 @@ struct MacTimelineProjectHost: View {
 
     private var content: MacTimelineNav.ProjectContent {
         MacTimelineNav.projectContent(hasPage: summary?.page != nil, isMissing: summary?.isMissing == true,
-                                      isUnsupported: summary?.isUnsupported == true, loadFailed: loadFailed,
+                                      loadFailed: loadFailed,
                                       section: section)
     }
 
@@ -334,7 +318,7 @@ struct MacTimelineProjectHost: View {
         loadFailed = false
         await summary.start()
         guard !Task.isCancelled else { return }
-        loadFailed = summary.page == nil && !summary.isMissing && !summary.isUnsupported
+        loadFailed = summary.page == nil && !summary.isMissing
         // The page says it could not load; an alert over it would say so twice.
         if loadFailed { summary.error = nil }
     }
@@ -365,12 +349,12 @@ struct MacTimelineProjectHost: View {
                     Button("Try again") { Task { await load() } }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            case .loading, .todaysPage:
+            case .loading:
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        // Counted like today's project page (which counts itself): the
-        // dashboard keeps the project list fresh while a project is open.
+        // Counted as a project page: the dashboard keeps the project list
+        // fresh while a project is open.
         .onAppear { missionsViewModel.projectPageDidAppear() }
         .onDisappear { missionsViewModel.projectPageDidDisappear() }
         // A merge moved the project: the page follows it, whichever of its
@@ -520,7 +504,7 @@ struct MacTimelineProjectHost: View {
             MacAttachmentOpener.open(filename: name, mime: file.contentType,
                                      load: { await localFile(file, name: name) }, preview: { mediaPreview = $0 })
         case .source:
-            MacProjectPage.openFile(file, deps: deps, session: session, actions: actions, vm: detail)
+            MacProjectFiles.openFile(file, deps: deps, session: session, actions: actions, vm: detail)
         }
     }
 

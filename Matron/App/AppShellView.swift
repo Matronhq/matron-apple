@@ -53,7 +53,7 @@ struct AppShellView: View {
     @State var searchOpenError: String?
     @State var decisionsVM: ItemsPanelViewModel
     @State var missionsVM: MissionsDashboardViewModel
-    /// The Projects timeline, behind its flag: built on the first visit
+    /// The Projects timeline: built on the first visit
     /// to Projects (`TimelineHostState.projectsShown`).
     @State var timeline = TimelineHostState()
     /// The Memories screen's view model. Built with the shell, but it loads
@@ -147,23 +147,13 @@ struct AppShellView: View {
             if ProcessInfo.processInfo.environment["MATRON_DEBUG_OPEN_MORE"] != nil { nav.tab = .more }
         }
         #endif
-        // Each visit to Projects reads the timeline, with the flag on.
+        // Each visit to Projects reads the timeline.
         .onChange(of: nav.projectsPageShown, initial: true) { _, shown in
             guard shown else { return }
             timeline.projectsShown { [deps, session, nav] in
                 deps.makeTimelineViewModel(for: session, coordinatorConvoID: { nav.coordinatorConvoID })
             }
         }
-        // A project opened on any stack asks once too, so its page is the
-        // new one without a visit to Projects first.
-        .onChange(of: nav.showsAProjectPage, initial: true) { _, shown in
-            guard shown, timeline.viewModel == nil else { return }
-            timeline.projectsShown { [deps, session, nav] in
-                deps.makeTimelineViewModel(for: session, coordinatorConvoID: { nav.coordinatorConvoID })
-            }
-        }
-        // While the timeline is shown a project opens as its new page.
-        .onChange(of: timeline.isShown, initial: true) { _, shown in nav.projectsOpenAsStories = shown }
     }
 
     /// The iPhone's tab bar, also an iPad window's at compact width.
@@ -638,7 +628,7 @@ struct AppShellView: View {
 
     private var missionsTab: some View {
         NavigationStack(path: missionsPath) {
-            ProjectsTabRoot(viewModel: missionsVM, onAction: handleProjectsHome,
+            ProjectsTabRoot(viewModel: missionsVM,
                             onLegacyAction: { nav.handleDashboard($0) },
                             onOpenMemories: { nav.openMemories() },
                             timeline: timeline, timelineActions: timelineActions)
@@ -690,27 +680,23 @@ struct AppShellView: View {
         }
     }
 
-    /// A project on the Projects stack: its new page, or a section of it,
-    /// while the timeline is shown; else the project page there is today.
-    @ViewBuilder private func projectPage(_ target: ProjectPageTarget) -> some View {
-        switch target.page(timelineShown: timeline.isShown) {
-        case .summary(let section):
-            TimelineStoryHost(projectID: target.projectID, section: section, session: session,
-                              missionsViewModel: missionsVM,
-                              onOpenSection: {
-                                  nav.pushTimelinePage(ProjectSectionRoute(projectID: target.projectID,
-                                                                           section: $0).pathValue)
-                              },
-                              onOpenMission: { nav.pushMission($0) }, onOpenItem: { nav.pushMissionItem($0) },
-                              onOpenSession: { nav.openConversation(fromMissions: $0) },
-                              onOpenMilestone: openMilestone)
-        case .todaysPage:
-            ProjectDetailHost(projectID: target.projectID, session: session, missionsViewModel: missionsVM,
-                              onOpenMission: { nav.pushMission($0) }, onOpenItem: { nav.pushMissionItem($0) },
-                              onOpenSession: { nav.openConversation(fromMissions: $0) },
-                              onOpenMilestone: openMilestone)
-        }
+    /// A project on the Projects stack: its page, or a section of it.
+    private func projectPage(_ target: ProjectPageTarget) -> some View {
+        TimelineStoryHost(projectID: target.projectID, section: target.section, session: session,
+                          missionsViewModel: missionsVM,
+                          onOpenSection: {
+                              nav.pushTimelinePage(ProjectSectionRoute(projectID: target.projectID,
+                                                                       section: $0).pathValue)
+                          },
+                          onOpenMission: { nav.pushMission($0) }, onOpenItem: { nav.pushMissionItem($0) },
+                          onOpenSession: { nav.openConversation(fromMissions: $0) },
+                          onOpenMilestone: openMilestone)
     }
+
+    /// Whether Projects is the timeline: once its view model is built,
+    /// unless the journal is too old for it (no `/projects`, or a 404 on
+    /// the weeks), which keeps the missions dashboard.
+    var timelineShown: Bool { timeline.isShown && missionsVM.projectsSupported != false }
 
     /// What the timeline's pages open, on the Projects stack.
     var timelineActions: ProjectsTabRoot.TimelineActions {
@@ -749,16 +735,6 @@ struct AppShellView: View {
         case .finished: return TimelineFormat.finished
         case .projects: return TimelineFormat.allProjects
         case .week: return "Projects"
-        }
-    }
-
-    /// Every Projects home tap. "Open in chat" from the briefing reader
-    /// lands on the briefing's own message, as a milestone tap does.
-    func handleProjectsHome(_ action: ProjectsHomeAction) {
-        if case .openConversation(let convoID, let seq) = action {
-            openMilestone(convoID: convoID, seq: seq)
-        } else {
-            nav.handleProjectsHome(action)
         }
     }
 
