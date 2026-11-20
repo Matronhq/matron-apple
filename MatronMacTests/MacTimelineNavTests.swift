@@ -238,6 +238,9 @@ final class MacTimelineNavTests: XCTestCase {
         MacChatListView.record(MacPlace(detail: .mission(id: nil)), in: history)
         XCTAssertEqual(history.current, MacPlace(detail: .mission(id: nil)))
         XCTAssertEqual(history.back, [chat])
+        XCTAssertTrue(MacTimelineNav.fillsIn(from: MacPlace(detail: .timeline(place: nil, story: "pj_a")),
+                                             to: MacPlace(detail: .mission(id: nil))),
+                      "a project opened before the answer goes with it")
         XCTAssertFalse(MacTimelineNav.fillsIn(from: MacPlace(detail: .timeline(place: week, story: nil)),
                                               to: MacPlace(detail: .mission(id: nil))),
                        "leaving a timeline that has answered is a move")
