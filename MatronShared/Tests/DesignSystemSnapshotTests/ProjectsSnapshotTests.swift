@@ -8,16 +8,6 @@ final class ProjectsSnapshotTests: XCTestCase {
     static func ago(_ s: TimeInterval) -> Date { now.addingTimeInterval(-s) }
     static let utc = TimeZone(identifier: "UTC")!
 
-    static let promo = Project(
-        id: "pj_1", num: 4000, title: "Promo launch", status:
-            "Launch Wed 7 Oct, 07:00 (fallback 13 Oct). The branch is green. Waiting on you: pricing page, claims copy, DNS.",
-        statusBy: .agent, statusUpdatedAt: ago(660),
-        missions: ProjectMissionCounts(running: 2, waiting: 2, idle: 0, quiet: 1, closed: 3), needsYou: 6,
-        lastActivityAt: ago(240))
-    static let silent = Project(
-        id: "pj_2", num: 4001, title: "Billing & invoices",
-        missions: ProjectMissionCounts(quiet: 6), lastActivityAt: ago(2 * 86_400))
-
     static func row(_ num: Int, _ title: String, activity: MissionActivity, status: String?, needsYou: Int = 0,
                     age: TimeInterval) -> MissionRowModel {
         MissionRowModel(mission: Mission(id: "ms_\(num)", num: num, title: title, originConvoID: "c1",
@@ -133,43 +123,6 @@ final class ProjectsSnapshotTests: XCTestCase {
             LinkedMissionChip(linked: .movedTo(MissionOtherLink(id: "ms_4905", num: 4905, title: "SEO phase 2")), action: {})
         }
         assertVariants(of: chips.padding(), named: "linked-mission-chips")
-    }
-
-    /// Status, and two items waiting on you with one more behind them.
-    func testProjectCardWithStatus() {
-        let card = ProjectCard(project: Self.promo, needsYouCount: 6,
-                               waiting: [ProjectWaitingOn(itemID: "it_1", num: 5008, kind: .question,
-                                                          title: "Approve the getting-started page (copy and pictures)",
-                                                          missionNum: 4791),
-                                         ProjectWaitingOn(itemID: "it_2", num: 5011, kind: .question,
-                                                          title: "Go for Monday's rehearsal at 07:00?", missionNum: 4791)],
-                               waitingMore: 1,
-                               latest: ProjectLatest(title: "Branch green", kind: .progress, at: Self.ago(600)),
-                               sessionsNow: 9)
-        assertVariants(of: ProjectCardView(card: card, now: Self.now, onOpen: {}).frame(width: 380).padding(),
-                       named: "project-card-status")
-    }
-
-    /// No status: the goal, and the latest milestone's grey box.
-    func testProjectCardGoalAndLatest() {
-        let project = Project(id: "pj_5", num: 4005, title: "File storage on object storage",
-                              body: "Every workspace's files on object storage with backups current, and a read-only query box.",
-                              missions: ProjectMissionCounts(running: 2, idle: 2))
-        let card = ProjectCard(project: project,
-                               latest: ProjectLatest(title: "PR opened with the cookbook, role, environment and replica firewall rule",
-                                                     kind: .progress, at: Self.ago(45 * 60)),
-                               sessionsNow: 5)
-        assertVariants(of: ProjectCardView(card: card, now: Self.now, onOpen: {}).frame(width: 380).padding(),
-                       named: "project-card-goal-latest")
-    }
-
-    /// An older journal: no status, no goal, no card fields — today's line.
-    func testProjectCardWithoutStatus() {
-        let card = ProjectCard(project: Self.silent, needsYouCount: 1,
-                               latestMilestone: MissionLastMilestone(num: 9, title: "PR 8270 final at ae015adc9c",
-                                                                     kind: .progress, createdAt: Self.ago(12 * 86_400)))
-        assertVariants(of: ProjectCardView(card: card, now: Self.now, onOpen: {}).frame(width: 380).padding(),
-                       named: "project-card-no-status")
     }
 
     func testMissionRows() {

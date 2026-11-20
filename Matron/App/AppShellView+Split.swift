@@ -308,9 +308,10 @@ extension AppShellView {
         .environment(\.openProject) { nav.pushProject($0) }
     }
 
-    /// With the timeline shown, the place picked in the sidebar, rooted as
-    /// For you's selection is: what it opens pushes on top, and a new pick
-    /// replaces the stack. Otherwise today's Projects home.
+    /// The place picked in the sidebar, rooted as For you's selection is:
+    /// what it opens pushes on top, and a new pick replaces the stack.
+    /// Until the timeline is built, and on a journal too old for it, the
+    /// tab root (its loading state, or the missions dashboard).
     @ViewBuilder private var splitProjectsRoot: some View {
         if timeline.isShown, let viewModel = timeline.viewModel {
             TimelinePlacePage(host: timeline, viewModel: viewModel, place: timeline.place, session: session,
@@ -323,9 +324,9 @@ extension AppShellView {
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .principal) { Text(verbatim: " ").accessibilityHidden(true) } }
         } else {
-            ProjectsTabRoot(viewModel: missionsVM, onAction: handleProjectsHome,
+            ProjectsTabRoot(viewModel: missionsVM,
                             onLegacyAction: { nav.handleDashboard($0) },
-                            onOpenMemories: { nav.openMemories() })
+                            onOpenMemories: { nav.openMemories() }, timeline: timeline)
         }
     }
 

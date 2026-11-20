@@ -18,29 +18,7 @@ final class TimelineHostStateTests: XCTestCase {
         XCTAssertNotNil(state.viewModel)
     }
 
-    /// Flag off: no view model, so nothing asks the journal.
-    func testFlagOff_buildsNoViewModel() {
-        let state = TimelineHostState()
-        XCTAssertNil(state.projectsShown(flagOn: false) { XCTFail("built with the flag off"); return Self.viewModel() })
-        XCTAssertNil(state.viewModel)
-        XCTAssertFalse(state.isShown)
-    }
-
-    /// Turned off in Settings after a visit: the next visit drops the
-    /// timeline and Projects is the home again; turned back on, it builds anew.
-    func testFlagTurnedOff_theNextVisitDropsTheTimeline() async {
-        let state = TimelineHostState()
-        await state.projectsShown(flagOn: true) { Self.viewModel(StubTimeline()) }?.value
-        XCTAssertTrue(state.isShown)
-        XCTAssertNil(state.projectsShown(flagOn: false) { XCTFail("built with the flag off"); return Self.viewModel() })
-        XCTAssertNil(state.viewModel)
-        XCTAssertFalse(state.isShown)
-        XCTAssertNil(state.place)
-        await state.projectsShown(flagOn: true) { Self.viewModel(StubTimeline()) }?.value
-        XCTAssertTrue(state.isShown)
-    }
-
-    func testFlagOn_buildsOnce_showsOnceTheJournalAnswers_andLoadsTheCounts() async {
+    func testBuildsOnce_showsAtOnce_andLoadsTheCounts() async {
         let state = TimelineHostState()
         let timeline = StubTimeline()
         var built = 0
@@ -48,14 +26,14 @@ final class TimelineHostStateTests: XCTestCase {
             built += 1
             return Self.viewModel(timeline)
         }
-        let first = state.projectsShown(flagOn: true, build: build)
-        XCTAssertFalse(state.isShown, "not shown until the journal answers")
+        let first = state.projectsShown(build: build)
+        XCTAssertTrue(state.isShown, "shown at once: its pages show their own loading state")
         await first?.value
         XCTAssertTrue(state.isShown)
         XCTAssertEqual(state.place, .week("2026-11-02"))
         XCTAssertEqual(state.viewModel?.quiet?.total, 3, "the counts load with the timeline")
         XCTAssertEqual(state.viewModel?.long?.total, 4)
-        await state.projectsShown(flagOn: true, build: build)?.value
+        await state.projectsShown(build: build)?.value
         XCTAssertEqual(built, 1)
         XCTAssertEqual(timeline.weeksReads, 2, "a later visit re-reads")
         XCTAssertEqual(timeline.quietReads, 2, "and its counts")
@@ -66,10 +44,10 @@ final class TimelineHostStateTests: XCTestCase {
     func testAJournalWithoutTheTimelineIsAskedOnce_andNeverForCounts() async {
         let state = TimelineHostState()
         let timeline = StubTimeline(supported: false)
-        await state.projectsShown(flagOn: true) { Self.viewModel(timeline) }?.value
+        await state.projectsShown { Self.viewModel(timeline) }?.value
         XCTAssertEqual(state.viewModel?.isSupported, false)
         XCTAssertFalse(state.isShown)
-        XCTAssertNil(state.projectsShown(flagOn: true) { XCTFail("built twice"); return Self.viewModel() })
+        XCTAssertNil(state.projectsShown { XCTFail("built twice"); return Self.viewModel() })
         await state.refresh()
         XCTAssertEqual(timeline.weeksReads, 1)
         XCTAssertEqual(timeline.quietReads, 0)
@@ -80,7 +58,7 @@ final class TimelineHostStateTests: XCTestCase {
     func testARefreshThatFindsThe404AsksForNoCounts() async {
         let state = TimelineHostState()
         let timeline = StubTimeline()
-        await state.projectsShown(flagOn: true) { Self.viewModel(timeline) }?.value
+        await state.projectsShown { Self.viewModel(timeline) }?.value
         XCTAssertEqual(timeline.quietReads, 1)
         timeline.supported = false
         await state.refresh()
@@ -91,7 +69,7 @@ final class TimelineHostStateTests: XCTestCase {
     func testRefreshReReadsThePageAndTheCounts() async {
         let state = TimelineHostState()
         let timeline = StubTimeline()
-        await state.projectsShown(flagOn: true) { Self.viewModel(timeline) }?.value
+        await state.projectsShown { Self.viewModel(timeline) }?.value
         await state.refresh()
         XCTAssertEqual(timeline.weeksReads, 2)
         XCTAssertEqual(timeline.quietReads, 2)
@@ -103,7 +81,7 @@ final class TimelineHostStateTests: XCTestCase {
         let state = TimelineHostState()
         let timeline = StubTimeline()
         timeline.projectTitle = "Alpha"
-        await state.projectsShown(flagOn: true) { Self.viewModel(timeline) }?.value
+        await state.projectsShown { Self.viewModel(timeline) }?.value
         state.select(.projects)
         await state.viewModel?.select(.projects)
         XCTAssertEqual(state.viewModel?.allProjects?.rows.map(\.project.title), ["Alpha"])
@@ -121,7 +99,7 @@ final class TimelineHostStateTests: XCTestCase {
     func testAPlacePickedBeforeTheViewModelExistsIsTheOneLoaded() async {
         let state = TimelineHostState()
         state.select(.week("2026-10-26"))
-        await state.projectsShown(flagOn: true) { Self.viewModel() }?.value
+        await state.projectsShown { Self.viewModel() }?.value
         XCTAssertEqual(state.viewModel?.place, .week("2026-10-26"))
         XCTAssertEqual(state.viewModel?.week?.week, "2026-10-26")
     }
@@ -129,7 +107,7 @@ final class TimelineHostStateTests: XCTestCase {
     /// The week page under a list (the iPhone's root) is the last week picked.
     func testTheWeekIsTheLastOnePicked() async {
         let state = TimelineHostState()
-        await state.projectsShown(flagOn: true) { Self.viewModel() }?.value
+        await state.projectsShown { Self.viewModel() }?.value
         XCTAssertEqual(state.week, "2026-11-02", "the newest week first")
         state.select(.week("2026-10-26"))
         XCTAssertEqual(state.week, "2026-10-26")
@@ -140,7 +118,7 @@ final class TimelineHostStateTests: XCTestCase {
 
     func testResetForgetsTheOldSession() async {
         let state = TimelineHostState()
-        await state.projectsShown(flagOn: true) { Self.viewModel() }?.value
+        await state.projectsShown { Self.viewModel() }?.value
         state.select(.week("2026-10-26"))
         state.reset()
         XCTAssertNil(state.viewModel)

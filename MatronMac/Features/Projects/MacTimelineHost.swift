@@ -66,16 +66,12 @@ import MatronViewModels
     enum ProjectContent: Equatable {
         case summary
         case section(ProjectSection)
-        /// The journal has no project-page route: the project page it had.
-        case todaysPage
         case missing, loadFailed, loading
     }
 
-    /// An older journal first (it has nothing to show a section of), then
-    /// the page or its section, then why there is none.
-    static func projectContent(hasPage: Bool, isMissing: Bool, isUnsupported: Bool, loadFailed: Bool,
+    /// The page or its section, else why there is none.
+    static func projectContent(hasPage: Bool, isMissing: Bool, loadFailed: Bool,
                                section: ProjectSection?) -> ProjectContent {
-        if isUnsupported { return .todaysPage }
         if hasPage { return section.map { .section($0) } ?? .summary }
         if isMissing { return .missing }
         return loadFailed ? .loadFailed : .loading
@@ -132,8 +128,8 @@ final class MacTimelineState {
 
     /// Projects came on screen (`TimelineHostState.projectsShown`).
     @discardableResult
-    func projectsShown(flagOn: Bool = true, build: () -> TimelineViewModel) -> Task<Void, Never>? {
-        host.projectsShown(flagOn: flagOn, build: build)
+    func projectsShown(build: () -> TimelineViewModel) -> Task<Void, Never>? {
+        host.projectsShown(build: build)
     }
 
     func select(_ place: TimelinePlace?) { host.select(place) }
@@ -251,8 +247,7 @@ struct MacTimelinePlaceView: View {
 /// one of the page's three sections under a row back to the page. Where
 /// the project stands and its history come from a `ProjectSummaryViewModel`;
 /// its missions, its files and the "···" actions from the shell's
-/// `ProjectDetailViewModel`. On a journal without the project-page route
-/// it shows the project page that journal has.
+/// `ProjectDetailViewModel`.
 struct MacTimelineProjectHost: View {
     let projectID: String
     let section: ProjectSection?
@@ -292,28 +287,21 @@ struct MacTimelineProjectHost: View {
     }
 
     var body: some View {
-        Group {
-            if content == .todaysPage {
-                MacProjectPage(projectID: projectID, session: session, missionsViewModel: missionsViewModel,
-                               slot: $slot, actions: actions, onRedirect: onRedirectStory, ownsSlot: false)
-            } else {
-                page
+        page
+            .task(id: projectID) {
+                guard let deps else { return }
+                slot.show(projectID: projectID, owner: owner, page: pageToken) {
+                    deps.makeProjectDetailViewModel(for: session, projectID: projectID)
+                }
+                await load()
             }
-        }
-        .task(id: projectID) {
-            guard let deps else { return }
-            slot.show(projectID: projectID, owner: owner, page: pageToken) {
-                deps.makeProjectDetailViewModel(for: session, projectID: projectID)
+            .onDisappear { slot.pageDidDisappear(owner: owner, page: pageToken) }
+            // ⌘R, or back in the app: the page again. The history keeps the
+            // weeks it has paged.
+            .onChange(of: refreshCount) {
+                guard let summary, summary.page != nil else { return }
+                Task { await summary.refreshPage() }
             }
-            await load()
-        }
-        .onDisappear { slot.pageDidDisappear(owner: owner, page: pageToken) }
-        // ⌘R, or back in the app: the page again. The history keeps the
-        // weeks it has paged.
-        .onChange(of: refreshCount) {
-            guard let summary, summary.page != nil else { return }
-            Task { await summary.refreshPage() }
-        }
     }
 
     private var owner: ObjectIdentifier { ObjectIdentifier(missionsViewModel) }
@@ -322,7 +310,7 @@ struct MacTimelineProjectHost: View {
 
     private var content: MacTimelineNav.ProjectContent {
         MacTimelineNav.projectContent(hasPage: summary?.page != nil, isMissing: summary?.isMissing == true,
-                                      isUnsupported: summary?.isUnsupported == true, loadFailed: loadFailed,
+                                      loadFailed: loadFailed,
                                       section: section)
     }
 
@@ -334,7 +322,7 @@ struct MacTimelineProjectHost: View {
         loadFailed = false
         await summary.start()
         guard !Task.isCancelled else { return }
-        loadFailed = summary.page == nil && !summary.isMissing && !summary.isUnsupported
+        loadFailed = summary.page == nil && !summary.isMissing
         // The page says it could not load; an alert over it would say so twice.
         if loadFailed { summary.error = nil }
     }
@@ -365,12 +353,12 @@ struct MacTimelineProjectHost: View {
                     Button("Try again") { Task { await load() } }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            case .loading, .todaysPage:
+            case .loading:
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        // Counted like today's project page (which counts itself): the
-        // dashboard keeps the project list fresh while a project is open.
+        // Counted as a project page: the dashboard keeps the project list
+        // fresh while a project is open.
         .onAppear { missionsViewModel.projectPageDidAppear() }
         .onDisappear { missionsViewModel.projectPageDidDisappear() }
         // A merge moved the project: the page follows it, whichever of its
@@ -520,7 +508,7 @@ struct MacTimelineProjectHost: View {
             MacAttachmentOpener.open(filename: name, mime: file.contentType,
                                      load: { await localFile(file, name: name) }, preview: { mediaPreview = $0 })
         case .source:
-            MacProjectPage.openFile(file, deps: deps, session: session, actions: actions, vm: detail)
+            MacProjectFiles.openFile(file, deps: deps, session: session, actions: actions, vm: detail)
         }
     }
 
