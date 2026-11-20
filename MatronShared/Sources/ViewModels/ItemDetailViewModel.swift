@@ -178,6 +178,9 @@ public final class ItemDetailViewModel {
     /// is what comes back if the edit is never sent.
     private func saveBox() {
         guard loadedBox, !isStopped, let unsentReplies else { return }
+        // Another page shows this item now (this view model was made to
+        // retry a voice note): that page owns the saved box.
+        if let live = unsentReplies.box(for: unsentPlace), live !== self { return }
         let text = editingQueuedReplyID != nil ? preEditDraft : draft
         unsentReplies.save(UnsentReply(text: text, attachments: stagedAttachments), for: unsentPlace, epoch: unsentEpoch)
     }

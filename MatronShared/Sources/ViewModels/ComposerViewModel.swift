@@ -145,7 +145,8 @@ public final class ComposerViewModel {
         commands: [BotCommand],
         recentFolders: RecentStartFolders = RecentStartFolders(),
         sessionStatus: @escaping @MainActor () -> SessionStatus? = { nil },
-        unsentReplies: UnsentReplyStore? = nil
+        unsentReplies: UnsentReplyStore? = nil,
+        registersAsBox: Bool = true
     ) {
         self.roomID = roomID
         self.timeline = timeline
@@ -158,12 +159,30 @@ public final class ComposerViewModel {
             let saved = unsentReplies.reply(for: .conversation(roomID))
             input = saved.text
             stagedAttachments = saved.attachments
-            unsentReplies.register(self, for: .conversation(roomID))
+            if registersAsBox { unsentReplies.register(self, for: .conversation(roomID)) }
         }
         loadedBox = true
     }
 
     // MARK: Unsent message
+
+    /// Another composer is the conversation's box now (this one was made
+    /// to retry a voice note, and the chat has been opened since). That
+    /// one owns the saved message: this one neither saves over it nor
+    /// keeps a failed send, which goes to it instead (`handBack`).
+    private var anotherComposerIsShowing: Bool {
+        guard let live = unsentReplies?.box(for: .conversation(roomID)) else { return false }
+        return live !== self
+    }
+
+    /// Gives what a failed send didn't deliver to the composer showing
+    /// this conversation, when that isn't this one. Returns whether it did.
+    private func handBack(_ attachments: [StagedAttachment], text: String) -> Bool {
+        guard anotherComposerIsShowing, let unsentReplies else { return false }
+        unsentReplies.giveBack(UnsentReply(text: text, attachments: attachments),
+                               to: .conversation(roomID), epoch: unsentEpoch)
+        return true
+    }
 
     /// Keeps the composer's text and tray on disk, so a message that
     /// hasn't been sent (a voice note whose upload failed is put back in
@@ -177,7 +196,7 @@ public final class ComposerViewModel {
     /// a recalled sent line in the field: the draft stashed when the walk
     /// began is what was saved, and stays saved.
     private func saveBox() {
-        guard loadedBox, let unsentReplies, !history.isNavigating else { return }
+        guard loadedBox, let unsentReplies, !history.isNavigating, !anotherComposerIsShowing else { return }
         unsentReplies.save(UnsentReply(text: input, attachments: stagedAttachments),
                            for: .conversation(roomID), epoch: unsentEpoch)
     }
@@ -468,17 +487,19 @@ public final class ComposerViewModel {
         } catch let failure as AttachmentSendFailure {
             // Whatever didn't go out goes back in the tray, ahead of
             // anything the user attached while the send was in flight.
-            stagedAttachments = failure.unsent + stagedAttachments
             // If the caption's own attachment made it, the text HAS been
             // delivered — restoring it would leave the user staring at
             // words they already sent, and re-sending would duplicate them.
-            if !failure.captionDelivered { restoreInput(pending) }
+            if !handBack(failure.unsent, text: failure.captionDelivered ? "" : pending) {
+                stagedAttachments = failure.unsent + stagedAttachments
+                if !failure.captionDelivered { restoreInput(pending) }
+            }
             return ComposerSendFailure(
                 message: failure.underlying.localizedDescription,
                 leadingUnsent: leading.map { note in failure.unsent.contains { $0.id == note.id } } ?? false
             )
         } catch {
-            restoreInput(pending)
+            if !handBack([], text: pending) { restoreInput(pending) }
             return ComposerSendFailure(message: error.localizedDescription, leadingUnsent: false)
         }
     }

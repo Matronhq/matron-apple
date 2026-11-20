@@ -36,6 +36,21 @@ final class UnsentReplyStoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: orphan.url.path))
     }
 
+    /// A saved box that can't be read (before the first unlock, say) may
+    /// name any staged file: the sweep then deletes nothing.
+    func testSweepDeletesNothingWhenABoxCantBeRead() throws {
+        let previous = StagedAttachment.stagingDirectory
+        StagedAttachment.useStagingDirectory(temporaryDirectory("staging"))
+        defer { StagedAttachment.useStagingDirectory(previous) }
+        let store = UnsentReplyStore(directory: temporaryDirectory("unsent"))
+        let file = try stage("note.m4a")
+        try Data("not json".utf8).write(to: store.directory.appendingPathComponent("item-it_9.json"))
+
+        store.sweepOrphans()
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.url.path))
+    }
+
     /// An id with characters a file name can't hold still gets its own box.
     func testIdsAreSafeFileNames() {
         let store = UnsentReplyStore(directory: temporaryDirectory("unsent"))

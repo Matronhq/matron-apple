@@ -185,11 +185,15 @@ public final class UnsentReplyStore {
     /// reply box exists.
     public func sweepOrphans() {
         let fm = FileManager.default
+        // Nothing is deleted unless every saved box could be read: a box
+        // that can't be (protected data before the first unlock, a read
+        // error) may name any of the files.
+        guard let saved = try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else { return }
         var kept = Set<String>()
-        for file in (try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
-        where file.pathExtension == "json" {
-            guard let data = try? Data(contentsOf: file), let saved = try? JSONDecoder().decode(SavedRecord.self, from: data) else { continue }
-            for entry in saved.box.attachments + saved.sending.values.flatMap(\.attachments) {
+        for file in saved where file.pathExtension == "json" {
+            guard let data = try? Data(contentsOf: file),
+                  let record = try? JSONDecoder().decode(SavedRecord.self, from: data) else { return }
+            for entry in record.box.attachments + record.sending.values.flatMap(\.attachments) {
                 kept.insert(String(entry.path.split(separator: "/").first ?? ""))
             }
         }

@@ -54,7 +54,10 @@ extension AppDependencies {
             case .conversation(let roomID):
                 let composer = (self.unsentReplies.box(for: .conversation(roomID)) as? ComposerViewModel)
                     ?? ComposerViewModel(roomID: roomID, timeline: self.timelineService(for: session, roomID: roomID),
-                                         commands: [], unsentReplies: self.unsentReplies)
+                                         commands: [], unsentReplies: self.unsentReplies,
+                                         // Not the chat's box: if the chat opens while this
+                                         // sends, a failure goes to the composer on screen.
+                                         registersAsBox: false)
                 return { url, duration in await composer.sendVoiceNote(url: url, duration: duration) }
             }
         }

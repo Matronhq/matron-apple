@@ -1733,6 +1733,40 @@ final class ComposerViewModelTests: XCTestCase {
         XCTAssertTrue(after.stagedAttachments.isEmpty)
     }
 
+    /// After a restart, Retry sends a note through a composer made for it.
+    /// If the chat opens while that send is in flight, the failed message
+    /// goes to the composer on screen, and the stand-in never saves over it.
+    @MainActor
+    func test_unsentMessage_aRetryComposerHandsAFailureToTheOneOnScreen() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("unsent-\(UUID())")
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let store = UnsentReplyStore(directory: directory)
+        let fake = FakeTimelineService()
+        let gate = SendGate()
+        fake.sendGate = gate
+        struct Boom: Error, LocalizedError { var errorDescription: String? { "boom" } }
+        fake.nextSendError = Boom()
+        let retry = ComposerViewModel(roomID: "!r", timeline: fake, commands: [], unsentReplies: store,
+                                      registersAsBox: false)
+        retry.input = "said with the note"
+        let recording = try makeRecording()
+        let send = Task { await retry.sendVoiceNote(url: recording, duration: 1) }
+        while await !gate.isStarted() { await Task.yield() }
+
+        let onScreen = ComposerViewModel(roomID: "!r", timeline: fake, commands: [], unsentReplies: store)
+        XCTAssertEqual(onScreen.input, "", "the message is on its way")
+        onScreen.input = "typed meanwhile"
+        await gate.open()
+        _ = await send.value
+
+        XCTAssertEqual(onScreen.input, "typed meanwhile\n\nsaid with the note")
+        XCTAssertEqual(onScreen.stagedAttachments.map(\.filename), ["voice-note.m4a"])
+        XCTAssertTrue(retry.stagedAttachments.isEmpty)
+        let reread = UnsentReplyStore(directory: directory).reply(for: .conversation("!r"))
+        XCTAssertEqual(reread.text, "typed meanwhile\n\nsaid with the note")
+        XCTAssertEqual(reread.attachments.map(\.filename), ["voice-note.m4a"])
+    }
+
     /// Up/Down shows a sent line in the field; what is saved stays the
     /// draft it was walking away from.
     @MainActor
