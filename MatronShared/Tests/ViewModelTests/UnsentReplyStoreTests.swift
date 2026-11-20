@@ -1,0 +1,96 @@
+import XCTest
+import MatronModels
+@testable import MatronViewModels
+
+@MainActor
+final class UnsentReplyStoreTests: XCTestCase {
+    private func temporaryDirectory(_ name: String) -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(name)-\(UUID())", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        return url
+    }
+
+    private func stage(_ name: String) throws -> StagedAttachment {
+        let source = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID())-\(name)")
+        try Data([1]).write(to: source)
+        return try StagedAttachment.stage(moving: source, filename: name)
+    }
+
+    /// At launch, staged files no saved box refers to (left by a crash
+    /// between staging and saving) are deleted; the rest stay.
+    func testSweepDeletesOnlyFilesNoBoxRefersTo() throws {
+        let previous = StagedAttachment.stagingDirectory
+        StagedAttachment.useStagingDirectory(temporaryDirectory("staging"))
+        defer { StagedAttachment.useStagingDirectory(previous) }
+        let store = UnsentReplyStore(directory: temporaryDirectory("unsent"))
+        let kept = try stage("kept.png")
+        let sending = try stage("sending.m4a")
+        let orphan = try stage("orphan.png")
+        store.save(UnsentReply(attachments: [kept]), for: .item("it_1"), epoch: store.epoch)
+        store.beginSend("local-1", UnsentReply(attachments: [sending]), for: .conversation("c1"), epoch: store.epoch)
+
+        UnsentReplyStore(directory: store.directory).sweepOrphans()
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: kept.url.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sending.url.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: orphan.url.path))
+    }
+
+    /// A saved box that can't be read (before the first unlock, say) may
+    /// name any staged file: the sweep then deletes nothing.
+    func testSweepDeletesNothingWhenABoxCantBeRead() throws {
+        let previous = StagedAttachment.stagingDirectory
+        StagedAttachment.useStagingDirectory(temporaryDirectory("staging"))
+        defer { StagedAttachment.useStagingDirectory(previous) }
+        let store = UnsentReplyStore(directory: temporaryDirectory("unsent"))
+        let file = try stage("note.m4a")
+        try Data("not json".utf8).write(to: store.directory.appendingPathComponent("item-it_9.json"))
+
+        store.sweepOrphans()
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.url.path))
+    }
+
+    /// An id with characters a file name can't hold still gets its own box.
+    func testIdsAreSafeFileNames() {
+        let store = UnsentReplyStore(directory: temporaryDirectory("unsent"))
+        store.save(UnsentReply(text: "a"), for: .conversation("../x/y"), epoch: store.epoch)
+        store.save(UnsentReply(text: "b"), for: .conversation("x/y"), epoch: store.epoch)
+        let reread = UnsentReplyStore(directory: store.directory)
+        XCTAssertEqual(reread.reply(for: .conversation("../x/y")).text, "a")
+        XCTAssertEqual(reread.reply(for: .conversation("x/y")).text, "b")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: store.directory.path).count, 2)
+    }
+
+    /// Text that only ends like the box's isn't taken for a copy of it.
+    func testMergeKeepsTextThatOnlyEndsTheSame() {
+        let merged = UnsentReplyStore.merge(UnsentReply(text: "yes"), into: UnsentReply(text: "not yes"))
+        XCTAssertEqual(merged.text, "not yes\n\nyes")
+        XCTAssertEqual(UnsentReplyStore.merge(UnsentReply(text: "yes"), into: UnsentReply(text: "yes")).text, "yes\n\nyes",
+                       "a second reply that says the same is still a reply")
+    }
+
+    /// At the next launch a send still recorded comes back to the box —
+    /// unless its files have all gone, which happens once it is queued.
+    func testASendWhoseFilesAreGoneIsNotPutBack() throws {
+        let store = UnsentReplyStore(directory: temporaryDirectory("unsent"))
+        let queued = try stage("queued.png")
+        let interrupted = try stage("interrupted.png")
+        store.beginSend("a", UnsentReply(text: "went out", attachments: [queued]), for: .item("it_1"), epoch: store.epoch)
+        store.beginSend("b", UnsentReply(text: "didn't", attachments: [interrupted]), for: .item("it_1"), epoch: store.epoch)
+        queued.deleteStagedCopy()
+
+        let box = UnsentReplyStore(directory: store.directory).reply(for: .item("it_1"))
+        XCTAssertEqual(box.text, "didn't")
+        XCTAssertEqual(box.attachments.map(\.filename), ["interrupted.png"])
+        interrupted.deleteStagedCopy()
+    }
+
+    /// An empty box leaves no file behind.
+    func testAnEmptyBoxDeletesItsFile() {
+        let store = UnsentReplyStore(directory: temporaryDirectory("unsent"))
+        store.save(UnsentReply(text: "a"), for: .item("it_1"), epoch: store.epoch)
+        store.save(UnsentReply(), for: .item("it_1"), epoch: store.epoch)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: store.directory.path), [])
+    }
+}

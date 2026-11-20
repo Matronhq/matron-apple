@@ -27,7 +27,7 @@ struct MatronMacApp: App {
     /// The one voice-note recording: above every window and
     /// page, so a note carries on while the user browses conversations,
     /// items and projects, and is sent where it began.
-    @State private var voiceNotes = VoiceNoteSession()
+    @State private var voiceNotes = UnsentStorage.makeVoiceNoteSession()
 
     @State private var dependencies = AppDependencies()
     @State private var session: UserSession?
@@ -215,6 +215,9 @@ struct MatronMacApp: App {
                     // keeps App Nap off the engine's timers, so a dropped
                     // socket is still noticed; with it closed the Mac may idle.
                     .task(id: session.userID) {
+                        // Failed voice notes an earlier launch kept, with
+                        // Retry.
+                        voiceNotes.restoreSavedFailures(resolveDeliver: dependencies.voiceNoteDeliverer(for: session))
                         // One per session, whichever window mounts first.
                         guard syncLifecycle?.userID != session.userID else { return }
                         syncLifecycle?.stop()

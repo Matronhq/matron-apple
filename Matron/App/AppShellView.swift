@@ -31,7 +31,7 @@ struct AppShellView: View {
     /// note carries on while the user moves between conversations, items and
     /// projects. Composers reach it through the environment; each tab
     /// carries its pill (`voiceNoteIndicator`).
-    @State var voiceNotes = VoiceNoteSession()
+    @State var voiceNotes = UnsentStorage.makeVoiceNoteSession()
     /// Voice mode's settings (spec 2026-10-03 §6): one object for the
     /// settings screen and for voice mode itself.
     @State private var voiceSettings = VoiceSettings()
@@ -311,6 +311,8 @@ struct AppShellView: View {
                                           userID: session.userID)
         }
         .task { decisionsVM.start() }
+        // Failed voice notes an earlier launch kept, with Retry.
+        .task { voiceNotes.restoreSavedFailures(resolveDeliver: deps.voiceNoteDeliverer(for: session)) }
         // The Conversations list VM needs to keep running even while
         // another tab shows: the coordinator badge and title read it.
         // `ChatListViewModel.start()` is idempotent — it cancels any prior

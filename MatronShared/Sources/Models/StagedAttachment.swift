@@ -58,10 +58,50 @@ public struct StagedAttachment: Identifiable, Equatable, Sendable {
         ByteCountFormatter.string(fromByteCount: Int64(sizeBytes), countStyle: .file)
     }
 
-    /// Our own subdirectory of tmp, so `discardAll()` can empty it without
-    /// touching temp files other parts of the app (or the OS) put there.
-    public static var stagingDirectory: URL {
-        FileManager.default.temporaryDirectory.appendingPathComponent("staged-attachments", isDirectory: true)
+    /// Where staged copies live. The apps point it at a folder in
+    /// Application Support at launch (`useStagingDirectory(_:)`): a reply
+    /// that hasn't been sent is kept until it is sent or the user removes
+    /// it, across leaving the page and restarting the app
+    /// (`UnsentReplyStore`), and tmp may be emptied by the system while the
+    /// app isn't running. Tests and previews keep the tmp default.
+    public static var stagingDirectory: URL { stagingRoot.directory }
+
+    /// Points `stagingDirectory` at `directory` (created if missing, and
+    /// kept out of device backups). Call once, at launch, before anything
+    /// is staged.
+    public static func useStagingDirectory(_ directory: URL) {
+        var directory = directory
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? directory.setResourceValues(values)
+        stagingRoot.directory = directory
+    }
+
+    /// Deletes every staged copy (sign-out: nothing the old account was
+    /// writing may be left for the next one).
+    public static func removeAllStagedCopies() {
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(at: stagingDirectory, includingPropertiesForKeys: nil) else { return }
+        for entry in entries { try? fm.removeItem(at: entry) }
+    }
+
+    private final class StagingRoot: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = FileManager.default.temporaryDirectory
+            .appendingPathComponent("staged-attachments", isDirectory: true)
+        var directory: URL {
+            get { lock.lock(); defer { lock.unlock() }; return value }
+            set { lock.lock(); value = newValue; lock.unlock() }
+        }
+    }
+    private static let stagingRoot = StagingRoot()
+
+    /// This copy's path inside `stagingDirectory` (`<id>/<filename>`) —
+    /// what `UnsentReplyStore` saves, since the app's container path can
+    /// change between launches (an update moves it on iOS).
+    public var stagedPath: String {
+        url.deletingLastPathComponent().lastPathComponent + "/" + url.lastPathComponent
     }
 
     /// Copies `source` into the staging directory and describes the result.
@@ -133,8 +173,9 @@ public struct StagedAttachment: Identifiable, Equatable, Sendable {
     }
 
     /// Best-effort removal of this attachment's staged copy. Failures are
-    /// ignored: a temp file we couldn't delete is litter the OS clears, not
-    /// something worth surfacing to the user mid-compose.
+    /// ignored: a file we couldn't delete is swept at the next launch
+    /// (`UnsentReplyStore.sweepOrphans()`), not something worth surfacing
+    /// to the user mid-compose.
     public func deleteStagedCopy() {
         try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
     }

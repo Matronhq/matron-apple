@@ -1530,6 +1530,208 @@ final class ItemDetailViewModelTests: XCTestCase {
         XCTAssertEqual(vm.selectedCommentActions, [:], "the marker did not outlive the withdrawal")
     }
 
+    // MARK: Unsent reply kept on disk
+
+    /// A fresh store over `directory`: the same folder read by a new
+    /// process, as after the app restarts.
+    private func unsentStore(_ directory: URL) -> UnsentReplyStore {
+        UnsentReplyStore(directory: directory)
+    }
+
+    private func unsentDirectory() -> URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("unsent-\(UUID())", isDirectory: true)
+    }
+
+    /// Leaving the item keeps the reply: the text and the staged file are
+    /// there when the item opens again, and the file is still on disk.
+    func testLeavingTheItemKeepsTheReplyForTheNextVisit() async throws {
+        let replies = unsentStore(unsentDirectory())
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: Sync(), unsentReplies: replies)
+        vm.start()
+        vm.draft = "half a thought"
+        await vm.attachFiles([try makeFile("a.png")])
+        let copy = try XCTUnwrap(vm.stagedAttachments.first?.url)
+        vm.stop()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: copy.path), "leaving the item doesn't delete the file")
+
+        let again = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: Sync(), unsentReplies: replies)
+        again.start()
+        XCTAssertEqual(again.draft, "half a thought")
+        XCTAssertEqual(again.stagedAttachments.map(\.filename), ["a.png"])
+        let other = ItemDetailViewModel(itemID: "it_2", store: Store(), api: API(), sync: Sync(), unsentReplies: replies)
+        XCTAssertEqual(other.draft, "", "each item has its own box")
+        XCTAssertTrue(other.stagedAttachments.isEmpty)
+        again.discardAttachments()
+    }
+
+    /// The reported bug: a voice note that fails to upload goes back in the
+    /// reply. Leaving the item and restarting the app keeps it there, and
+    /// Send then sends it with the typed text.
+    func testAFailedVoiceNoteSurvivesLeavingTheItemAndARestart() async throws {
+        let directory = unsentDirectory()
+        let api = API(); api.failUpload = true
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: Sync(), unsentReplies: unsentStore(directory))
+        vm.start()
+        vm.draft = "listen to this"
+        let message = await vm.sendVoiceNote(url: try makeRecording())
+        XCTAssertEqual(message?.hasSuffix("it's back in the reply."), true, message ?? "nil")
+        vm.stop()
+
+        let sync = Sync(); let working = API()
+        let relaunched = ItemDetailViewModel(itemID: "it_1", store: Store(), api: working, sync: sync,
+                                             unsentReplies: unsentStore(directory))
+        relaunched.start()
+        XCTAssertEqual(relaunched.draft, "listen to this")
+        XCTAssertEqual(relaunched.stagedAttachments.map(\.filename), ["voice-note.m4a"])
+        let note = try XCTUnwrap(relaunched.stagedAttachments.first)
+        XCTAssertEqual(try Data(contentsOf: note.url), Data("AUDIO".utf8))
+
+        await relaunched.submitComment()
+        XCTAssertEqual(sync.comments.first?.1, "listen to this")
+        XCTAssertEqual(sync.comments.first?.2.map(\.name), ["voice-note.m4a"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: note.url.path))
+        let after = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: Sync(), unsentReplies: unsentStore(directory))
+        XCTAssertEqual(after.draft, "", "Send clears the saved box")
+        XCTAssertTrue(after.stagedAttachments.isEmpty)
+    }
+
+    /// A send that fails after the item closed goes to the item's saved
+    /// box, not the bin.
+    func testASendFailingAfterTheItemClosedIsKeptForTheNextVisit() async throws {
+        let replies = unsentStore(unsentDirectory())
+        let api = API(); api.failUpload = true
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: Sync(), unsentReplies: replies)
+        vm.start()
+        vm.draft = "typed"
+        await vm.attachFiles([try makeFile("a.png")])
+        api.holdUpload = true
+        let send = Task { await vm.submitComment() }
+        try await waitUntil { api.isUploadHeld }
+        vm.stop()
+        api.releaseUpload()
+        await send.value
+
+        let again = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: Sync(), unsentReplies: replies)
+        again.start()
+        XCTAssertEqual(again.draft, "typed")
+        XCTAssertEqual(again.stagedAttachments.map(\.filename), ["a.png"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(again.stagedAttachments.first).url.path))
+        again.discardAttachments()
+    }
+
+    /// The item was opened again while the old page's send was still
+    /// uploading: the failed reply lands in the page on screen, after what
+    /// has been typed there.
+    func testASendFailingAfterTheItemClosedLandsInThePageShowingItNow() async throws {
+        let replies = unsentStore(unsentDirectory())
+        let api = API(); api.failUpload = true
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: Sync(), unsentReplies: replies)
+        vm.start()
+        vm.draft = "first"
+        await vm.attachFiles([try makeFile("a.png")])
+        api.holdUpload = true
+        let send = Task { await vm.submitComment() }
+        try await waitUntil { api.isUploadHeld }
+        vm.stop()
+
+        let again = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: Sync(), unsentReplies: replies)
+        again.start()
+        XCTAssertEqual(again.draft, "", "the reply is still sending")
+        again.draft = "second"
+        api.releaseUpload()
+        await send.value
+
+        XCTAssertEqual(again.draft, "second\n\nfirst")
+        XCTAssertEqual(again.stagedAttachments.map(\.filename), ["a.png"])
+        again.discardAttachments()
+    }
+
+    /// The app stops while a reply uploads: the next launch puts it back in
+    /// the box rather than losing it.
+    func testAReplyStillUploadingWhenTheAppStopsComesBackAtTheNextLaunch() async throws {
+        let directory = unsentDirectory()
+        let api = API(); api.holdUpload = true
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: Sync(), unsentReplies: unsentStore(directory))
+        vm.start()
+        vm.draft = "in flight"
+        await vm.attachFiles([try makeFile("a.png")])
+        let send = Task { await vm.submitComment() }
+        try await waitUntil { api.isUploadHeld }
+
+        let relaunched = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: Sync(),
+                                             unsentReplies: unsentStore(directory))
+        XCTAssertEqual(relaunched.draft, "in flight")
+        XCTAssertEqual(relaunched.stagedAttachments.map(\.filename), ["a.png"])
+
+        api.failUpload = true
+        api.releaseUpload()
+        await send.value
+    }
+
+    /// A note stopped after its item's page closed goes alone: what waits
+    /// in the box isn't sent with it, and stays there, once.
+    func testANoteFromAClosedPageLeavesTheSavedBoxAlone() async throws {
+        let replies = unsentStore(unsentDirectory())
+        let sync = Sync()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: sync, unsentReplies: replies)
+        vm.start()
+        vm.draft = "typed"
+        vm.stop()
+        let message = await vm.sendVoiceNote(url: try makeRecording())
+        XCTAssertNil(message)
+        XCTAssertEqual(sync.comments.first?.1, "")
+        XCTAssertEqual(sync.comments.first?.2.map(\.name), ["voice-note.m4a"])
+        let again = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: Sync(), unsentReplies: replies)
+        XCTAssertEqual(again.draft, "typed")
+    }
+
+    /// A page started again after stopping reads the box again, including
+    /// a reply that came back to it meanwhile.
+    func testStartingAgainReadsTheSavedBox() async throws {
+        let replies = unsentStore(unsentDirectory())
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: Sync(), unsentReplies: replies)
+        vm.start()
+        vm.draft = "mine"
+        vm.stop()
+        replies.giveBack(UnsentReply(text: "came back"), to: .item("it_1"), epoch: replies.epoch)
+        vm.start()
+        XCTAssertEqual(vm.draft, "mine\n\ncame back")
+        vm.draft += "!"
+        XCTAssertEqual(replies.reply(for: .item("it_1")).text, "mine\n\ncame back!")
+        vm.stop()
+    }
+
+    /// ✕ removes a file from the saved box too.
+    func testRemovingAnAttachmentRemovesItFromTheSavedBox() async throws {
+        let replies = unsentStore(unsentDirectory())
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: Sync(), unsentReplies: replies)
+        vm.start()
+        await vm.attachFiles([try makeFile("a.png"), try makeFile("b.png")])
+        vm.removeAttachment(id: try XCTUnwrap(vm.stagedAttachments.first).id)
+        vm.stop()
+        let again = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: Sync(), unsentReplies: replies)
+        XCTAssertEqual(again.stagedAttachments.map(\.filename), ["b.png"])
+        again.discardAttachments()
+    }
+
+    /// Sign-out deletes every saved box and staged file, and a page of the
+    /// old account that is still open can't save into the next one.
+    func testSignOutWipesTheSavedBoxAndIgnoresLateWrites() async throws {
+        let directory = unsentDirectory()
+        let replies = unsentStore(directory)
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: Sync(), unsentReplies: replies)
+        vm.start()
+        vm.draft = "old account"
+        await vm.attachFiles([try makeFile("a.png")])
+        let copy = try XCTUnwrap(vm.stagedAttachments.first?.url)
+        replies.wipeAll()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: copy.path))
+        vm.draft = "typed after sign-out"
+        let next = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: Sync(), unsentReplies: unsentStore(directory))
+        XCTAssertEqual(next.draft, "")
+        XCTAssertTrue(next.stagedAttachments.isEmpty)
+    }
+
     func testCloseWithCommentPassesCommentThrough() async {
         let api = API(); let sync = Sync()
         let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)

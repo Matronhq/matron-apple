@@ -696,6 +696,137 @@ extension VoiceNoteSessionTests {
         await session.retry(failure.id)?.value
         XCTAssertEqual(inbox.delivered.count, 1)
     }
+
+    // MARK: Failures kept across a restart
+
+    private func makeSession(failedNotes directory: URL) -> VoiceNoteSession {
+        let recorder = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in FakeRecording() },
+                                     observeInterruptions: interruptions.source)
+        return VoiceNoteSession(recorder: recorder, failedNotesDirectory: directory, measureAudio: { _ in 5 })
+    }
+
+    /// A note that couldn't go back into a reply box keeps its Retry after
+    /// the app restarts: its file moves out of tmp, and a new session reads
+    /// the row back and sends through the place's delivery.
+    func test_aRetryableFailure_survivesARestart() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("failed-\(UUID())")
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let session = makeSession(failedNotes: directory)
+        session.restoreSavedFailures { _ in nil }
+        let inbox = Inbox()
+        inbox.result = "offline"
+        try await session.start(item7, deliver: inbox.deliver)
+        await session.stopAndSend()?.value
+        let recorded = inbox.delivered[0].0
+        let failure = try XCTUnwrap(session.failures.first)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: recorded.path), "moved out of tmp")
+
+        let relaunched = makeSession(failedNotes: directory)
+        XCTAssertTrue(relaunched.failures.isEmpty, "nothing is read before sign-in")
+        let resolved = Inbox()
+        var asked: [VoiceNoteSession.Target] = []
+        relaunched.restoreSavedFailures { target in
+            asked.append(target)
+            return resolved.deliver
+        }
+        let back = try XCTUnwrap(relaunched.failures.first)
+        XCTAssertEqual(back.id, failure.id)
+        XCTAssertEqual(back.target, item7)
+        XCTAssertEqual(back.message, "offline")
+        XCTAssertTrue(back.canRetry)
+
+        await relaunched.retry(back.id)?.value
+        XCTAssertEqual(asked, [item7])
+        XCTAssertEqual(resolved.delivered.count, 1)
+        XCTAssertTrue(relaunched.failures.isEmpty)
+        XCTAssertTrue(makeSessionAfterRestart(directory).failures.isEmpty, "a sent note is gone from disk")
+    }
+
+    /// Discard, and sign-out, delete the saved note too.
+    func test_savedFailures_goOnDiscardAndOnReset() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("failed-\(UUID())")
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let session = makeSession(failedNotes: directory)
+        session.restoreSavedFailures { _ in nil }
+        let inbox = Inbox()
+        inbox.result = "offline"
+        for target in [chatA, chatB] {
+            try await session.start(target, deliver: inbox.deliver)
+            await session.stopAndSend()?.value
+        }
+        XCTAssertEqual(makeSessionAfterRestart(directory).failures.count, 2)
+
+        session.discard(try XCTUnwrap(session.failures.first).id)
+        XCTAssertEqual(makeSessionAfterRestart(directory).failures.map(\.target), [chatB])
+
+        session.reset()
+        XCTAssertTrue(makeSessionAfterRestart(directory).failures.isEmpty)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path), [])
+    }
+
+    /// A list that can't be read (before the first unlock, say) deletes
+    /// nothing and isn't saved over; the next call reads it.
+    func test_anUnreadableSavedList_keepsTheRecordings() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("failed-\(UUID())")
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let session = makeSession(failedNotes: directory)
+        session.restoreSavedFailures { _ in nil }
+        let inbox = Inbox()
+        inbox.result = "offline"
+        try await session.start(chatA, deliver: inbox.deliver)
+        await session.stopAndSend()?.value
+        let list = directory.appendingPathComponent("failures.json")
+        let good = try Data(contentsOf: list)
+        try Data("locked".utf8).write(to: list)
+
+        let relaunched = makeSession(failedNotes: directory)
+        relaunched.restoreSavedFailures { _ in nil }
+        XCTAssertTrue(relaunched.failures.isEmpty)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path).count, 2, "the recording stays")
+
+        try good.write(to: list)
+        relaunched.restoreSavedFailures { _ in nil }
+        XCTAssertEqual(relaunched.failures.map(\.target), [chatA])
+    }
+
+    /// A restart while a kept note is being retried (its audio still being
+    /// checked) doesn't lose it: it stays on the saved list until the send
+    /// settles.
+    func test_aKeptNote_staysSavedWhileItsRetryIsUnderWay() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("failed-\(UUID())")
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let session = makeSession(failedNotes: directory)
+        session.restoreSavedFailures { _ in nil }
+        let inbox = Inbox()
+        inbox.result = "offline"
+        try await session.start(chatA, deliver: inbox.deliver)
+        await session.stopAndSend()?.value
+        let id = try XCTUnwrap(session.failures.first?.id)
+
+        inbox.result = nil
+        let held = SendGate()
+        let recorder = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in FakeRecording() },
+                                     observeInterruptions: interruptions.source)
+        let slow = VoiceNoteSession(recorder: recorder, failedNotesDirectory: directory, measureAudio: { _ in
+            await held.markStarted()
+            await held.wait()
+            return 5
+        })
+        slow.restoreSavedFailures { _ in inbox.deliver }
+        let retry = slow.retry(id)
+        while await !held.isStarted() { await Task.yield() }
+        XCTAssertEqual(makeSessionAfterRestart(directory).failures.map(\.id), [id], "still saved mid-retry")
+
+        await held.open()
+        await retry?.value
+        XCTAssertTrue(makeSessionAfterRestart(directory).failures.isEmpty, "gone once sent")
+    }
+
+    private func makeSessionAfterRestart(_ directory: URL) -> VoiceNoteSession {
+        let session = makeSession(failedNotes: directory)
+        session.restoreSavedFailures { _ in nil }
+        return session
+    }
 }
 
 private final class BrokenFinishRecording: AudioRecording {
