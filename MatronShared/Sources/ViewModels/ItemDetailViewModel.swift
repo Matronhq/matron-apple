@@ -199,15 +199,25 @@ public final class ItemDetailViewModel {
         unsentReplies.save(box, for: unsentPlace, epoch: unsentEpoch)
     }
 
-    /// A reply that came back while Edit had a queued reply's text in the
-    /// box: kept aside (and saved with the box) so it isn't sent as part
-    /// of the edit, and put in the box once the edit ends.
+    /// A reply that came back while the box held an edit (`isEditing`):
+    /// kept aside, and saved with the box, so it is never sent as part of
+    /// the edit. It joins the box as soon as the edit ends, however it
+    /// ends: sent, cancelled, given up, or its queued reply gone.
     private var heldDuringEdit = UnsentReply() { didSet { saveBox() } }
 
-    /// The edit has ended (sent, cancelled or given up): what came back
-    /// meanwhile joins the box.
+    /// Set while `sendReply` sends an edit, from before its original is
+    /// withdrawn until the send has settled.
+    private var editSendInFlight = false
+
+    /// The box holds an edit of a queued or cancelled reply, or one is
+    /// being sent.
+    private var isEditing: Bool {
+        editingQueuedReplyID != nil || replacingCommentID != nil || editSendInFlight
+    }
+
+    /// The edit has ended: what came back meanwhile joins the box.
     private func releaseHeldReply() {
-        guard editingQueuedReplyID == nil, !heldDuringEdit.isEmpty else { return }
+        guard !isEditing, !heldDuringEdit.isEmpty else { return }
         let held = heldDuringEdit
         heldDuringEdit = UnsentReply()
         takeBack(held)
@@ -470,7 +480,9 @@ public final class ItemDetailViewModel {
     public private(set) var editableQueuedReplies: Set<String> = []
     /// The queued reply being edited in the reply box, held on the agent's
     /// queue until the edited reply is sent or the edit is cancelled.
-    public private(set) var editingQueuedReplyID: String? { didSet { saveBox() } }
+    public private(set) var editingQueuedReplyID: String? {
+        didSet { saveBox(); if editingQueuedReplyID == nil { releaseHeldReply() } }
+    }
     /// What the reply box held before Edit put the reply's text in it.
     private var preEditDraft = "" { didSet { saveBox() } }
     /// Whether Edit has put the reply's text in the box yet: not while its
@@ -480,7 +492,9 @@ public final class ItemDetailViewModel {
     /// next reply sent stands in for it (`replaces`), so the thread shows
     /// one reply, not the cancelled copy and its edit. Set once an edited
     /// reply's original is withdrawn, and by Edit and resend.
-    public private(set) var replacingCommentID: String?
+    public private(set) var replacingCommentID: String? {
+        didSet { if replacingCommentID == nil { releaseHeldReply() } }
+    }
 
     /// The cancelled replies an edit stands in for, whether that edit has
     /// reached the journal, waits in the outbox or is still being queued.
@@ -581,10 +595,11 @@ public final class ItemDetailViewModel {
     /// back what was typed before Edit.
     public func cancelQueuedReplyEdit() async {
         guard let commentID = editingQueuedReplyID else { return }
-        editingQueuedReplyID = nil
+        // What was typed before Edit first, so a reply held during the edit
+        // joins that, not the edit text it replaces.
         draft = preEditDraft
         preEditDraft = ""
-        releaseHeldReply()
+        editingQueuedReplyID = nil
         guard let queuedRelease else { return }
         let target: (convoID: String, seq: Int64)
         switch queuedReplies[commentID] {
@@ -1207,12 +1222,20 @@ public final class ItemDetailViewModel {
     /// turn. Returns `nil` once queued, or the failure's message with
     /// everything already back in the composer for its caller to report.
     private func sendReply(leading note: LeadingVoiceNote?) async -> String? {
+        // An edit being sent holds back any reply that comes back meanwhile
+        // until the send has settled (`heldDuringEdit`).
+        if editingQueuedReplyID != nil || replacingCommentID != nil {
+            editSendInFlight = true
+        }
+        defer {
+            editSendInFlight = false
+            releaseHeldReply()
+        }
         // An edited queued reply (typed or spoken) replaces the held
         // original, so the original is withdrawn first; if that fails the
         // reply stays here, the note back in the tray.
         if editingQueuedReplyID != nil, let failure = await withdrawEditedOriginal() {
             if let note { restoreUnsent([note.attachment], text: "", note: note, localID: "") }
-            releaseHeldReply()
             return failure
         }
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1225,9 +1248,6 @@ public final class ItemDetailViewModel {
         replacingCommentID = nil
         draft = ""
         stagedAttachments = []
-        // What came back while this was an edit joins the box once this
-        // send has settled (after a failed send's own text is back).
-        defer { releaseHeldReply() }
         // Kept on disk until it is queued or back in a box: if the app
         // stops while it uploads, the next launch puts it back.
         unsentReplies?.beginSend(localID, UnsentReply(text: pending, attachments: attachments),
@@ -1705,7 +1725,7 @@ extension ItemDetailViewModel: UnsentReplyBox {
     public func takeBack(_ reply: UnsentReply) {
         // While Edit has a queued reply's text in the box, the returned
         // reply is held aside, not sent with the edit (`heldDuringEdit`).
-        if editingQueuedReplyID != nil {
+        if isEditing {
             heldDuringEdit = UnsentReplyStore.merge(reply, into: heldDuringEdit)
             return
         }
