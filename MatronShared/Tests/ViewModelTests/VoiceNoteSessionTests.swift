@@ -764,6 +764,31 @@ extension VoiceNoteSessionTests {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path), [])
     }
 
+    /// A list that can't be read (before the first unlock, say) deletes
+    /// nothing and isn't saved over; the next call reads it.
+    func test_anUnreadableSavedList_keepsTheRecordings() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("failed-\(UUID())")
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let session = makeSession(failedNotes: directory)
+        session.restoreSavedFailures { _ in nil }
+        let inbox = Inbox()
+        inbox.result = "offline"
+        try await session.start(chatA, deliver: inbox.deliver)
+        await session.stopAndSend()?.value
+        let list = directory.appendingPathComponent("failures.json")
+        let good = try Data(contentsOf: list)
+        try Data("locked".utf8).write(to: list)
+
+        let relaunched = makeSession(failedNotes: directory)
+        relaunched.restoreSavedFailures { _ in nil }
+        XCTAssertTrue(relaunched.failures.isEmpty)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path).count, 2, "the recording stays")
+
+        try good.write(to: list)
+        relaunched.restoreSavedFailures { _ in nil }
+        XCTAssertEqual(relaunched.failures.map(\.target), [chatA])
+    }
+
     private func makeSessionAfterRestart(_ directory: URL) -> VoiceNoteSession {
         let session = makeSession(failedNotes: directory)
         session.restoreSavedFailures { _ in nil }

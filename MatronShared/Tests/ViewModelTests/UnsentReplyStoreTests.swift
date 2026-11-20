@@ -62,6 +62,29 @@ final class UnsentReplyStoreTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: store.directory.path).count, 2)
     }
 
+    /// Text that only ends like the box's isn't taken for a copy of it.
+    func testMergeKeepsTextThatOnlyEndsTheSame() {
+        let merged = UnsentReplyStore.merge(UnsentReply(text: "yes"), into: UnsentReply(text: "not yes"))
+        XCTAssertEqual(merged.text, "not yes\n\nyes")
+        XCTAssertEqual(UnsentReplyStore.merge(UnsentReply(text: "same"), into: UnsentReply(text: "same")).text, "same")
+    }
+
+    /// At the next launch a send still recorded comes back to the box —
+    /// unless its files have all gone, which happens once it is queued.
+    func testASendWhoseFilesAreGoneIsNotPutBack() throws {
+        let store = UnsentReplyStore(directory: temporaryDirectory("unsent"))
+        let queued = try stage("queued.png")
+        let interrupted = try stage("interrupted.png")
+        store.beginSend("a", UnsentReply(text: "went out", attachments: [queued]), for: .item("it_1"), epoch: store.epoch)
+        store.beginSend("b", UnsentReply(text: "didn't", attachments: [interrupted]), for: .item("it_1"), epoch: store.epoch)
+        queued.deleteStagedCopy()
+
+        let box = UnsentReplyStore(directory: store.directory).reply(for: .item("it_1"))
+        XCTAssertEqual(box.text, "didn't")
+        XCTAssertEqual(box.attachments.map(\.filename), ["interrupted.png"])
+        interrupted.deleteStagedCopy()
+    }
+
     /// An empty box leaves no file behind.
     func testAnEmptyBoxDeletesItsFile() {
         let store = UnsentReplyStore(directory: temporaryDirectory("unsent"))

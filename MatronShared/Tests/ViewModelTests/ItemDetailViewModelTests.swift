@@ -1668,6 +1668,39 @@ final class ItemDetailViewModelTests: XCTestCase {
         await send.value
     }
 
+    /// A note stopped after its item's page closed goes alone: what waits
+    /// in the box isn't sent with it, and stays there, once.
+    func testANoteFromAClosedPageLeavesTheSavedBoxAlone() async throws {
+        let replies = unsentStore(unsentDirectory())
+        let sync = Sync()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: sync, unsentReplies: replies)
+        vm.start()
+        vm.draft = "typed"
+        vm.stop()
+        let message = await vm.sendVoiceNote(url: try makeRecording())
+        XCTAssertNil(message)
+        XCTAssertEqual(sync.comments.first?.1, "")
+        XCTAssertEqual(sync.comments.first?.2.map(\.name), ["voice-note.m4a"])
+        let again = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: Sync(), unsentReplies: replies)
+        XCTAssertEqual(again.draft, "typed")
+    }
+
+    /// A page started again after stopping reads the box again, including
+    /// a reply that came back to it meanwhile.
+    func testStartingAgainReadsTheSavedBox() async throws {
+        let replies = unsentStore(unsentDirectory())
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: Sync(), unsentReplies: replies)
+        vm.start()
+        vm.draft = "mine"
+        vm.stop()
+        replies.giveBack(UnsentReply(text: "came back"), to: .item("it_1"), epoch: replies.epoch)
+        vm.start()
+        XCTAssertEqual(vm.draft, "mine\n\ncame back")
+        vm.draft += "!"
+        XCTAssertEqual(replies.reply(for: .item("it_1")).text, "mine\n\ncame back!")
+        vm.stop()
+    }
+
     /// ✕ removes a file from the saved box too.
     func testRemovingAnAttachmentRemovesItFromTheSavedBox() async throws {
         let replies = unsentStore(unsentDirectory())

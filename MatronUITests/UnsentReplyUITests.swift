@@ -68,7 +68,12 @@ final class UnsentReplyUITests: XCTestCase {
 
     func test_anUnsentReplySurvivesLeavingTheItemAndARestart() {
         openItem()
+        // A reply an earlier run left in the box goes first.
+        while attachmentChip.exists { attachmentChip.tap() }
         reply.tap()
+        if let left = reply.value as? String, left == typed {
+            reply.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: left.count))
+        }
         reply.typeText(typed)
         putPictureOnThePasteboard()
         reply.press(forDuration: 1.0)

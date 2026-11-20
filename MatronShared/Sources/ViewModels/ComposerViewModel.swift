@@ -146,7 +146,7 @@ public final class ComposerViewModel {
         recentFolders: RecentStartFolders = RecentStartFolders(),
         sessionStatus: @escaping @MainActor () -> SessionStatus? = { nil },
         unsentReplies: UnsentReplyStore? = nil,
-        registersAsBox: Bool = true
+        isStandIn: Bool = false
     ) {
         self.roomID = roomID
         self.timeline = timeline
@@ -155,11 +155,12 @@ public final class ComposerViewModel {
         self.sessionStatus = sessionStatus
         self.unsentReplies = unsentReplies
         self.unsentEpoch = unsentReplies?.epoch ?? 0
-        if let unsentReplies {
+        self.isStandIn = isStandIn
+        if let unsentReplies, !isStandIn {
             let saved = unsentReplies.reply(for: .conversation(roomID))
             input = saved.text
             stagedAttachments = saved.attachments
-            if registersAsBox { unsentReplies.register(self, for: .conversation(roomID)) }
+            unsentReplies.register(self, for: .conversation(roomID))
         }
         loadedBox = true
     }
@@ -170,6 +171,12 @@ public final class ComposerViewModel {
     /// to retry a voice note, and the chat has been opened since). That
     /// one owns the saved message: this one neither saves over it nor
     /// keeps a failed send, which goes to it instead (`handBack`).
+    /// Made only to send a voice note again after a restart, while the
+    /// chat isn't open: it starts empty, never saves the message, and a
+    /// failure goes back to the chat's saved message (`handBack`), so the
+    /// note never carries or duplicates what is waiting there.
+    private let isStandIn: Bool
+
     private var anotherComposerIsShowing: Bool {
         guard let live = unsentReplies?.box(for: .conversation(roomID)) else { return false }
         return live !== self
@@ -178,7 +185,7 @@ public final class ComposerViewModel {
     /// Gives what a failed send didn't deliver to the composer showing
     /// this conversation, when that isn't this one. Returns whether it did.
     private func handBack(_ attachments: [StagedAttachment], text: String) -> Bool {
-        guard anotherComposerIsShowing, let unsentReplies else { return false }
+        guard isStandIn || anotherComposerIsShowing, let unsentReplies else { return false }
         unsentReplies.giveBack(UnsentReply(text: text, attachments: attachments),
                                to: .conversation(roomID), epoch: unsentEpoch)
         return true
@@ -192,12 +199,12 @@ public final class ComposerViewModel {
     private let unsentEpoch: Int
     private var loadedBox = false
 
-    /// Saves the composer after every change — except while Up/Down shows
-    /// a recalled sent line in the field: the draft stashed when the walk
-    /// began is what was saved, and stays saved.
+    /// Saves the composer after every change. While Up/Down shows a
+    /// recalled sent line in the field, the draft that walk began from is
+    /// saved as the text, with the tray as it is.
     private func saveBox() {
-        guard loadedBox, let unsentReplies, !history.isNavigating, !anotherComposerIsShowing else { return }
-        unsentReplies.save(UnsentReply(text: input, attachments: stagedAttachments),
+        guard loadedBox, !isStandIn, let unsentReplies, !anotherComposerIsShowing else { return }
+        unsentReplies.save(UnsentReply(text: history.draftBeforeRecall ?? input, attachments: stagedAttachments),
                            for: .conversation(roomID), epoch: unsentEpoch)
     }
 
@@ -861,6 +868,9 @@ extension ComposerViewModel: UnsentReplyBox {
     /// A message a voice-note delivery for this conversation couldn't send
     /// from another composer, back in this one.
     public func takeBack(_ reply: UnsentReply) {
+        // Up/Down shows a sent line: the message comes back to the draft
+        // that walk began from, not to that line.
+        exitHistoryNavigation()
         let merged = UnsentReplyStore.merge(reply, into: UnsentReply(text: input, attachments: stagedAttachments))
         input = merged.text
         stagedAttachments = merged.attachments

@@ -167,8 +167,9 @@ public final class VoiceNoteSession {
     public func restoreSavedFailures(resolveDeliver: @escaping (Target) -> Deliver?) {
         self.resolveDeliver = resolveDeliver
         guard !restoredSavedFailures else { return }
-        restoredSavedFailures = true
-        loadSavedFailures()
+        // A list that can't be read yet (protected before the first unlock)
+        // leaves everything on disk, unsaved over, for the next call.
+        restoredSavedFailures = loadSavedFailures()
     }
 
     public convenience init() {
@@ -440,15 +441,23 @@ public final class VoiceNoteSession {
 
     /// The failures an earlier launch left, each with Retry. A file that
     /// has gone drops its row; a file no row names is deleted.
-    private func loadSavedFailures() {
-        guard let failedNotesDirectory, let failuresFile else { return }
+    @discardableResult
+    private func loadSavedFailures() -> Bool {
+        guard let failedNotesDirectory, let failuresFile else { return true }
         let fm = FileManager.default
         try? fm.createDirectory(at: failedNotesDirectory, withIntermediateDirectories: true)
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
         var dir = failedNotesDirectory
         try? dir.setResourceValues(values)
-        let saved = (try? Data(contentsOf: failuresFile)).flatMap { try? JSONDecoder().decode([SavedFailure].self, from: $0) } ?? []
+        let saved: [SavedFailure]
+        if fm.fileExists(atPath: failuresFile.path) {
+            guard let data = try? Data(contentsOf: failuresFile),
+                  let decoded = try? JSONDecoder().decode([SavedFailure].self, from: data) else { return false }
+            saved = decoded
+        } else {
+            saved = []
+        }
         // Files this launch has already kept count as named too.
         var named = Set(failedNotes.values.map(\.url.lastPathComponent))
         for entry in saved {
@@ -462,7 +471,9 @@ public final class VoiceNoteSession {
         where file.lastPathComponent != failuresFile.lastPathComponent && !named.contains(file.lastPathComponent) {
             try? fm.removeItem(at: file)
         }
+        restoredSavedFailures = true
         saveFailures()
+        return true
     }
 
     /// A composer for `kind` is on screen with its own recording bar.

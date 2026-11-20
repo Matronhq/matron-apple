@@ -1747,7 +1747,7 @@ final class ComposerViewModelTests: XCTestCase {
         struct Boom: Error, LocalizedError { var errorDescription: String? { "boom" } }
         fake.nextSendError = Boom()
         let retry = ComposerViewModel(roomID: "!r", timeline: fake, commands: [], unsentReplies: store,
-                                      registersAsBox: false)
+                                      isStandIn: true)
         retry.input = "said with the note"
         let recording = try makeRecording()
         let send = Task { await retry.sendVoiceNote(url: recording, duration: 1) }
@@ -1765,6 +1765,48 @@ final class ComposerViewModelTests: XCTestCase {
         let reread = UnsentReplyStore(directory: directory).reply(for: .conversation("!r"))
         XCTAssertEqual(reread.text, "typed meanwhile\n\nsaid with the note")
         XCTAssertEqual(reread.attachments.map(\.filename), ["voice-note.m4a"])
+    }
+
+    /// A stand-in made to retry a note starts empty: the note goes alone,
+    /// and the message waiting in the chat stays there, once.
+    @MainActor
+    func test_unsentMessage_aRetryStandInLeavesTheSavedMessageAlone() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("unsent-\(UUID())")
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let store = UnsentReplyStore(directory: directory)
+        store.save(UnsentReply(text: "waiting in the chat"), for: .conversation("!r"), epoch: store.epoch)
+        let fake = FakeTimelineService()
+        let retry = ComposerViewModel(roomID: "!r", timeline: fake, commands: [], unsentReplies: store, isStandIn: true)
+        XCTAssertEqual(retry.input, "")
+        let message = await retry.sendVoiceNote(url: try makeRecording(), duration: 1)
+        XCTAssertNil(message)
+        XCTAssertEqual(fake.sentFiles.first?.caption, nil)
+        XCTAssertEqual(UnsentReplyStore(directory: directory).reply(for: .conversation("!r")).text, "waiting in the chat")
+    }
+
+    /// During Up/Down, a picture attached is saved with the draft the walk
+    /// began from, and a message coming back joins that draft.
+    @MainActor
+    func test_unsentMessage_duringARecall_savesTheTrayAndTakesBackIntoTheDraft() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("unsent-\(UUID())")
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let store = UnsentReplyStore(directory: directory)
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(), commands: [],
+                                   recentFolders: emptyRecentFolders(), unsentReplies: store)
+        vm.input = "sent earlier"
+        await vm.send()
+        vm.input = "my draft"
+        vm.recallOlder()
+        await vm.attachFiles([try makeTempFile(named: "pic.png")])
+        var saved = UnsentReplyStore(directory: directory).reply(for: .conversation("!r"))
+        XCTAssertEqual(saved.text, "my draft")
+        XCTAssertEqual(saved.attachments.map(\.filename), ["pic.png"])
+
+        vm.takeBack(UnsentReply(text: "came back"))
+        XCTAssertFalse(vm.isNavigatingHistory)
+        XCTAssertEqual(vm.input, "my draft\n\ncame back")
+        saved = UnsentReplyStore(directory: directory).reply(for: .conversation("!r"))
+        XCTAssertEqual(saved.text, "my draft\n\ncame back")
     }
 
     /// Up/Down shows a sent line in the field; what is saved stays the

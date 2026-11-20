@@ -29,6 +29,15 @@ enum UnsentStorage {
         return store
     }
 
+    /// Deletes the voice notes kept for Retry. Sign-out, on every path:
+    /// the session's own `reset()` only runs where the shell is on screen.
+    static func removeFailedVoiceNotes() {
+        let fm = FileManager.default
+        for file in (try? fm.contentsOfDirectory(at: failedVoiceNotes, includingPropertiesForKeys: nil)) ?? [] {
+            try? fm.removeItem(at: file)
+        }
+    }
+
     /// The app's one voice-note session, keeping failed notes for Retry
     /// across launches once signed in (`restoreSavedFailures`). Cheap: it
     /// reads nothing until then.
@@ -49,15 +58,15 @@ extension AppDependencies {
             switch target.kind {
             case .item(let itemID):
                 let vm = (self.unsentReplies.box(for: .item(itemID)) as? ItemDetailViewModel)
-                    ?? self.makeItemDetailViewModel(for: session, itemID: itemID)
+                    ?? self.makeItemDetailViewModel(for: session, itemID: itemID, isStandIn: true)
                 return { url, _ in await vm.sendVoiceNote(url: url) }
             case .conversation(let roomID):
                 let composer = (self.unsentReplies.box(for: .conversation(roomID)) as? ComposerViewModel)
                     ?? ComposerViewModel(roomID: roomID, timeline: self.timelineService(for: session, roomID: roomID),
                                          commands: [], unsentReplies: self.unsentReplies,
-                                         // Not the chat's box: if the chat opens while this
-                                         // sends, a failure goes to the composer on screen.
-                                         registersAsBox: false)
+                                         // Sends the note alone; a failure goes back to
+                                         // the chat's saved message or the composer on screen.
+                                         isStandIn: true)
                 return { url, duration in await composer.sendVoiceNote(url: url, duration: duration) }
             }
         }

@@ -141,7 +141,12 @@ public final class UnsentReplyStore {
     /// put at the front of the saved box, its text after anything typed
     /// there.
     public func giveBack(_ reply: UnsentReply, to place: Place, epoch: Int) {
-        guard epoch == self.epoch, !reply.isEmpty else { return }
+        guard epoch == self.epoch else {
+            // From an account that has signed out: its files go too.
+            reply.attachments.forEach { $0.deleteStagedCopy() }
+            return
+        }
+        guard !reply.isEmpty else { return }
         if let box = box(for: place) {
             box.takeBack(reply)
             return
@@ -160,7 +165,7 @@ public final class UnsentReplyStore {
         let typed = box.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let back = reply.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let text: String
-        if back.isEmpty || typed.hasSuffix(back) { text = box.text }
+        if back.isEmpty || typed == back { text = box.text }
         else if typed.isEmpty { text = reply.text }
         else { text = typed + "\n\n" + back }
         return UnsentReply(text: text, attachments: attachments)
@@ -229,7 +234,13 @@ public final class UnsentReplyStore {
     private func load(_ place: Place) -> Record {
         guard let data = try? Data(contentsOf: url(for: place)),
               let saved = try? JSONDecoder().decode(SavedRecord.self, from: data) else { return Record() }
-        return Record(box: saved.box.reply, sending: saved.sending.mapValues(\.reply))
+        // A send whose files have all gone was queued (the files are
+        // deleted once it is) just before the app stopped: not put back.
+        let sending = saved.sending.compactMapValues { send -> UnsentReply? in
+            let reply = send.reply
+            return !send.attachments.isEmpty && reply.attachments.isEmpty ? nil : reply
+        }
+        return Record(box: saved.box.reply, sending: sending)
     }
 
     private func write(_ record: Record, for place: Place) {

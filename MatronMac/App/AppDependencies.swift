@@ -360,7 +360,8 @@ final class AppDependencies {
     }
 
     /// Item detail sheet/screen.
-    @MainActor func makeItemDetailViewModel(for session: UserSession, itemID: String) -> ItemDetailViewModel {
+    @MainActor func makeItemDetailViewModel(for session: UserSession, itemID: String,
+                                            isStandIn: Bool = false) -> ItemDetailViewModel {
         let c = core(for: session)
         // `events` + `agentSpawn`: the consent card inside
         // item detail reads the origin conversation's card and outcome from
@@ -376,7 +377,7 @@ final class AppDependencies {
                                    contextStore: c.store,
                                    refreshMission: { [missions = c.missions] id in await missions.refreshMission(id: id) },
                                    // The reply box, kept on disk until sent.
-                                   unsentReplies: unsentReplies)
+                                   unsentReplies: unsentReplies, isStandIn: isStandIn)
         vm.approvalSigner = approvalSigner(for: session)
         return vm
     }
@@ -464,6 +465,7 @@ final class AppDependencies {
         // Unsent replies go with the account, like its outbox: the next
         // account must not find them in its reply boxes.
         unsentReplies.wipeAll()
+        UnsentStorage.removeFailedVoiceNotes()
         // Disarm first: the teardown below still talks to the server with
         // the old token (push deregistration), and a revoked token's 401s
         // must not ask for a second sign-out.

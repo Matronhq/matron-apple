@@ -145,6 +145,7 @@ public final class ItemDetailViewModel {
                 contextStore: (any ItemContextReading)? = nil,
                 refreshMission: (@Sendable (String) async -> Void)? = nil,
                 unsentReplies: UnsentReplyStore? = nil,
+                isStandIn: Bool = false,
                 now: @escaping @Sendable () -> Date = { Date() }) {
         self.itemID = itemID; self.store = store; self.api = api; self.sync = sync
         self.events = events; self.agentSpawn = agentSpawn; self.seen = seen
@@ -153,12 +154,25 @@ public final class ItemDetailViewModel {
         self.now = now
         self.unsentReplies = unsentReplies
         self.unsentEpoch = unsentReplies?.epoch ?? 0
-        if let saved = unsentReplies?.reply(for: .item(itemID)) {
-            draft = saved.text
-            stagedAttachments = saved.attachments
-        }
+        self.isStandIn = isStandIn
+        if !isStandIn { loadSavedBox() }
         loadedBox = true
     }
+
+    /// Reads the item's saved box into the reply.
+    private func loadSavedBox() {
+        guard let saved = unsentReplies?.reply(for: .item(itemID)) else { return }
+        draft = saved.text
+        stagedAttachments = saved.attachments
+    }
+
+    /// Made only to send a voice note again after a restart, while no page
+    /// shows the item: it starts empty, never saves the box, and a failure
+    /// goes back to the item's box (`giveBack`), so the note never carries
+    /// or duplicates what is waiting there.
+    private let isStandIn: Bool
+    /// Set by `stop()`: a later `start()` reads the saved box again.
+    private var hasStopped = false
 
     // MARK: Unsent reply
 
@@ -177,7 +191,7 @@ public final class ItemDetailViewModel {
     /// text in the box, what was typed before Edit is saved instead: that
     /// is what comes back if the edit is never sent.
     private func saveBox() {
-        guard loadedBox, !isStopped, let unsentReplies else { return }
+        guard loadedBox, !isStopped, !isStandIn, let unsentReplies else { return }
         // Another page shows this item now (this view model was made to
         // retry a voice note): that page owns the saved box.
         if let live = unsentReplies.box(for: unsentPlace), live !== self { return }
@@ -825,6 +839,13 @@ public final class ItemDetailViewModel {
     public func start() {
         cancelSubscriptions()
         isStopped = false
+        if unsentReplies != nil, hasStopped {
+            // The box was saved when this stopped, and may have changed
+            // since (a reply that failed meanwhile went there).
+            loadedBox = false
+            loadSavedBox()
+            loadedBox = true
+        }
         unsentReplies?.register(self, for: unsentPlace)
         let id = itemID
         tasks.append(Task { [weak self] in
@@ -904,8 +925,14 @@ public final class ItemDetailViewModel {
         seen?.removeItem(itemID)
         cancelSubscriptions()
         isStopped = true
+        hasStopped = true
         if let unsentReplies {
             unsentReplies.unregister(self, for: unsentPlace)
+            // The box is on disk. Emptied here (unsaved: this has stopped)
+            // so a voice note this page still sends goes alone, and never
+            // re-sends what waits in the box.
+            draft = ""
+            stagedAttachments = []
         } else {
             discardAttachments()
         }
@@ -1240,7 +1267,7 @@ public final class ItemDetailViewModel {
         removeSendingReply(localID)
         if let unsentReplies {
             defer { unsentReplies.endSend(localID, for: unsentPlace, epoch: unsentEpoch) }
-            if isStopped || (!isLiveBox && unsentReplies.box(for: unsentPlace) != nil) {
+            if isStopped || isStandIn || (!isLiveBox && unsentReplies.box(for: unsentPlace) != nil) {
                 unsentReplies.giveBack(UnsentReply(text: pending, attachments: attachments),
                                        to: unsentPlace, epoch: unsentEpoch)
                 return
@@ -1650,6 +1677,15 @@ extension ItemDetailViewModel: UnsentReplyBox {
     /// A reply an earlier page for this item couldn't send, back in this
     /// box: its files ahead of the tray, its text after what is typed.
     public func takeBack(_ reply: UnsentReply) {
+        // While Edit has a queued reply's text in the box, the returned
+        // text joins what was typed before Edit: that is what is saved,
+        // and what comes back when the edit ends.
+        if editingQueuedReplyID != nil {
+            let merged = UnsentReplyStore.merge(reply, into: UnsentReply(text: preEditDraft, attachments: stagedAttachments))
+            preEditDraft = merged.text
+            stagedAttachments = merged.attachments
+            return
+        }
         let merged = UnsentReplyStore.merge(reply, into: UnsentReply(text: draft, attachments: stagedAttachments))
         draft = merged.text
         stagedAttachments = merged.attachments
@@ -1704,7 +1740,10 @@ extension ItemDetailViewModel: AttachmentStaging {
                 // The item closed while this was copying: it goes to the
                 // item's saved box, or, without one, nothing will show or
                 // send it.
-                if !isStopped {
+                if let unsentReplies, unsentReplies.epoch != unsentEpoch {
+                    // Signed out while this was copying.
+                    attachment.deleteStagedCopy()
+                } else if !isStopped {
                     stagedAttachments.append(attachment)
                 } else if let unsentReplies {
                     unsentReplies.giveBack(UnsentReply(attachments: [attachment]), to: unsentPlace, epoch: unsentEpoch)
