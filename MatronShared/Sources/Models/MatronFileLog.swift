@@ -26,8 +26,26 @@ public enum MatronFileLog {
     private static let maxBytes: UInt64 = 2_000_000
 
     public static var url: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("matron-diag.log")
+        directory.appendingPathComponent("matron-diag.log")
+    }
+
+    private static var directory: URL {
+        #if DEBUG
+        // A test process (the package's own runner, or the unsandboxed Mac
+        // app hosting its unit tests) resolves `.documentDirectory` to the
+        // developer's real ~/Documents. Writing there would mix test lines
+        // into their log, the reset seam would delete it, and macOS's
+        // privacy prompt for Documents blocks the I/O queue (and with it
+        // every `queue.sync`) when nobody is at the screen to answer.
+        // Same seam as `StoragePaths.appSupport`.
+        if NSClassFromString("XCTestCase") != nil {
+            let dir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("matron-tests-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            return dir
+        }
+        #endif
+        return FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     }
 
     private static var rotatedURL: URL {
