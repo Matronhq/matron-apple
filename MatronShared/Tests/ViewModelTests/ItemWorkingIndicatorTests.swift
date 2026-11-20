@@ -260,7 +260,83 @@ final class ItemWorkingIndicatorTests: XCTestCase {
         vm.stop()
     }
 
+    /// "For you only": this device hears no `session_status` for the
+    /// owner, so its stored state is whatever the chat list last read
+    /// ("waiting" here) while the journal says the reply waits behind a
+    /// running turn. The journal's copy stands.
+    func testAStaleOwnerStateOnForYouOnlyDoesNotHideTheJournalsCopy() async throws {
+        let store = Store(); let context = ContextStore(); let liveness = Liveness(live: false)
+        context.known = true
+        let vm = ItemDetailViewModel(itemID: "it_1", store: store, api: API(), sync: Sync(), contextStore: context,
+                                     sessionLiveness: liveness)
+        vm.start()
+        try await waitUntil { store.itemCont != nil }
+        store.itemCont?.yield(Self.item(ItemWorking(state: .queued, since: Date(), behindTurn: true)))
+        try await waitUntil { context.sessionCont != nil && context.ownerCont != nil && liveness.asked == ["c-origin"] }
+        context.sessionCont?.yield("waiting")
+        try await waitUntil { vm.workingIndicator == .busyElsewhere }
+        // A `running` copy is shown the same way.
+        store.itemCont?.yield(Self.item(ItemWorking(state: .running, since: Date())))
+        try await waitUntil { vm.workingIndicator == .working }
+        // The re-read that finds the turn over brings it down.
+        store.itemCont?.yield(Self.item(nil))
+        try await waitUntil { vm.workingIndicator == nil }
+        vm.stop()
+    }
+
+    /// The Coordinator's conversation (or any on "Everything") is followed
+    /// live, so this device's own word on its turn ending still wins.
+    func testALiveOwnerStateStillOverridesAStaleCopy() async throws {
+        let store = Store(); let context = ContextStore(); let liveness = Liveness(live: true)
+        context.known = true
+        let vm = ItemDetailViewModel(itemID: "it_1", store: store, api: API(), sync: Sync(), contextStore: context,
+                                     sessionLiveness: liveness)
+        vm.start()
+        try await waitUntil { store.itemCont != nil }
+        store.itemCont?.yield(Self.item(ItemWorking(state: .queued, since: Date(), behindTurn: true)))
+        try await waitUntil { context.sessionCont != nil && context.ownerCont != nil && liveness.asked == ["c-origin"] }
+        context.sessionCont?.yield("running")
+        try await waitUntil { vm.workingIndicator == .busyElsewhere }
+        context.sessionCont?.yield("waiting")
+        try await waitUntil { vm.workingIndicator == nil }
+        vm.stop()
+    }
+
+    /// The owner stops being followed live while the page is open (the
+    /// Coordinator role moved, or the device switched to For you only):
+    /// the next re-read asks again, and the journal's copy stands.
+    func testLivenessIsAskedAgainOnEachReRead() async throws {
+        let store = Store(); let context = ContextStore(); let liveness = Liveness(live: true)
+        context.known = true
+        let vm = ItemDetailViewModel(itemID: "it_1", store: store, api: API(), sync: Sync(), contextStore: context,
+                                     sessionLiveness: liveness)
+        vm.workingRecheckInterval = .milliseconds(50)
+        vm.start()
+        try await waitUntil { store.itemCont != nil }
+        store.itemCont?.yield(Self.item(ItemWorking(state: .queued, since: Date(), behindTurn: true)))
+        try await waitUntil { context.sessionCont != nil && context.ownerCont != nil && !liveness.asked.isEmpty }
+        context.sessionCont?.yield("waiting")
+        // A live state that says the turn ended wins.
+        try await waitUntil { vm.loadedCommentCount != nil && vm.workingIndicator == nil }
+        liveness.live = false
+        try await waitUntil { vm.workingIndicator == .busyElsewhere }
+        XCTAssertEqual(Set(liveness.asked), ["c-origin"])
+        vm.stop()
+    }
+
     // MARK: - Fakes
+    private final class Liveness: SessionStateLiveness, @unchecked Sendable {
+        private let lock = NSLock(); private var convos: [String] = []; private var answer: Bool
+        init(live: Bool) { answer = live }
+        var live: Bool {
+            get { lock.withLock { answer } }
+            set { lock.withLock { answer = newValue } }
+        }
+        var asked: [String] { lock.withLock { convos } }
+        func followsSessionStateLive(convoID: String) async -> Bool {
+            lock.withLock { convos.append(convoID); return answer }
+        }
+    }
 
     private static func event(_ seq: Int64, type: String, payload: [String: Any]) -> JournalEvent {
         JournalEvent(seq: seq, convoID: "c-origin", ts: Date(timeIntervalSince1970: Double(seq)), sender: "agent:box-a", type: type,

@@ -562,6 +562,9 @@ final class AppDependencies {
                                    // name it.
                                    contextStore: c.store,
                                    refreshMission: { [missions = c.missions] id in await missions.refreshMission(id: id) },
+                                   // Whether the owner's stored session state is
+                                   // live: on "For you only" only the Coordinator's is.
+                                   sessionLiveness: c.engine,
                                    // The reply box, kept on disk until sent.
                                    unsentReplies: unsentReplies, isStandIn: isStandIn)
         vm.approvalSigner = approvalSigner(for: session)
