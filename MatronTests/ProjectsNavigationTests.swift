@@ -7,18 +7,18 @@ final class ProjectsNavigationTests: XCTestCase {
     func testAProjectCardPushesTheProjectPage() {
         let nav = AppShellNavigation()
         nav.tab = .missions
-        nav.handleProjectsHome(.openProject("pj_1"))
-        XCTAssertEqual(nav.missionsPath, ["project/pj_1"])
-        nav.handleProjectsHome(.openProject("pj_1"))
-        XCTAssertEqual(nav.missionsPath, ["project/pj_1"], "a double tap never stacks two pages")
+        nav.pushProject("pj_1")
+        XCTAssertEqual(nav.missionsPath, ["story/pj_1"])
+        nav.pushProject("pj_1")
+        XCTAssertEqual(nav.missionsPath, ["story/pj_1"], "a double tap never stacks two pages")
     }
 
     func testAMissionRowPushesTheMissionPage() {
         let nav = AppShellNavigation()
         nav.tab = .missions
-        nav.handleProjectsHome(.openProject("pj_1"))
-        nav.handleProjectsHome(.openMission("ms_1"))
-        XCTAssertEqual(nav.missionsPath, ["project/pj_1", "mission/ms_1"])
+        nav.pushProject("pj_1")
+        nav.pushMission("ms_1")
+        XCTAssertEqual(nav.missionsPath, ["story/pj_1", "mission/ms_1"])
     }
 
     /// Review I1: a mission page's project chip is a breadcrumb — when
@@ -27,18 +27,18 @@ final class ProjectsNavigationTests: XCTestCase {
     func testPushingAProjectAlreadyOnTheStackPopsBackToIt() {
         let nav = AppShellNavigation()
         nav.tab = .missions
-        nav.missionsPath = ["project/pj_1", "mission/ms_1"]
+        nav.missionsPath = ["story/pj_1", "mission/ms_1"]
         nav.pushProject("pj_1")
-        XCTAssertEqual(nav.missionsPath, ["project/pj_1"])
+        XCTAssertEqual(nav.missionsPath, ["story/pj_1"])
 
-        nav.missionsPath = ["project/pj_1", "mission/ms_1", "project/pj_2", "mission/ms_2"]
+        nav.missionsPath = ["story/pj_1", "mission/ms_1", "story/pj_2", "mission/ms_2"]
         nav.pushProject("pj_2")
-        XCTAssertEqual(nav.missionsPath, ["project/pj_1", "mission/ms_1", "project/pj_2"],
+        XCTAssertEqual(nav.missionsPath, ["story/pj_1", "mission/ms_1", "story/pj_2"],
                        "pops to the nearest copy, keeping what sits beneath it")
 
-        nav.missionsPath = ["project/pj_1", "mission/ms_1"]
+        nav.missionsPath = ["story/pj_1", "mission/ms_1"]
         nav.pushProject("pj_3")
-        XCTAssertEqual(nav.missionsPath, ["project/pj_1", "mission/ms_1", "project/pj_3"],
+        XCTAssertEqual(nav.missionsPath, ["story/pj_1", "mission/ms_1", "story/pj_3"],
                        "a project not on the stack still pushes")
     }
 
@@ -47,11 +47,11 @@ final class ProjectsNavigationTests: XCTestCase {
     func testAMissionLinkPushesOntoTheCurrentTabsStack() {
         let nav = AppShellNavigation()
         nav.tab = .missions
-        nav.missionsPath = ["project/pj_1"]
+        nav.missionsPath = ["story/pj_1"]
         nav.openPageLink(.mission(id: "ms_1"))
-        XCTAssertEqual(nav.missionsPath, ["project/pj_1", "mission/ms_1"])
+        XCTAssertEqual(nav.missionsPath, ["story/pj_1", "mission/ms_1"])
         nav.openPageLink(.mission(id: "ms_1"))
-        XCTAssertEqual(nav.missionsPath, ["project/pj_1", "mission/ms_1"], "a double tap never stacks two pages")
+        XCTAssertEqual(nav.missionsPath, ["story/pj_1", "mission/ms_1"], "a double tap never stacks two pages")
 
         nav.tab = .conversations
         nav.chatPath = ["c1"]
@@ -65,16 +65,16 @@ final class ProjectsNavigationTests: XCTestCase {
     func testAProjectLinkOpensOnTheProjectsStack() {
         let nav = AppShellNavigation()
         nav.tab = .missions
-        nav.missionsPath = ["project/pj_1", "mission/ms_1"]
+        nav.missionsPath = ["story/pj_1", "mission/ms_1"]
         nav.openPageLink(.project(id: "pj_2"))
-        XCTAssertEqual(nav.missionsPath, ["project/pj_1", "mission/ms_1", "project/pj_2"])
+        XCTAssertEqual(nav.missionsPath, ["story/pj_1", "mission/ms_1", "story/pj_2"])
 
         nav.tab = .conversations
         nav.chatPath = ["c1"]
         nav.openPageLink(.project(id: "pj_3"))
         XCTAssertEqual(nav.tab, .conversations)
-        XCTAssertEqual(nav.chatPath, ["c1", "project/pj_3"])
-        XCTAssertEqual(nav.missionsPath, ["project/pj_1", "mission/ms_1", "project/pj_2"], "Projects is left alone")
+        XCTAssertEqual(nav.chatPath, ["c1", "story/pj_3"])
+        XCTAssertEqual(nav.missionsPath, ["story/pj_1", "mission/ms_1", "story/pj_2"], "Projects is left alone")
     }
 
     func testPageLinksDoNothingWithoutMissionSupport() {
@@ -88,13 +88,6 @@ final class ProjectsNavigationTests: XCTestCase {
         XCTAssertEqual(nav.tab, .conversations)
     }
 
-    func testTheHostHandlesNewProjectAndMove() {
-        let nav = AppShellNavigation()
-        nav.handleProjectsHome(.newProject)
-        nav.handleProjectsHome(.moveMission(missionID: "ms_1", projectID: "pj_1"))
-        XCTAssertEqual(nav.missionsPath, [])
-    }
-
     /// A mission page on a chat stack opens its project on that same stack,
     /// so Back returns to the mission page rather than the Projects tab
     /// coming forward with no way back.
@@ -102,13 +95,13 @@ final class ProjectsNavigationTests: XCTestCase {
         let nav = AppShellNavigation()
         nav.tab = .conversations
         nav.chatPath = ["c1", "mission/ms_1"]
-        nav.missionsPath = ["project/pj_9"]
+        nav.missionsPath = ["story/pj_9"]
         nav.openPageLink(.project(id: "pj_1"))
         XCTAssertEqual(nav.tab, .conversations)
-        XCTAssertEqual(nav.chatPath, ["c1", "mission/ms_1", "project/pj_1"], "Back pops to the mission page")
-        XCTAssertEqual(nav.missionsPath, ["project/pj_9"], "the Projects stack is left where it was")
+        XCTAssertEqual(nav.chatPath, ["c1", "mission/ms_1", "story/pj_1"], "Back pops to the mission page")
+        XCTAssertEqual(nav.missionsPath, ["story/pj_9"], "the Projects stack is left where it was")
         nav.openPageLink(.project(id: "pj_1"))
-        XCTAssertEqual(nav.chatPath, ["c1", "mission/ms_1", "project/pj_1"], "a double tap never stacks two")
+        XCTAssertEqual(nav.chatPath, ["c1", "mission/ms_1", "story/pj_1"], "a double tap never stacks two")
     }
 
     func testOpenProjectIsInertWithoutMissions() {
@@ -120,17 +113,16 @@ final class ProjectsNavigationTests: XCTestCase {
         XCTAssertNotEqual(nav.tab, .missions)
     }
 
-    // MARK: With the timeline shown
+    // MARK: Project pages
 
-    /// With the Projects switch on and a journal that has the timeline,
-    /// every way of opening a project pushes its new page, never today's.
-    func testWithTheTimelineShownAProjectOpensItsNewPage() {
+    /// Every way of opening a project pushes its page (`story/`), never
+    /// the `project/` route a link names.
+    func testAProjectOpensItsPage() {
         let nav = AppShellNavigation()
-        nav.projectsOpenAsStories = true
         nav.tab = .missions
-        nav.handleProjectsHome(.openProject("pj_1"))
+        nav.pushProject("pj_1")
         XCTAssertEqual(nav.missionsPath, ["story/pj_1"])
-        nav.handleProjectsHome(.openProject("pj_1"))
+        nav.pushProject("pj_1")
         XCTAssertEqual(nav.missionsPath, ["story/pj_1"], "a double tap never stacks two pages")
         nav.pushProject("pj_2")
         nav.openPageLink(.project(id: "pj_3"))
@@ -147,20 +139,19 @@ final class ProjectsNavigationTests: XCTestCase {
             XCTAssertEqual(nav.path(of: tab), ["story/pj_5"], "\(tab)")
         }
         let every = nav.missionsPath + nav.chatPath + nav.decisionsPath + nav.searchPath + nav.coordinatorPath
-        XCTAssertFalse(every.contains { ProjectRoute(pathValue: $0) != nil }, "today's project page is never pushed")
+        XCTAssertFalse(every.contains { ProjectRoute(pathValue: $0) != nil }, "a link's route is never pushed")
     }
 
     /// The mission page's project chip is still a breadcrumb: the page
     /// below is popped back to, past its sections and what they opened.
-    func testWithTheTimelineShownAProjectAlreadyOnTheStackIsPoppedBackTo() {
+    func testAProjectAlreadyOnTheStackIsPoppedBackTo() {
         let nav = AppShellNavigation()
-        nav.projectsOpenAsStories = true
         nav.tab = .missions
         nav.missionsPath = ["story/pj_1", "story-section/missions/pj_1", "mission/ms_1"]
         nav.pushProject("pj_1")
         XCTAssertEqual(nav.missionsPath, ["story/pj_1"])
 
-        // A page pushed before the journal answered is the same page.
+        // A page pushed by its link's route is the same page.
         nav.missionsPath = ["project/pj_1", "mission/ms_1"]
         nav.pushProject("pj_1")
         XCTAssertEqual(nav.missionsPath, ["project/pj_1"], "no second copy of the project")
@@ -180,7 +171,7 @@ final class ProjectsNavigationTests: XCTestCase {
                                     following: "pj_1", to: "pj_2"),
                        ["timeline/quiet", "story/pj_2", "story-section/history/pj_2"], "the section follows its page")
         XCTAssertEqual(Target.stack(["c1", "project/pj_1"], following: "pj_1", to: "pj_2"), ["c1", "project/pj_2"],
-                       "a page pushed before the journal answered is the same page")
+                       "a page pushed by its link's route is the same page")
         XCTAssertEqual(Target.stack(["story/pj_3", "mission/ms_1", "story/pj_1", "mission/ms_2"],
                                     following: "pj_1", to: "pj_2"),
                        ["story/pj_3", "mission/ms_1", "story/pj_2", "mission/ms_2"], "other pages stay as they are")
@@ -202,7 +193,6 @@ final class ProjectsNavigationTests: XCTestCase {
     /// page's two reads can say it), the second changes nothing.
     func testFollowingAMergeOnTheProjectsStackIsSaidOnce() {
         let nav = AppShellNavigation()
-        nav.projectsOpenAsStories = true
         nav.tab = .missions
         nav.pushProject("pj_1")
         nav.setPath(ProjectPageTarget.stack(nav.missionsPath, following: "pj_1", to: "pj_2"), on: .missions)
@@ -211,39 +201,6 @@ final class ProjectsNavigationTests: XCTestCase {
         XCTAssertEqual(nav.missionsPath, ["story/pj_2"])
         nav.pushProject("pj_2")
         XCTAssertEqual(nav.missionsPath, ["story/pj_2"], "the surviving project is the page on the stack")
-    }
-
-    /// Switch off, or a journal without the timeline: today's page, as before.
-    func testWithTheTimelineHiddenAProjectOpensTodaysPage() {
-        let nav = AppShellNavigation()
-        XCTAssertFalse(nav.projectsOpenAsStories, "off until the shell says the timeline is shown")
-        nav.tab = .missions
-        nav.pushProject("pj_1")
-        nav.openPageLink(.project(id: "pj_2"))
-        XCTAssertEqual(nav.missionsPath, ["project/pj_1", "project/pj_2"])
-        XCTAssertEqual(AppShellNavigation.projectRoute("pj_1", asStory: false), "project/pj_1")
-        XCTAssertEqual(AppShellNavigation.projectRoute("pj_1", asStory: true), "story/pj_1")
-    }
-
-    /// A project on any stack has the shell ask for the timeline, so a
-    /// project opened from a chat needs no visit to Projects first.
-    func testAProjectPageOnAnyStackIsNoticed() {
-        let nav = AppShellNavigation()
-        XCTAssertFalse(nav.showsAProjectPage)
-        nav.chatPath = ["c1", "mission/ms_1", "item/it_1"]
-        nav.missionsPath = ["timeline/quiet", MemoriesRoute.list]
-        XCTAssertFalse(nav.showsAProjectPage)
-        nav.chatPath = ["c1", "project/pj_1"]
-        XCTAssertTrue(nav.showsAProjectPage)
-        nav.chatPath = []
-        for value in ["project/pj_1", "story/pj_1", "story-section/files/pj_1"] {
-            for tab in [AppTab.coordinator, .decisions, .conversations, .missions, .search] {
-                nav.setPath([value], on: tab)
-                XCTAssertTrue(nav.showsAProjectPage, "\(value) on \(tab)")
-                nav.setPath([], on: tab)
-                XCTAssertFalse(nav.showsAProjectPage)
-            }
-        }
     }
 
     func testProjectRouteIsARouteNotAChat() {

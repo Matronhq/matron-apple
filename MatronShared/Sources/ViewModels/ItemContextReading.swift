@@ -36,3 +36,12 @@ public extension ItemContextReading {
 }
 
 extension JournalStore: ItemContextReading {}
+
+/// Says whether a conversation's stored session state is kept current on
+/// this device (`JournalSyncEngine.followsSessionStateLive`). The item
+/// detail checks the journal's `working` against that state only when it is.
+public protocol SessionStateLiveness: Sendable {
+    func followsSessionStateLive(convoID: String) async -> Bool
+}
+
+extension JournalSyncEngine: SessionStateLiveness {}

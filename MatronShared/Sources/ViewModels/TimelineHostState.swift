@@ -4,8 +4,7 @@ import MatronModels
 
 /// A shell's Projects timeline, one per window: the view model (built on
 /// the first visit to Projects) and the place picked in the list or the
-/// week menu. On a journal without the timeline routes, Projects stays
-/// the plain home.
+/// week menu.
 @MainActor @Observable
 public final class TimelineHostState {
     public private(set) var viewModel: TimelineViewModel?
@@ -18,9 +17,15 @@ public final class TimelineHostState {
 
     public init() {}
 
-    /// The timeline replaces the home only once the journal has answered
-    /// the weeks list: until then (nil) there is nothing to show instead.
-    public var isShown: Bool { viewModel?.isSupported == true }
+    /// The timeline is Projects once its view model is built, from the
+    /// first visit on; its pages show their own loading state until the
+    /// journal answers. Only a journal without the timeline (404 on the
+    /// weeks list, one so old it has no `/projects` either) leaves it
+    /// hidden, for the missions dashboard such a journal has.
+    public var isShown: Bool {
+        guard let viewModel else { return false }
+        return viewModel.isSupported != false
+    }
 
     public var place: TimelinePlace? { selection ?? viewModel?.place }
 
@@ -30,18 +35,12 @@ public final class TimelineHostState {
         return pickedWeek ?? viewModel?.weeks.first?.week
     }
 
-    /// Projects came on screen: the first time builds and starts the view model, then reads the counts; later
-    /// visits re-read what is on screen and the counts, unless the journal
-    /// has no timeline (its 404 would only come again). A visit with the
-    /// flag turned off since drops the timeline, so Projects is the home
-    /// again (tests only: the timeline is always on in the apps). Returns the
-    /// reads' task.
+    /// Projects came on screen: the first time builds and starts the view
+    /// model, then reads the counts; later visits re-read what is on screen
+    /// and the counts, unless the journal has no timeline (its 404 would
+    /// only come again). Returns the reads' task.
     @discardableResult
-    public func projectsShown(flagOn: Bool = true, build: () -> TimelineViewModel) -> Task<Void, Never>? {
-        guard flagOn else {
-            if viewModel != nil { reset() }
-            return nil
-        }
+    public func projectsShown(build: () -> TimelineViewModel) -> Task<Void, Never>? {
         if let viewModel {
             guard viewModel.isSupported != false else { return nil }
             return Task { await refresh() }

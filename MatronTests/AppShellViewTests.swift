@@ -279,9 +279,9 @@ final class AppShellViewTests: XCTestCase {
         nav.pushProject("pj_1")
         try assertTabBarHidden("on a project page")
         // The tab bar hides for ANY unmatched pushed value, so on its own
-        // that assertion would pass even with no `ProjectRoute` destination
-        // case. This proves `ProjectDetailHost` (its `page == nil`
-        // placeholder title) is what actually got pushed.
+        // that assertion would pass even with no project destination case.
+        // This proves the project page (`TimelineStoryHost`, its
+        // placeholder title before the page loads) is what got pushed.
         try waitForTopTitle("Project", "on the project page")
         try popTheSelectedStack()
         try assertTabBarShowing("back at the Projects root")

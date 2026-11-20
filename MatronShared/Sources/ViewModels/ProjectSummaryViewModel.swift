@@ -6,11 +6,7 @@ import MatronJournal
 /// Backs one project's page on the timeline: the page itself, and its
 /// week-by-week history once the reader asks for it, a page at a time.
 ///
-/// The journal answers 404 both for a project it doesn't have and when it
-/// has no project-page route at all, so a 404 is settled by one read of
-/// the all-projects list: that list answering means the project is gone
-/// (`isMissing`), a 404 there too means the journal is older than the
-/// page (`isUnsupported`) and the host shows the project page it had.
+/// A 404 means the journal has no such project (`isMissing`).
 ///
 /// A project merged into another answers with the one it became:
 /// `redirectedTo` names it and every later read asks for it.
@@ -24,8 +20,6 @@ public final class ProjectSummaryViewModel {
     public private(set) var history: [TimelineHistoryWeek] = []
     /// The journal has no such project.
     public private(set) var isMissing = false
-    /// The journal has no project-page route.
-    public private(set) var isUnsupported = false
     /// The project the one asked for was merged into, once the journal says so.
     public private(set) var redirectedTo: String?
     public var error: String?
@@ -63,7 +57,7 @@ public final class ProjectSummaryViewModel {
     /// history starts over from its first page.
     public func refresh() async {
         await refreshPage()
-        if hasAskedForHistory, !isMissing, !isUnsupported { await loadHistory() }
+        if hasAskedForHistory, !isMissing { await loadHistory() }
     }
 
     /// Re-reads the page alone, for coming back to it: the history stays
@@ -124,30 +118,12 @@ public final class ProjectSummaryViewModel {
             guard generation == pageGeneration else { return }
             page = loaded
             isMissing = false
-            isUnsupported = false
             if loaded.mergedFromID != nil, loaded.project.id != projectID {
                 redirectedTo = loaded.project.id
                 projectID = loaded.project.id
             }
         } catch JournalAPIError.notFound {
-            await settleNotFound(generation)
-        } catch {
-            if generation == pageGeneration, !error.isReadCancellation { self.error = error.localizedDescription }
-        }
-    }
-
-    /// The page answered 404: the all-projects list says whether the
-    /// project is gone or the journal has no such route.
-    private func settleNotFound(_ generation: Int) async {
-        do {
-            _ = try await timeline.timelineProjects(before: nil, limit: 1)
-            guard generation == pageGeneration else { return }
-            isMissing = true
-            isUnsupported = false
-        } catch JournalAPIError.notFound {
-            guard generation == pageGeneration else { return }
-            isUnsupported = true
-            isMissing = false
+            if generation == pageGeneration { isMissing = true }
         } catch {
             if generation == pageGeneration, !error.isReadCancellation { self.error = error.localizedDescription }
         }

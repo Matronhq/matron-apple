@@ -57,11 +57,10 @@ extension ProjectCloseError: LocalizedError {
 }
 
 /// The projects routes the apps use, plus the link read for the header.
-/// The writes the apps make: create, rename, close, merge, file.
+/// The writes the apps make: rename, close, merge, file.
 public protocol ProjectsProviding: Sendable {
     func listProjects() async throws -> ProjectsListDecode
     func project(id: String) async throws -> ProjectDetail
-    func createProject(title: String, body: String?, idempotencyKey: String) async throws -> Project
     func mergeProject(id: String, into: String) async throws
     /// `PATCH /projects/:id` with the new title.
     func renameProject(id: String, title: String) async throws
@@ -165,13 +164,6 @@ extension JournalAPI: ProjectsProviding {
         if let limit { query.append(.init(name: "limit", value: String(limit))) }
         return try Self.decodeProjectFeed(
             try await request(path: "/projects/\(Self.pathSegment(id))/feed", query: query), kind: kind)
-    }
-
-    public func createProject(title: String, body: String?, idempotencyKey: String) async throws -> Project {
-        var payload: [String: Any] = ["title": title]
-        if let body, !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { payload["body"] = body }
-        return try Self.decodeProject(try await request(path: "/projects", method: "POST", body: payload,
-                                                        accept: [200, 201], headers: ["Idempotency-Key": idempotencyKey]))
     }
 
     public func mergeProject(id: String, into: String) async throws {

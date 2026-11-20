@@ -75,9 +75,7 @@ extension View {
 /// its missions, its files and the "···" actions from a
 /// `ProjectDetailViewModel`. Both live as long as the pushed screen. A
 /// project merged into another takes its place on the stack, so every
-/// part of the page is the surviving project's. On a journal without the
-/// project-page route it shows the project page that journal has
-/// (`ProjectDetailHost`).
+/// part of the page is the surviving project's.
 struct TimelineStoryHost: View {
     let projectID: String
     /// The section this screen shows; nil is the page itself.
@@ -133,16 +131,12 @@ struct TimelineStoryHost: View {
     enum Content: Equatable {
         case summary
         case section(ProjectSection)
-        /// The journal has no project-page route: the project page it had.
-        case todaysPage
         case missing, loadFailed, loading
     }
 
-    /// An older journal first (it has nothing to show a section of), then
-    /// the page or its section, then why there is none.
-    static func content(hasPage: Bool, isMissing: Bool, isUnsupported: Bool, loadFailed: Bool,
+    /// The page or its section, else why there is none.
+    static func content(hasPage: Bool, isMissing: Bool, loadFailed: Bool,
                         section: ProjectSection?) -> Content {
-        if isUnsupported { return .todaysPage }
         if hasPage { return section.map { .section($0) } ?? .summary }
         if isMissing { return .missing }
         return loadFailed ? .loadFailed : .loading
@@ -177,26 +171,18 @@ struct TimelineStoryHost: View {
     }
 
     var body: some View {
-        Group {
-            if content == .todaysPage {
-                ProjectDetailHost(projectID: projectID, session: session, missionsViewModel: missionsViewModel,
-                                  onOpenMission: onOpenMission, onOpenItem: onOpenItem, onOpenSession: onOpenSession,
-                                  onOpenMilestone: onOpenMilestone)
-            } else {
-                page
+        page
+            // Runs again on every re-appear (Back from a section or a mission):
+            // the view models are kept, and the page alone is read again.
+            .task(id: projectID) { await load() }
+            .onDisappear { detail?.stop() }
+            // A merge moved the project: the surviving project's page takes
+            // this one's place, whichever read says so first.
+            .onChange(of: redirectTarget) { _, target in
+                guard let target, let path else { return }
+                let moved = ProjectPageTarget.stack(path.wrappedValue, following: projectID, to: target)
+                if moved != path.wrappedValue { path.wrappedValue = moved }
             }
-        }
-        // Runs again on every re-appear (Back from a section or a mission):
-        // the view models are kept, and the page alone is read again.
-        .task(id: projectID) { await load() }
-        .onDisappear { detail?.stop() }
-        // A merge moved the project: the surviving project's page takes
-        // this one's place, whichever read says so first.
-        .onChange(of: redirectTarget) { _, target in
-            guard let target, let path else { return }
-            let moved = ProjectPageTarget.stack(path.wrappedValue, following: projectID, to: target)
-            if moved != path.wrappedValue { path.wrappedValue = moved }
-        }
     }
 
     private var redirectTarget: String? {
@@ -206,12 +192,11 @@ struct TimelineStoryHost: View {
 
     private var content: Content {
         Self.content(hasPage: summary?.page != nil, isMissing: summary?.isMissing == true,
-                     isUnsupported: summary?.isUnsupported == true, loadFailed: loadFailed, section: section)
+                     loadFailed: loadFailed, section: section)
     }
 
     /// Reads the page: on arrival, on coming back, and for "Try again".
-    /// The missions, files and actions wait for the page's first answer:
-    /// on a journal without the route they are the other page's to read.
+    /// The missions, files and actions wait for the page's first answer.
     private func load() async {
         guard let deps else { return }
         if loadedProjectID != projectID {
@@ -233,10 +218,10 @@ struct TimelineStoryHost: View {
             await made.start()
         }
         guard !Task.isCancelled, let summary else { return }
-        loadFailed = summary.page == nil && !summary.isMissing && !summary.isUnsupported
+        loadFailed = summary.page == nil && !summary.isMissing
         // The page says it could not load; an alert over it would say so twice.
         if loadFailed { summary.error = nil }
-        guard !summary.isUnsupported, detail == nil else { return }
+        guard detail == nil else { return }
         let made = deps.makeProjectDetailViewModel(for: session, projectID: projectID)
         detail = made
         made.start()
@@ -317,7 +302,7 @@ struct TimelineStoryHost: View {
                 Button("Try again") { Task { await load() } }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-        case .loading, .todaysPage:
+        case .loading:
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }

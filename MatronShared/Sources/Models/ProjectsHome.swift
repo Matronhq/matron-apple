@@ -1,57 +1,8 @@
 import Foundation
 
-// Value types for the Projects home and project page (spec 2026-09-30 §2,
+// Value types for the project page (spec 2026-09-30 §2,
 // §6). Built by `ProjectsHomeAssembly` / `ProjectDetailViewModel`
 // (MatronViewModels), drawn by the Projects views (MatronDesignSystem).
-
-/// One project card: title, needs-you, one status paragraph, the state
-/// bar and counts. No sessions, milestones or item rows (spec §2).
-public struct ProjectCard: Identifiable, Equatable, Hashable, Sendable {
-    /// Rows the waiting-on box shows before "+n more".
-    public static let waitingShown = 3
-
-    public let project: Project
-    /// The larger of the server's `needs_you` and the local mission counts.
-    public let needsYouCount: Int
-    /// Newest milestone across the project's missions — the "No written
-    /// status yet — latest: …" line.
-    public let latestMilestone: MissionLastMilestone?
-    /// Items awaiting the user on the project's missions, newest first and
-    /// at most `waitingShown`: the journal's `waiting_on` leads, then the
-    /// open needs-you items this device holds. `waitingMore` is how many
-    /// there are beyond these. Empty / 0 when nothing waits.
-    public let waiting: [ProjectWaitingOn]
-    public let waitingMore: Int
-    /// Projects view v2 card fields, from the journal's list row: the
-    /// newest milestone across every mission (closed ones included), and
-    /// the live sessions on the open missions. Nil / 0 from an older journal.
-    public let latest: ProjectLatest?
-    public let sessionsNow: Int
-    /// The titles and short names of the project's missions, open ones
-    /// first — what the home's filter field searches besides the title.
-    public let missionTitles: [String]
-    public var id: String { project.id }
-    /// The newest item awaiting the user.
-    public var waitingOn: ProjectWaitingOn? { waiting.first }
-
-    public init(project: Project, needsYouCount: Int = 0, latestMilestone: MissionLastMilestone? = nil,
-                waiting: [ProjectWaitingOn] = [], waitingMore: Int = 0, latest: ProjectLatest? = nil, sessionsNow: Int = 0,
-                missionTitles: [String] = []) {
-        self.project = project; self.needsYouCount = needsYouCount; self.latestMilestone = latestMilestone
-        self.waiting = Array(waiting.prefix(Self.waitingShown))
-        self.waitingMore = waitingMore + (waiting.count - self.waiting.count)
-        self.latest = latest; self.sessionsNow = sessionsNow; self.missionTitles = missionTitles
-    }
-
-    /// A card from the journal's single `waiting_on` alone: one row, and
-    /// its `more` behind it.
-    public init(project: Project, needsYouCount: Int = 0, latestMilestone: MissionLastMilestone? = nil,
-                waitingOn: ProjectWaitingOn?, latest: ProjectLatest? = nil, sessionsNow: Int = 0) {
-        self.init(project: project, needsYouCount: needsYouCount, latestMilestone: latestMilestone,
-                  waiting: waitingOn.map { [$0] } ?? [], waitingMore: waitingOn?.more ?? 0, latest: latest,
-                  sessionsNow: sessionsNow)
-    }
-}
 
 /// One slim mission row: dot · #num · title · one-line status · needs-you · age.
 public struct MissionRowModel: Identifiable, Equatable, Hashable, Sendable {
@@ -68,40 +19,6 @@ public struct MissionRowModel: Identifiable, Equatable, Hashable, Sendable {
     public init(closed mission: Mission) {
         self.init(mission: mission, activity: .idle, lastActivity: mission.closedAt ?? mission.updatedAt)
     }
-}
-
-public struct ProjectsHomeSnapshot: Equatable, Sendable {
-    public var cards: [ProjectCard]
-    /// Open missions in no (known, open) project, not quiet.
-    public var unfiled: [MissionRowModel]
-    /// Open unfiled missions quiet for over a week.
-    public var quiet: [MissionRowModel]
-    public var closed: [Mission]
-    /// Newest project status time — "Status refreshed 20m ago".
-    public var statusRefreshedAt: Date?
-    public init(cards: [ProjectCard] = [], unfiled: [MissionRowModel] = [], quiet: [MissionRowModel] = [],
-                closed: [Mission] = [], statusRefreshedAt: Date? = nil) {
-        self.cards = cards; self.unfiled = unfiled; self.quiet = quiet; self.closed = closed
-        self.statusRefreshedAt = statusRefreshedAt
-    }
-    public var isEmpty: Bool { cards.isEmpty && unfiled.isEmpty && quiet.isEmpty && closed.isEmpty }
-    /// The "Move to project…" choices.
-    public var openProjects: [Project] { cards.map(\.project) }
-}
-
-/// Every tap on the Projects home, routed through one function per host.
-public enum ProjectsHomeAction: Equatable, Hashable, Sendable {
-    case openProject(String)
-    case openMission(String)
-    case newProject
-    /// `projectID == nil` takes the mission out of its project.
-    case moveMission(missionID: String, projectID: String?)
-    /// A conversation at one event — the briefing reader's "Open in chat"
-    /// (the Coordinator's conversation at the briefing's own message).
-    case openConversation(convoID: String, seq: Int64)
-    /// A tracker item by id — a `matron://item/<n>` link in the briefing
-    /// reader, resolved by the host.
-    case openItem(String)
 }
 
 /// Everything the project page draws (spec §2 "Project page").

@@ -201,32 +201,6 @@ Run before every TestFlight build (iOS) and every Mac App Store build.
 - [ ] An item link or conversation link tapped in the room closes the sheet and opens its destination.
 - [ ] A subtask card tapped in the room pushes that subagent inside the sheet; Back returns to the room.
 
-## Latest briefing card (Projects)
-
-> Needs a journal with Coordinator briefings (https://github.com/Matronhq/matron-journal/pull/131) and a Coordinator set. On an older journal, or with no Coordinator, the card must not show at all.
-
-### Both platforms
-
-- [ ] Projects shows a "Latest briefing · N minutes ago" card above the project cards, with a two-line plain-text preview: the heading on line 1, the first body line on line 2 (no `##`, list markers or `**`); the age moves on with the minute.
-- [ ] Before any briefing exists the card reads "No briefing yet" with "Ask for one".
-- [ ] The ↻ button (VoiceOver: "Ask the Coordinator for a new briefing") turns the footer into a spinner + "Refreshing…" and greys the button; a second device's card shows the same within a second or two (`briefing` frame).
-- [ ] When the Coordinator publishes, the card updates on its own: new age, new preview, footer gone.
-- [ ] A refresh nobody answers within 10 minutes turns into "The Coordinator hasn't answered." with "Try again" (no frame for a timeout — the card re-reads at `expires_at`).
-- [ ] Right after an ask the button stays grey for about two minutes, then comes back by itself.
-- [ ] Turn the network off and on: the card re-reads on reconnect.
-- [ ] Clear the Coordinator in Settings: the card disappears after the next read (reconnect or reopening Projects).
-- [ ] Tap/click the card: the full briefing opens with its date, rendered markdown, and "Open in chat".
-- [ ] In the reader, a `matron://item/<n>` link opens that item, a `matron://project/<n>` or `matron://mission/<n>` link opens that page, and a conversation link opens that chat — each closes the reader first.
-- [ ] "Open in chat" closes the reader and opens the Coordinator conversation scrolled to the briefing's own message.
-
-### iOS
-
-- [ ] The reader is a sheet with a "Latest briefing" title and Done; pull-to-refresh on Projects still works with the card on top.
-
-### Mac
-
-- [ ] The reader is a sheet with a "Latest briefing" title bar and Done (Return closes it); it resizes from 520×420.
-
 ## Markdown attachment preview
 
 Send a few files from an agent with `send_attachment` (a `.md` file, one with `text/markdown` and no extension, a `.md` over 2 MB, a `.txt`), and attach a `.md` to a tracker item and to a comment.

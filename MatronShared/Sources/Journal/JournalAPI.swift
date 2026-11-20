@@ -1242,8 +1242,8 @@ public actor JournalAPI {
         return 403
     }
 
-    /// Not `private`: `JournalAPI+Briefings.swift` maps the statuses it does
-    /// not read itself through this.
+    /// Not `private`: the extensions that read some statuses themselves
+    /// (projects, passwords, account unlock) map the rest through this.
     static func error(status: Int, data: Data) -> JournalAPIError {
         let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         let code = obj?["error"] as? String

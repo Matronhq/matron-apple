@@ -331,8 +331,6 @@ final class AppDependencies {
                                             connectionStates: { engine.stateStream() })
         let userSettings = UserSettingsStore(api: api, updates: { engine.userSettingsUpdates() },
                                              connectionStates: { engine.stateStream() })
-        let briefing = LatestBriefingStore(api: api, updates: { engine.briefingUpdates() },
-                                           connectionStates: { engine.stateStream() })
         let pins = PinsStore(api: api, updates: { engine.pinsUpdates() },
                              connectionStates: { engine.stateStream() },
                              boxNames: { store.agentNamesStream() })
@@ -341,7 +339,7 @@ final class AppDependencies {
 
         let core = JournalCore(api: api, store: store, engine: engine, items: items, missions: missions,
                                 projects: projects, coordinator: coordinator, notify: notify,
-                                defaults: defaults, userSettings: userSettings, briefing: briefing, pins: pins,
+                                defaults: defaults, userSettings: userSettings, pins: pins,
                                 maintenance: maintenance, revocation: revocation)
         core.deviceID = Int64(session.deviceID)
         installApprovals(on: core, session: session, directory: sessionsDirectory)
@@ -379,7 +377,6 @@ final class AppDependencies {
         notify.start()
         defaults.start()
         userSettings.start()
-        briefing.start()
         pins.start()
         core.maintenanceStartTask = Task {
             await engine.attachMaintenance(maintenance)
@@ -535,7 +532,7 @@ final class AppDependencies {
                 // for the actor hop, not for asynchronous work.
                 try await engine.sendMessage(convoID: convoID, body: body, localID: UUID().uuidString)
             },
-            projectsStore: c.store, projects: c.projects, briefing: c.briefing)
+            projects: c.projects)
     }
 
     /// One mission page.
@@ -562,6 +559,9 @@ final class AppDependencies {
                                    // name it.
                                    contextStore: c.store,
                                    refreshMission: { [missions = c.missions] id in await missions.refreshMission(id: id) },
+                                   // Whether the owner's stored session state is
+                                   // live: on "For you only" only the Coordinator's is.
+                                   sessionLiveness: c.engine,
                                    // The reply box, kept on disk until sent.
                                    unsentReplies: unsentReplies, isStandIn: isStandIn)
         vm.approvalSigner = approvalSigner(for: session)
@@ -777,7 +777,6 @@ final class AppDependencies {
                 core.notify.stop()
                 core.defaults.stop()
                 core.userSettings.stop()
-                core.briefing.stop()
                 core.pins.stop()
                 await core.engine.endSync()          // stop the writer first…
                 try? core.store.wipe()               // …then clear the mirror

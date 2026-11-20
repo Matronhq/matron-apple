@@ -60,8 +60,29 @@ public struct ItemRow: View {
     /// `nil` for an empty body. A row typeset the whole body for that one
     /// line, which on a long report cost the For you list frames as its
     /// rows scrolled on screen.
+    ///
+    /// Rows ask for this on every layout and every draw, so the answer is
+    /// kept per body: working it out again meant reading the start of the
+    /// body for attachment refs each time a Mac list row was laid out.
     public static func bodyPreview(_ body: String) -> String? {
         guard !body.isEmpty else { return nil }
+        let key = body as NSString
+        if let cached = previewCache.object(forKey: key) { return cached as String }
+        let preview = makeBodyPreview(body)
+        previewCache.setObject(preview as NSString, forKey: key)
+        return preview
+    }
+
+    /// Previews by body. `NSCache` is safe to use from any thread and gives
+    /// entries back under memory pressure; the limit covers a long For you
+    /// or Decisions list several times over.
+    private static let previewCache: NSCache<NSString, NSString> = {
+        let cache = NSCache<NSString, NSString>()
+        cache.countLimit = 2000
+        return cache
+    }()
+
+    private static func makeBodyPreview(_ body: String) -> String {
         // Room past the cut for refs, which shorten to their captions; a
         // start so full of refs that the room runs out reads the whole body.
         let cut = body.prefix(previewLength * 4)

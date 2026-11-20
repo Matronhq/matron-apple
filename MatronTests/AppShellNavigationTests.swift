@@ -597,7 +597,7 @@ final class AppShellNavigationTests: XCTestCase {
 
         nav.openNumberTarget(.page(.project(id: "pj_1")))
         XCTAssertEqual(nav.tab, .decisions)
-        XCTAssertEqual(nav.decisionsPath, [MissionRoute(id: "ms_1").pathValue, ProjectRoute(id: "pj_1").pathValue])
+        XCTAssertEqual(nav.decisionsPath, [MissionRoute(id: "ms_1").pathValue, ProjectStoryRoute(id: "pj_1").pathValue])
     }
 
     // MARK: - Search tab

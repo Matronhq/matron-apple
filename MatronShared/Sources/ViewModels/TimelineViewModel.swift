@@ -7,7 +7,7 @@ import MatronJournal
 /// long lists load once per visit-until-refresh, the finished and
 /// all-projects lists page.
 /// A journal without the timeline routes (404 on the weeks list) leaves
-/// `isSupported` false so the host falls back to the plain Projects list.
+/// `isSupported` false (a journal that old has only the missions dashboard).
 ///
 /// A read that was called off sets no `error`: nothing failed.
 @MainActor @Observable
@@ -359,9 +359,6 @@ public final class TimelineViewModel {
     }
 
     private static func relative(_ date: Date, to now: Date) -> String {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .full
-        formatter.locale = Locale(identifier: "en_GB")
-        return formatter.localizedString(for: date, relativeTo: now)
+        RelativeDates.fullBritish.localizedString(for: date, relativeTo: now)
     }
 }

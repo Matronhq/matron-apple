@@ -283,23 +283,6 @@ public struct SharedMissionSignal: Equatable, Sendable {
     }
 }
 
-/// A live `briefing` frame: `action` is `published`, `refreshing` or
-/// `refresh_failed` (kept raw — a newer action still means "refetch"), and
-/// `briefingID` names the published briefing.
-public struct BriefingSignal: Equatable, Sendable {
-    public static let published = "published"
-    public static let refreshing = "refreshing"
-    public static let refreshFailed = "refresh_failed"
-
-    public let action: String
-    public let briefingID: String?
-
-    public init(action: String, briefingID: String? = nil) {
-        self.action = action
-        self.briefingID = briefingID
-    }
-}
-
 /// Server → client frames. Unknown `kind`s decode to nil (skip); unknown
 /// control ops decode to `.unknownControl` so the protocol can grow.
 public enum ServerFrame: Equatable, Sendable {
@@ -361,12 +344,6 @@ public enum ServerFrame: Equatable, Sendable {
     /// Transient like `defaults`: a client that misses one reads the box's
     /// `defaults` off the next `GET /devices`.
     case boxDefaults(BoxDefaultsUpdate)
-    /// A Coordinator briefing was published, a refresh was asked for, or a
-    /// refresh failed (journal "Coordinator briefings"). An invalidation
-    /// signal only: apps refetch `GET /briefings/latest` on it. Transient
-    /// like `notify`: never replayed; the refetch on every connect covers
-    /// one missed while offline.
-    case briefing(BriefingSignal)
     /// The user's journal settings changed (`PATCH /settings` from any
     /// device): `{kind:"control", op:"settings", settings}`. Transient like
     /// `notify`: a client that misses one reads `GET /settings` on its next
@@ -598,10 +575,6 @@ public enum ServerFrame: Equatable, Sendable {
             guard let event = obj["event"] as? String,
                   let missionID = obj["mission_id"] as? String, !missionID.isEmpty else { return nil }
             return .sharedMission(SharedMissionSignal(event: event, missionID: missionID))
-        case "briefing":
-            // Any action, known or not, means "refetch".
-            guard let action = obj["action"] as? String else { return nil }
-            return .briefing(BriefingSignal(action: action, briefingID: obj["briefing_id"] as? String))
         case "control":
             guard let op = obj["op"] as? String else { return nil }
             switch op {

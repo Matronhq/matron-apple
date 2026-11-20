@@ -2,8 +2,8 @@ import Foundation
 import MatronDesignSystem
 import MatronModels
 
-/// A project's page while the timeline is shown (`TimelineStoryHost`),
-/// pushed in place of its `ProjectRoute` on whichever stack it is opened.
+/// A project's page (`TimelineStoryHost`), pushed in place of its
+/// `ProjectRoute` on whichever stack it is opened.
 struct ProjectStoryRoute: PathPrefixedRoute {
     let id: String
     static let pathPrefix = "story/"
@@ -90,21 +90,6 @@ struct ProjectPageTarget: Equatable {
             return route.id == from ? ProjectRoute(id: to).pathValue : entry
         }
         return entry
-    }
-
-    /// What an entry shows.
-    enum Page: Equatable {
-        /// The project's page while the timeline is shown, or a section of it.
-        case summary(section: ProjectSection?)
-        /// The project page without the timeline.
-        case todaysPage
-    }
-
-    /// The route does not decide the page: an entry pushed before the
-    /// journal answered shows the new page once the timeline is shown, and
-    /// with the timeline hidden every entry is the project page of today.
-    func page(timelineShown: Bool) -> Page {
-        timelineShown ? .summary(section: section) : .todaysPage
     }
 }
 
