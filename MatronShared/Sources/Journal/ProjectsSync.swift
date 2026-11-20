@@ -38,7 +38,7 @@ public actor ProjectsSync {
     /// Set when a refresh is requested while one runs: the running pass
     /// repeats ONCE, however many requests arrived (the marker flood rule).
     private var refreshAgain = false
-    /// Ids a detail fetch or a create wrote since the current list GET
+    /// Ids a detail fetch wrote since the current list GET
     /// started — kept by `replaceProjects` (same race as `MissionsSync` H1).
     private var protectedSinceListStart: Set<String> = []
     /// Conversation id → number of on-screen chat views showing it. Fix

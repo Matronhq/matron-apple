@@ -6,7 +6,7 @@ import MatronJournal
 
 @MainActor
 final class MissionsDashboardProjectsTests: XCTestCase {
-    private func make() -> (MissionsDashboardViewModel, FakeDashboardStoreForProjects, FakeProjectsSync) {
+    private func make() -> (MissionsDashboardViewModel, FakeProjectsSync) {
         let store = FakeDashboardStoreForProjects()
         let projects = FakeProjectsSync()
         let vm = MissionsDashboardViewModel(
@@ -15,11 +15,11 @@ final class MissionsDashboardProjectsTests: XCTestCase {
             roster: { RosterSnapshot() }, send: { _, _ in },
             now: { Date(timeIntervalSince1970: 1_800_000_000) },
             projects: projects)
-        return (vm, store, projects)
+        return (vm, projects)
     }
 
     func testProjectsSupportFollowsTheSync() async {
-        let (vm, _, projects) = make()
+        let (vm, projects) = make()
         vm.start()
         await waitForProjects { vm.projectsSupported == true }
         projects.supported.send(false)
@@ -28,7 +28,7 @@ final class MissionsDashboardProjectsTests: XCTestCase {
     }
 
     func testRefreshAlsoRefreshesProjects() async {
-        let (vm, _, projects) = make()
+        let (vm, projects) = make()
         await vm.refresh()
         XCTAssertGreaterThanOrEqual(projects.refreshCalls, 1)
     }
@@ -36,7 +36,7 @@ final class MissionsDashboardProjectsTests: XCTestCase {
     /// Preflight R4: project create, PATCH, status and close emit no
     /// marker, so a Projects surface appearing re-reads `GET /projects`.
     func testPageAppearRefreshesProjects() async {
-        let (vm, _, projects) = make()
+        let (vm, projects) = make()
         vm.pageDidAppear()
         await waitForProjects { projects.refreshCalls >= 1 }
         let before = projects.refreshCalls
@@ -49,7 +49,7 @@ final class MissionsDashboardProjectsTests: XCTestCase {
     /// Review M7: one appear is one `GET /projects` — the roster loop the
     /// appear starts does not fire its own on the first iteration.
     func testAnAppearRefreshesProjectsOnce() async {
-        let (vm, _, projects) = make()
+        let (vm, projects) = make()
         vm.pageDidAppear()
         await waitForProjects { projects.refreshCalls >= 1 }
         try? await Task.sleep(for: .milliseconds(100))
@@ -65,7 +65,7 @@ final class MissionsDashboardProjectsTests: XCTestCase {
     /// Review M7: once an old journal has answered 404, appearing again
     /// does not ask it again.
     func testAnOldJournalIsNotAskedOnAppear() async {
-        let (vm, _, projects) = make()
+        let (vm, projects) = make()
         vm.start()
         projects.supported.send(false)
         await waitForProjects { vm.projectsSupported == false }
@@ -121,7 +121,7 @@ final class MissionsDashboardProjectsTests: XCTestCase {
     /// disappears (a push over A, or a replacement): the feeds keep running
     /// while B shows, and stop once the last page goes.
     func testOverlappingProjectPagesKeepTheFeedsUntilTheLastLeaves() async {
-        let (vm, _, _) = make()
+        let (vm, _) = make()
         vm.start()
         vm.projectPageDidAppear()   // A
         vm.projectPageDidAppear()   // B, before A's disappear

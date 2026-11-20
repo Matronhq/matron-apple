@@ -55,6 +55,26 @@ final class ProjectsHomeAssemblyTests: XCTestCase {
         XCTAssertEqual(ProjectsHomeAssembly.activity(of: served, needsYou: 0, now: Self.now), .quiet)
     }
 
+    // MARK: Mission rows (the project page)
+
+    /// Open missions only: needs-you first, then running, waiting, idle,
+    /// quiet, then the newest activity, then the higher number.
+    func testMissionRowsOrderNeedsYouThenActivityRankThenNewestThenNumber() {
+        let rows = ProjectsHomeAssembly.missionRows([
+            Self.mission("ms_quiet_old", num: 1, activity: .quiet, lastMilestone: 20 * Self.day),
+            Self.mission("ms_idle", num: 2, activity: .idle, lastMilestone: 60),
+            Self.mission("ms_waiting", num: 3, activity: .waiting, lastMilestone: 60),
+            Self.mission("ms_running_old", num: 4, activity: .running, lastMilestone: 7_200),
+            Self.mission("ms_running_new", num: 5, activity: .running, lastMilestone: 600),
+            Self.mission("ms_asks", num: 6, activity: .idle, needsYou: 1, lastMilestone: 90_000),
+            Self.mission("ms_quiet_new", num: 7, activity: .quiet, lastMilestone: 9 * Self.day),
+            Self.mission("ms_tie_low", num: 8, activity: .running, lastMilestone: 600),
+            Self.mission("ms_closed", num: 9, state: .closed, closedAt: 60),
+        ], needsYouItems: [:], now: Self.now)
+        XCTAssertEqual(rows.map(\.id), ["ms_asks", "ms_tie_low", "ms_running_new", "ms_running_old", "ms_waiting",
+                                        "ms_idle", "ms_quiet_new", "ms_quiet_old"])
+    }
+
     // MARK: Conversation groups
 
     private func convo(_ id: String, state: String = "running", joined: TimeInterval? = 100, ended: TimeInterval? = nil,
