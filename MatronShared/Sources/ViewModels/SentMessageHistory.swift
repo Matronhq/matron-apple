@@ -54,6 +54,9 @@ public final class SentMessageHistory {
     /// Whether a recall walk is currently active.
     public var isNavigating: Bool { recallIndex != nil }
 
+    /// The draft a walk began from, while one is under way.
+    public var draftBeforeRecall: String? { isNavigating ? stashedDraft : nil }
+
     /// Begins or continues walking backwards (Up). The first call stashes
     /// `currentDraft` so a later Down can restore it, and returns the most
     /// recent sent message. Subsequent calls walk toward older entries.
