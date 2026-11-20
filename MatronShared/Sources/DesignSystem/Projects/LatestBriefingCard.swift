@@ -16,9 +16,7 @@ public enum BriefingFormat {
     /// ahead of `now` (another device's clock) reads as now.
     public static func age(_ date: Date, now: Date) -> String {
         guard now.timeIntervalSince(date) >= 60 else { return "just now" }
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .full
-        return formatter.localizedString(for: date, relativeTo: now)
+        return RelativeDates.full.localizedString(for: date, relativeTo: now)
     }
 
     /// "Latest briefing · 5 minutes ago"; just the title with no briefing.

@@ -1,5 +1,6 @@
 import Foundation
 import MatronJournal
+import MatronModels
 
 /// The one call that resolves a consent card. Split out from
 /// `AgentChatProviding` because `ChatViewModel` answers cards inline in the
@@ -129,8 +130,6 @@ extension AgentChatPendingDTO {
 
     public func ageText(now: Date = Date()) -> String {
         let date = Date(timeIntervalSince1970: TimeInterval(createdAt) / 1000)
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter.localizedString(for: date, relativeTo: now)
+        return RelativeDates.abbreviated.localizedString(for: date, relativeTo: now)
     }
 }

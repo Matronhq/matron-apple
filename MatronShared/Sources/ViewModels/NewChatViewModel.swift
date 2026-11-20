@@ -127,9 +127,7 @@ extension RecentFolder {
     public func lastUsedText(now: Date = Date()) -> String {
         guard let lastUsed else { return "Never used" }
         let date = Date(timeIntervalSince1970: TimeInterval(lastUsed) / 1000)
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter.localizedString(for: date, relativeTo: now)
+        return RelativeDates.abbreviated.localizedString(for: date, relativeTo: now)
     }
 }
 

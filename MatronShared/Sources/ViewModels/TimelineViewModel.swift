@@ -359,9 +359,6 @@ public final class TimelineViewModel {
     }
 
     private static func relative(_ date: Date, to now: Date) -> String {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .full
-        formatter.locale = Locale(identifier: "en_GB")
-        return formatter.localizedString(for: date, relativeTo: now)
+        RelativeDates.fullBritish.localizedString(for: date, relativeTo: now)
     }
 }

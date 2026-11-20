@@ -1,6 +1,7 @@
 import Foundation
 import MatronChat
 import MatronJournal
+import MatronModels
 
 /// The devices/pairing slice of `JournalAPI`, extracted so view models can
 /// be tested against a fake without a URL session. `JournalAPI` conforms
@@ -374,9 +375,7 @@ extension DeviceDTO {
     public func lastSeenText(now: Date = Date()) -> String {
         guard let lastSeenAt else { return "Never" }
         let date = Date(timeIntervalSince1970: TimeInterval(lastSeenAt) / 1000)
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter.localizedString(for: date, relativeTo: now)
+        return RelativeDates.abbreviated.localizedString(for: date, relativeTo: now)
     }
 }
 
