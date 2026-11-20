@@ -272,12 +272,6 @@ public struct MemoryRowView: View {
 
     static func relative(_ date: Date, now: Date) -> String {
         if now.timeIntervalSince(date) < 60 { return "just now" }
-        return relativeFormatter.localizedString(for: date, relativeTo: now)
+        return RelativeDates.full.localizedString(for: date, relativeTo: now)
     }
-
-    private static let relativeFormatter: RelativeDateTimeFormatter = {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .full
-        return formatter
-    }()
 }

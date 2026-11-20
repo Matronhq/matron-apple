@@ -163,7 +163,7 @@ struct RoutineRowView: View {
             lines.append("Next: " + when(next, now: now))
         }
         if let last = routine.lastFiredAt {
-            var line = "Last: " + RelativeDateTimeFormatter().localizedString(for: last, relativeTo: now)
+            var line = "Last: " + RelativeDates.full.localizedString(for: last, relativeTo: now)
             if !routine.lastFireFailed, let outcome = routine.lastOutcomeWords { line += " · \(outcome)" }
             lines.append(line)
         } else {

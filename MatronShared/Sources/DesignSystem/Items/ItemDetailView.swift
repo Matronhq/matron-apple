@@ -1294,9 +1294,7 @@ public struct ItemDetailView: View {
         if now.timeIntervalSince(date) > sevenDays {
             return date.formatted(date: .abbreviated, time: .omitted)
         }
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter.localizedString(for: date, relativeTo: now)
+        return RelativeDates.abbreviated.localizedString(for: date, relativeTo: now)
     }
 
     /// Derives the centred status line from `statusTo` (never the raw body,
