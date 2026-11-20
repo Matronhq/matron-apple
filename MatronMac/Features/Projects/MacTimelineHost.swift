@@ -5,8 +5,8 @@ import MatronModels
 import MatronViewModels
 
 /// The Projects timeline's rules for the shell, pure so tests can pin them.
-/// On a journal without the timeline routes, Projects stays the full-width
-/// plain home.
+/// On a journal too old for the timeline, Projects is the full-width
+/// missions dashboard.
 @MainActor enum MacTimelineNav {
     /// What the timeline adds to a Projects place.
     struct PlaceInput: Equatable {
@@ -17,18 +17,15 @@ import MatronViewModels
     }
 
     /// The Projects place: a mission page first. While the timeline is
-    /// shown, the timeline's place with the project open over it, which is
-    /// the one the shell selected (a chip, a link, search) or else the one
-    /// opened from the timeline, so today's project page is never a place.
-    /// With the timeline hidden, today's project page or the home.
-    static func projectsDetail(selectedMissionID: String?, selectedProjectID: String?,
-                               timeline: PlaceInput?) -> MacPlace.Detail {
+    /// shown, the timeline's place with the project open over it (from the
+    /// timeline, a chip, a link or search). With the timeline hidden, the
+    /// missions dashboard.
+    static func projectsDetail(selectedMissionID: String?, timeline: PlaceInput?) -> MacPlace.Detail {
         if let selectedMissionID { return .mission(id: selectedMissionID) }
         if let timeline {
-            let story = selectedProjectID ?? timeline.story
-            return .timeline(place: timeline.place, story: story, section: story == nil ? nil : timeline.section)
+            return .timeline(place: timeline.place, story: timeline.story,
+                             section: timeline.story == nil ? nil : timeline.section)
         }
-        if let selectedProjectID { return .project(id: selectedProjectID) }
         return .mission(id: nil)
     }
 
@@ -39,9 +36,8 @@ import MatronViewModels
     }
 
     /// Whether `next` is the place `current` already was, filling in: the
-    /// home shown before the journal answered, or the timeline before its
-    /// first week loaded, becoming the timeline; and likewise today's
-    /// project page becoming the project's page over the timeline. That is
+    /// dashboard shown before the timeline was built, or the timeline
+    /// before its first week loaded, becoming the timeline. That is
     /// not a move, so Back goes where the user was before, and never onto
     /// a place that turns straight back into this one. The timeline before
     /// its first answer turning into the missions dashboard (a journal too
@@ -51,7 +47,6 @@ import MatronViewModels
         guard case .timeline(let place, let story, let section) = next.detail, let current else { return false }
         switch current.detail {
         case .mission(nil): return story == nil
-        case .project(let id): return story == id && section == nil
         case .timeline(nil, let was, let wasSection): return place != nil && was == story && wasSection == section
         default: return false
         }
@@ -179,9 +174,6 @@ struct MacTimelineDetail: View {
     let session: UserSession
     let missionsViewModel: MissionsDashboardViewModel
     @Binding var slot: MacProjectPageSlot<ProjectDetailViewModel>
-    /// A project the shell selected itself (before the timeline answered,
-    /// or by Back onto such a place): shown like one opened from the timeline.
-    let selectedProjectID: String?
     let actions: MacProjectPageActions
     let onOpenStory: (String) -> Void
     /// A section of the open project's page, or nil for the page itself.
@@ -189,7 +181,7 @@ struct MacTimelineDetail: View {
     let onRedirectStory: (String) -> Void
 
     var body: some View {
-        if let projectID = selectedProjectID ?? state.storyProjectID {
+        if let projectID = state.storyProjectID {
             MacTimelineProjectHost(projectID: projectID, section: state.storySection, session: session,
                                    missionsViewModel: missionsViewModel, slot: $slot, actions: actions,
                                    onOpenSection: onOpenSection, onRedirectStory: onRedirectStory,

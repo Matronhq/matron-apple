@@ -94,32 +94,12 @@ final class MacTimelineNavTests: XCTestCase {
                        MacPlace(detail: .timeline(place: .quiet, story: "pj_a")))
     }
 
-    /// While the timeline is shown, every way of opening a project lands on
-    /// its page over the timeline: a project selected by the shell (a chip,
-    /// a link, search) is that page's place, never today's project page.
-    func testPlace_aSelectedProjectIsTheStoryWhileTheTimelineIsShown() {
-        XCTAssertEqual(place(timeline: .init(place: week, story: nil), projectID: "pj_a"),
-                       MacPlace(detail: .timeline(place: week, story: "pj_a", section: nil)))
-        // The shell's own selection wins over a story left open under it.
-        XCTAssertEqual(place(timeline: .init(place: .quiet, story: "pj_b"), projectID: "pj_a"),
-                       MacPlace(detail: .timeline(place: .quiet, story: "pj_a", section: nil)))
-        // Before the first week has loaded, too.
-        XCTAssertEqual(place(timeline: .init(place: nil, story: nil), projectID: "pj_a"),
-                       MacPlace(detail: .timeline(place: nil, story: "pj_a", section: nil)))
-    }
-
-    /// With the timeline hidden (the switch off, or an older journal), a
-    /// selected project is today's project page.
-    func testPlace_aSelectedProjectIsTodaysPageWhileTheTimelineIsHidden() {
-        XCTAssertEqual(place(timeline: nil, projectID: "pj_a"), MacPlace(detail: .project(id: "pj_a")))
-    }
-
-    /// A mission page wins over a project either way.
+    /// A mission page wins over a project open over the timeline.
     func testPlace_aMissionPageKeepsItsPlace() {
-        XCTAssertEqual(place(timeline: .init(place: week, story: "pj_a"), missionID: "ms_1", projectID: "pj_a"),
+        XCTAssertEqual(place(timeline: .init(place: week, story: "pj_a"), missionID: "ms_1"),
                        MacPlace(detail: .mission(id: "ms_1")))
-        XCTAssertEqual(place(timeline: nil, missionID: "ms_1", projectID: "pj_a"),
-                       MacPlace(detail: .mission(id: "ms_1")))
+        XCTAssertEqual(place(timeline: nil, missionID: "ms_1"), MacPlace(detail: .mission(id: "ms_1")))
+        XCTAssertEqual(place(timeline: nil), MacPlace(detail: .mission(id: nil)), "the dashboard, with the timeline hidden")
     }
 
     /// A section of the project page is part of the place, and only of a
@@ -127,7 +107,7 @@ final class MacTimelineNavTests: XCTestCase {
     func testPlace_carriesTheOpenSection() {
         XCTAssertEqual(place(timeline: .init(place: week, story: "pj_a", section: .files)),
                        MacPlace(detail: .timeline(place: week, story: "pj_a", section: .files)))
-        XCTAssertEqual(place(timeline: .init(place: week, story: nil, section: .history), projectID: "pj_a"),
+        XCTAssertEqual(place(timeline: .init(place: week, story: "pj_a", section: .history)),
                        MacPlace(detail: .timeline(place: week, story: "pj_a", section: .history)))
         XCTAssertEqual(place(timeline: .init(place: week, story: nil, section: .files)),
                        MacPlace(detail: .timeline(place: week, story: nil, section: nil)))
@@ -187,7 +167,7 @@ final class MacTimelineNavTests: XCTestCase {
         history.visit(first)
         MacChatListView.record(MacPlace(detail: .timeline(place: .quiet, story: nil)), in: history)
         MacChatListView.record(MacPlace(detail: .timeline(place: .quiet, story: "pj_a")), in: history)
-        MacChatListView.record(MacPlace(detail: .project(id: "pj_a")), in: history)
+        MacChatListView.record(MacPlace(detail: .timeline(place: .quiet, story: "pj_a")), in: history)
         XCTAssertEqual(history.back, [first, MacPlace(detail: .timeline(place: .quiet, story: nil)),
                                       MacPlace(detail: .timeline(place: .quiet, story: "pj_a"))])
         XCTAssertEqual(history.goBack(), MacPlace(detail: .timeline(place: .quiet, story: "pj_a")))
@@ -263,32 +243,13 @@ final class MacTimelineNavTests: XCTestCase {
                        "leaving a timeline that has answered is a move")
     }
 
-    /// A project place (one restored from history) turning into the
-    /// project's page over the timeline: the same place filling in, so Back
-    /// never lands on a place that turns straight back into this one.
-    func testRecord_aProjectPlaceTurningIntoTheStoryIsNotANewVisit() {
-        let history = MacNavigationHistory()
-        let chat = MacPlace(detail: .conversation(id: "c1", pane: nil))
-        history.visit(chat)
-        MacChatListView.record(MacPlace(detail: .project(id: "pj_a")), in: history)
-        MacChatListView.record(MacPlace(detail: .timeline(place: nil, story: "pj_a")), in: history)
-        MacChatListView.record(MacPlace(detail: .timeline(place: week, story: "pj_a")), in: history)
-        XCTAssertEqual(history.current, MacPlace(detail: .timeline(place: week, story: "pj_a")))
-        XCTAssertEqual(history.back, [chat])
-    }
-
     func testFillsIn_onlyTheSamePlace() {
         let story = MacPlace(detail: .timeline(place: week, story: "pj_a"))
-        XCTAssertTrue(MacTimelineNav.fillsIn(from: MacPlace(detail: .project(id: "pj_a")), to: story))
-        XCTAssertFalse(MacTimelineNav.fillsIn(from: MacPlace(detail: .project(id: "pj_b")), to: story))
         XCTAssertFalse(MacTimelineNav.fillsIn(from: MacPlace(detail: .mission(id: nil)), to: story))
         XCTAssertFalse(MacTimelineNav.fillsIn(from: MacPlace(detail: .timeline(place: week, story: nil)), to: story),
                        "a card opening its project is a move")
         XCTAssertFalse(MacTimelineNav.fillsIn(from: MacPlace(detail: .timeline(place: .quiet, story: "pj_a")), to: story))
         XCTAssertFalse(MacTimelineNav.fillsIn(from: nil, to: story))
-        // A section is never a fill-in of today's page.
-        XCTAssertFalse(MacTimelineNav.fillsIn(from: MacPlace(detail: .project(id: "pj_a")),
-                                              to: MacPlace(detail: .timeline(place: week, story: "pj_a", section: .files))))
         // The first week arriving under an open section keeps it.
         XCTAssertTrue(MacTimelineNav.fillsIn(from: MacPlace(detail: .timeline(place: nil, story: "pj_a", section: .files)),
                                              to: MacPlace(detail: .timeline(place: week, story: "pj_a", section: .files))))
@@ -349,11 +310,9 @@ final class MacTimelineNavTests: XCTestCase {
         TimelineViewModel(timeline: timeline, askCoordinator: { _ in })
     }
 
-    private func place(timeline: MacTimelineNav.PlaceInput?, missionID: String? = nil,
-                       projectID: String? = nil) -> MacPlace {
+    private func place(timeline: MacTimelineNav.PlaceInput?, missionID: String? = nil) -> MacPlace {
         MacChatListView.place(nav: .missions, selectedSummaryID: "c1", selectedMissionID: missionID,
-                              selectedDecisionID: nil, paneRoute: nil, coordinatorConvoID: nil,
-                              selectedProjectID: projectID, timeline: timeline)
+                              selectedDecisionID: nil, paneRoute: nil, coordinatorConvoID: nil, timeline: timeline)
     }
 }
 

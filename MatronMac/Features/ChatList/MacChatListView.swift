@@ -126,16 +126,13 @@ struct MacChatListView: View {
     /// `.conversations` the instant support is PROVEN false.
     @State private var missionsSupported = true
     @State private var selectedMissionID: String?
-    /// A project page under the Projects entry (spec 2026-09-30 §2); a
-    /// non-nil `selectedMissionID` wins over this in `place(…)`.
-    @State private var selectedProjectID: String?
     /// The project page's view model, kept across the page's unmounts
     /// (a mission page replaces it) so Back reuses it and its detail-pass
     /// throttle applies (PR4 review M1). Reset with the session.
     @State private var projectPageSlot = MacProjectPageSlot<ProjectDetailViewModel>()
-    /// The Projects timeline: built on
-    /// the first visit to Projects; until the journal answers, Projects
-    /// stays today's home (`MacTimelineHost.swift`).
+    /// The Projects timeline: built on the first visit to Projects, which
+    /// shows its loading state until the journal answers
+    /// (`MacTimelineHost.swift`).
     @State private var timeline = MacTimelineState()
     /// The Memories entry's view model (spec 2026-09-27 memories). Built
     /// with the session but loads nothing until the Memories column
@@ -302,7 +299,7 @@ struct MacChatListView: View {
                 decisionsColumn
             case .memories:
                 memoriesColumn
-            case .missions where timeline.isShown:
+            case .missions where timelineShown:
                 MacTimelineColumn(state: timeline, onSelect: selectTimelinePlace)
             case .coordinator, .missions, .desk, .boxes:
                 // Full-width detail: the list column collapses to the nav
@@ -362,7 +359,7 @@ struct MacChatListView: View {
     static func place(nav: MacNav, selectedSummaryID: String?, selectedMissionID: String?,
                       selectedDecisionID: String?, paneRoute: MacChatPaneRoute?,
                       coordinatorConvoID: String?, selectedMemory: MacMemorySelection? = nil,
-                      selectedProjectID: String? = nil, timeline: MacTimelineNav.PlaceInput? = nil) -> MacPlace {
+                      timeline: MacTimelineNav.PlaceInput? = nil) -> MacPlace {
         switch nav {
         case .coordinator:
             let id = coordinatorConvoID.flatMap { $0.isEmpty ? nil : $0 }
@@ -372,8 +369,7 @@ struct MacChatListView: View {
         case .conversations:
             return MacPlace(detail: .conversation(id: selectedSummaryID, pane: selectedSummaryID == nil ? nil : paneRoute))
         case .missions:
-            return MacPlace(detail: MacTimelineNav.projectsDetail(selectedMissionID: selectedMissionID,
-                                                                  selectedProjectID: selectedProjectID, timeline: timeline))
+            return MacPlace(detail: MacTimelineNav.projectsDetail(selectedMissionID: selectedMissionID, timeline: timeline))
         case .decisions:
             return MacPlace(detail: .decision(id: selectedDecisionID))
         case .memories:
@@ -420,7 +416,7 @@ struct MacChatListView: View {
                               paneRoute: paneRoute.route(for: Self.routeConvoID(nav: nav, coordinatorConvoID: coordinatorConvoID,
                                                                                 selectedSummaryID: selectedSummaryID)),
                               coordinatorConvoID: coordinatorConvoID, selectedMemory: selectedMemory,
-                              selectedProjectID: selectedProjectID, timeline: timeline.placeInput)
+                              timeline: timelineShown ? timeline.placeInput : nil)
         return Self.presentedPlace(live: live, staleCoordinatorPlace: staleCoordinatorPlace, routeOwner: paneRoute.owner)
     }
 
@@ -555,7 +551,7 @@ struct MacChatListView: View {
     /// stays inside Xcode 16.4's type-checker budget on CI (it timed out
     /// twice on `body` once the nav column landed).
     private var splitView: some View {
-        let widths = Self.sidebarWidths(for: nav, timelineShown: timeline.isShown)
+        let widths = Self.sidebarWidths(for: nav, timelineShown: timelineShown)
         return NavigationSplitView(columnVisibility: $columnVisibility) {
             sidebarStack
                 // Drop the system sidebar-collapse toolbar button. The
@@ -608,7 +604,7 @@ struct MacChatListView: View {
     /// instead (`coordinatorPageChrome`); ⌘N stays on the menu.
     @ToolbarContentBuilder
     private var sidebarToolbar: some ToolbarContent {
-        if Self.showsNavColumnOnly(nav, timelineShown: timeline.isShown) {
+        if Self.showsNavColumnOnly(nav, timelineShown: timelineShown) {
             // Keeps the 52 pt title bar the header needs.
             MacCoordinatorToolbarPlaceholder()
         } else {
@@ -669,7 +665,7 @@ struct MacChatListView: View {
     /// Your requests on the Coordinator page only. `nil` on every other
     /// entry, where the sidebar toolbar draws them.
     private var coordinatorPageChrome: MacCoordinatorPageChrome? {
-        guard Self.headerCarriesNavigation(nav: nav, timelineShown: timeline.isShown,
+        guard Self.headerCarriesNavigation(nav: nav, timelineShown: timelineShown,
                                            columnVisibility: columnVisibility) else { return nil }
         return MacCoordinatorPageChrome(navigation: navigationActions,
                                         newChat: { showingNewChat = true },
@@ -1530,20 +1526,6 @@ struct MacChatListView: View {
         !(historyIsEmpty && place == MacPlace(detail: .conversation(id: nil, pane: nil)))
     }
 
-    /// `selectedProjectID` after restoring `detail` (R11): a restored
-    /// project page sets it; restoring the home (`.mission(id: nil)`)
-    /// clears it, or `place(…)` would re-derive `.project` from a leftover
-    /// value and Back would look stuck on the project page; restoring a
-    /// mission page leaves it alone, since a mission wins over a project in
-    /// `place(…)` either way.
-    static func projectAfterRestoring(_ detail: MacPlace.Detail, current: String?) -> String? {
-        switch detail {
-        case .project(let id): return id
-        case .mission(nil): return nil
-        default: return current
-        }
-    }
-
     /// Writes a popped place back into the shell's state (spec §4). Direct
     /// assignments, not `showConversation` — the place already says which
     /// entry it was under — keeping the two side effects that protect other
@@ -1579,20 +1561,12 @@ struct MacChatListView: View {
             // global Back covers that now (spec §4).
             missionBackConvoID = nil
             selectedMissionID = id
-            selectedProjectID = Self.projectAfterRestoring(place.detail, current: selectedProjectID)
             // The home: no project left open over the timeline.
             if id == nil { timeline.openStory(nil) }
-            nav = .missions
-        case .project(let id):
-            missionBackConvoID = nil
-            selectedMissionID = nil
-            selectedProjectID = id
-            timeline.openStory(nil)
             nav = .missions
         case .timeline(let place, let story, let section):
             missionBackConvoID = nil
             selectedMissionID = nil
-            selectedProjectID = nil
             timeline.select(place)
             timeline.openStory(story, section: section)
             nav = .missions
@@ -1633,7 +1607,7 @@ struct MacChatListView: View {
     /// The Projects timeline is on screen: ⌘R and coming back to the app
     /// read it again, and the page of a project open over it.
     private var refreshesTimeline: Bool {
-        MacTimelineNav.refreshesTimeline(nav: nav, timelineShown: timeline.isShown, selectedMissionID: selectedMissionID)
+        MacTimelineNav.refreshesTimeline(nav: nav, timelineShown: timelineShown, selectedMissionID: selectedMissionID)
     }
 
     private func refreshTimeline() {
@@ -1926,9 +1900,9 @@ struct MacChatListView: View {
     private var missionDetail: some View {
         if let id = selectedMissionID, let session {
             missionPage(id, session: session)
-        } else if timeline.isShown, let missionsVM, let session {
+        } else if timelineShown, let missionsVM, let session {
             MacTimelineDetail(state: timeline, session: session, missionsViewModel: missionsVM, slot: $projectPageSlot,
-                              selectedProjectID: selectedProjectID, actions: projectPageActions,
+                              actions: projectPageActions,
                               onOpenStory: openStory, onOpenSection: { timeline.storySection = $0 },
                               onRedirectStory: redirectStory)
                 .id(ObjectIdentifier(missionsVM))
@@ -2000,11 +1974,9 @@ struct MacChatListView: View {
     private func selectNavEntry(_ entry: MacNav) {
         searchPageShown = false
         let landing = Self.selectingNavEntry(entry, selectedMissionID: selectedMissionID,
-                                             selectedProjectID: selectedProjectID,
                                              missionBackConvoID: missionBackConvoID)
         missionBackConvoID = landing.missionBackConvoID
         selectedMissionID = landing.selectedMissionID
-        selectedProjectID = landing.selectedProjectID
         if entry == .missions { timeline.openStory(nil) }
         nav = landing.nav
     }
@@ -2013,7 +1985,6 @@ struct MacChatListView: View {
         var nav: MacNav
         var selectedMissionID: String?
         var missionBackConvoID: String?
-        var selectedProjectID: String? = nil
     }
 
     /// What choosing a nav entry does (review I1): Missions — a fresh
@@ -2023,13 +1994,11 @@ struct MacChatListView: View {
     /// project page (that path is `restore(_:)`, not this). Any other entry
     /// leaves the off-screen Missions state as it was.
     static func selectingNavEntry(_ entry: MacNav, selectedMissionID: String?,
-                                  selectedProjectID: String? = nil,
                                   missionBackConvoID: String?) -> NavEntryLanding {
         guard entry == .missions else {
-            return NavEntryLanding(nav: entry, selectedMissionID: selectedMissionID,
-                                   missionBackConvoID: missionBackConvoID, selectedProjectID: selectedProjectID)
+            return NavEntryLanding(nav: entry, selectedMissionID: selectedMissionID, missionBackConvoID: missionBackConvoID)
         }
-        return NavEntryLanding(nav: .missions, selectedMissionID: nil, missionBackConvoID: nil, selectedProjectID: nil)
+        return NavEntryLanding(nav: .missions, selectedMissionID: nil, missionBackConvoID: nil)
     }
 
     /// The page's "All missions": the dashboard is the Missions place with
@@ -2037,7 +2006,6 @@ struct MacChatListView: View {
     private func showMissionsDashboard() {
         missionBackConvoID = nil
         selectedMissionID = nil
-        selectedProjectID = nil
         timeline.openStory(nil)
     }
 
@@ -2053,7 +2021,6 @@ struct MacChatListView: View {
     private func openStory(_ projectID: String) {
         missionBackConvoID = nil
         selectedMissionID = nil
-        selectedProjectID = nil
         timeline.openStory(projectID)
     }
 
@@ -2063,8 +2030,14 @@ struct MacChatListView: View {
     /// came before instead of bouncing onto the merged project again.
     private func redirectStory(_ projectID: String) {
         history.replaceCurrent(MacPlace(detail: .timeline(place: timeline.place, story: projectID, section: nil)))
-        selectedProjectID = nil
         timeline.openStory(projectID)
+    }
+
+    /// Whether Projects is the timeline: once its view model is built,
+    /// unless the journal is too old for it (no `/projects`, or a 404 on
+    /// the weeks), which keeps the missions dashboard.
+    private var timelineShown: Bool {
+        timeline.isShown && missionsVM?.projectsSupported != false
     }
 
     /// Projects came on screen: the timeline's first read, or a re-read.

@@ -53,7 +53,7 @@ struct AppShellView: View {
     @State var searchOpenError: String?
     @State var decisionsVM: ItemsPanelViewModel
     @State var missionsVM: MissionsDashboardViewModel
-    /// The Projects timeline, behind its flag: built on the first visit
+    /// The Projects timeline: built on the first visit
     /// to Projects (`TimelineHostState.projectsShown`).
     @State var timeline = TimelineHostState()
     /// The Memories screen's view model. Built with the shell, but it loads
@@ -692,6 +692,11 @@ struct AppShellView: View {
                           onOpenSession: { nav.openConversation(fromMissions: $0) },
                           onOpenMilestone: openMilestone)
     }
+
+    /// Whether Projects is the timeline: once its view model is built,
+    /// unless the journal is too old for it (no `/projects`, or a 404 on
+    /// the weeks), which keeps the missions dashboard.
+    var timelineShown: Bool { timeline.isShown && missionsVM.projectsSupported != false }
 
     /// What the timeline's pages open, on the Projects stack.
     var timelineActions: ProjectsTabRoot.TimelineActions {

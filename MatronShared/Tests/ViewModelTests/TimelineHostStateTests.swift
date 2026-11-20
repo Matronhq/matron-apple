@@ -159,6 +159,19 @@ final class TimelineHostStateTests: XCTestCase {
         XCTAssertEqual(vm.content(for: .finished), .finished([], hasMore: false), "read, and empty")
     }
 
+    /// Projects is shown as soon as its view model is built, before the
+    /// weeks list answers: until then the page waits, and never says that
+    /// nothing has moved.
+    func testContent_beforeTheWeeksAnswerIsLoading() async throws {
+        let state = TimelineHostState()
+        let task = state.projectsShown { Self.viewModel(StubTimeline(weeks: [])) }
+        let vm = try XCTUnwrap(state.viewModel)
+        XCTAssertNil(vm.isSupported)
+        XCTAssertEqual(vm.content(for: state.place), .loading)
+        await task?.value
+        XCTAssertEqual(vm.content(for: state.place), .nothingYet, "an answer with no weeks")
+    }
+
     func testContent_noWeeksIsNothingYet() async {
         let vm = Self.viewModel(StubTimeline(weeks: []))
         await vm.start()
