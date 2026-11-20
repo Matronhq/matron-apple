@@ -693,6 +693,29 @@ final class ItemQueuedRepliesTests: XCTestCase {
         XCTAssertEqual(vm.draft, "Use OAuth\n\ncame back")
     }
 
+    /// The queued reply is cancelled from elsewhere mid-edit: the edit
+    /// takes its place, and a reply held aside stays apart from it.
+    func testAHeldReplyStaysApartWhenTheQueuedReplyIsCancelledElsewhere() async throws {
+        let cards = Cards(); let release = Release(); let store = Store(); let sync = Sync()
+        store.thread = [Self.reply("ic_1", body: "Use OAuth")]
+        let (vm, _, _) = try await make(cards: cards, release: release, store: store, sync: sync,
+                                        unsentReplies: UnsentReplyStore(directory: unsentDirectory()))
+        try await waitUntil { vm.comments.count == 1 }
+        cards.land([Self.resendCard(10, prompt: "pr_a", comment: "ic_1")])
+        try await waitUntil { vm.editableQueuedReplies == ["ic_1"] }
+        await vm.editQueuedReply(commentID: "ic_1")
+        vm.draft = "Use OAuth with PKCE"
+        vm.takeBack(UnsentReply(text: "came back"))
+        cards.land([Self.resendCard(10, prompt: "pr_a", comment: "ic_1"), Self.release(11, prompt: "pr_a", action: "cancel")])
+        try await waitUntil { vm.editingQueuedReplyID == nil }
+        XCTAssertEqual(vm.replacingCommentID, "ic_1")
+        XCTAssertEqual(vm.draft, "Use OAuth with PKCE", "the held reply is not in the edit")
+        await vm.submitComment()
+        XCTAssertEqual(sync.queued.map(\.body), ["Use OAuth with PKCE"])
+        XCTAssertEqual(sync.queued.map(\.replaces), ["ic_1"])
+        XCTAssertEqual(vm.draft, "came back")
+    }
+
     /// Cancel edit: a held reply joins what was typed before Edit.
     func testAHeldReplyJoinsWhatWasTypedBeforeEditOnCancel() async throws {
         let cards = Cards(); let release = Release(); let store = Store()

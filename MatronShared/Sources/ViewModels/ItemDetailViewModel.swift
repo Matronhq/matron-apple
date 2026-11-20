@@ -205,14 +205,15 @@ public final class ItemDetailViewModel {
     /// ends: sent, cancelled, given up, or its queued reply gone.
     private var heldDuringEdit = UnsentReply() { didSet { saveBox() } }
 
-    /// Set while `sendReply` sends an edit, from before its original is
-    /// withdrawn until the send has settled.
-    private var editSendInFlight = false
+    /// Edits `sendReply` is sending, each from before its original is
+    /// withdrawn until its send has settled. A count: a voice note can go
+    /// out while an edit is still being sent.
+    private var editSendsInFlight = 0
 
     /// The box holds an edit of a queued or cancelled reply, or one is
     /// being sent.
     private var isEditing: Bool {
-        editingQueuedReplyID != nil || replacingCommentID != nil || editSendInFlight
+        editingQueuedReplyID != nil || replacingCommentID != nil || editSendsInFlight > 0
     }
 
     /// The edit has ended: what came back meanwhile joins the box.
@@ -535,17 +536,18 @@ public final class ItemDetailViewModel {
             case .cancelled:
                 // Cancelled from the conversation or another device: it was
                 // withdrawn all the same, so the edit still takes its place.
-                editingQueuedReplyID = nil
                 // Its text goes in the box in the same step when Edit had not
                 // got that far, so a Send can never replace it with
                 // whatever was typed before.
                 let original = comments.first(where: { $0.id == editing })?.body ?? ""
                 if !editTextInBox { restoreToDraft(original) }
                 // A reply that was files alone has put nothing in the box,
-                // so there is no edit to take its place.
+                // so there is no edit to take its place. Set before the edit
+                // ends, so a reply held aside stays apart from the edit.
                 if editTextInBox || !original.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     replacingCommentID = editing
                 }
+                editingQueuedReplyID = nil
                 error = "That reply was cancelled before the edit was sent. Your edit is still in the reply box."
             default:
                 editingQueuedReplyID = nil
@@ -1224,11 +1226,10 @@ public final class ItemDetailViewModel {
     private func sendReply(leading note: LeadingVoiceNote?) async -> String? {
         // An edit being sent holds back any reply that comes back meanwhile
         // until the send has settled (`heldDuringEdit`).
-        if editingQueuedReplyID != nil || replacingCommentID != nil {
-            editSendInFlight = true
-        }
+        let sendsAnEdit = editingQueuedReplyID != nil || replacingCommentID != nil
+        if sendsAnEdit { editSendsInFlight += 1 }
         defer {
-            editSendInFlight = false
+            if sendsAnEdit { editSendsInFlight -= 1 }
             releaseHeldReply()
         }
         // An edited queued reply (typed or spoken) replaces the held
