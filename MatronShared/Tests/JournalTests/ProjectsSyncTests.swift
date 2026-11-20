@@ -12,7 +12,6 @@ private final class FakeProjects: ProjectsProviding, @unchecked Sendable {
     private var _details: [String: ProjectDetail] = [:]
     private var _links: [String: [ConversationMissionLink]] = [:]
     private var _linkCalls: [String] = []
-    private var _created: [(String, String?, String)] = []
     private var _merged: [(String, String)] = []
     private var _renamed: [(String, String)] = []
     private var _closed: [(String, String)] = []
@@ -37,7 +36,6 @@ private final class FakeProjects: ProjectsProviding, @unchecked Sendable {
     /// `projectFeed` answers, keyed by `before` ("" for the first page).
     var feedPages: [String: ProjectFeedSlice] { get { lock.withLock { _feedPages } } set { lock.withLock { _feedPages = newValue } } }
     var feedCalls: [(String, ProjectFeedKind, String?, Int?)] { lock.withLock { _feedCalls } }
-    var created: [(String, String?, String)] { lock.withLock { _created } }
     var merged: [(String, String)] { lock.withLock { _merged } }
     var renamed: [(String, String)] { lock.withLock { _renamed } }
     var closed: [(String, String)] { lock.withLock { _closed } }
@@ -90,11 +88,6 @@ private final class FakeProjects: ProjectsProviding, @unchecked Sendable {
         }
         guard let d = details[id] else { throw JournalAPIError.notFound }
         return d
-    }
-    func createProject(title: String, body: String?, idempotencyKey: String) async throws -> Project {
-        lock.withLock { _created.append((title, body, idempotencyKey)) }
-        return Project(id: "pj_new", num: 9000, title: title, createdAt: Date(timeIntervalSince1970: 1),
-                       updatedAt: Date(timeIntervalSince1970: 1))
     }
     func mergeProject(id: String, into: String) async throws { lock.withLock { _merged.append((id, into)) } }
     func renameProject(id: String, title: String) async throws { lock.withLock { _renamed.append((id, title)) } }
@@ -339,13 +332,9 @@ final class ProjectsSyncTests: XCTestCase {
     func testWritesLandInTheStore() async throws {
         let api = FakeProjects()
         let (sync, store, _, _) = try make(api: api)
-        let created = try await sync.createProject(title: "Promo", body: nil)
-        XCTAssertEqual(created.id, "pj_new")
-        XCTAssertEqual(try store.project(id: "pj_new")?.title, "Promo")
-        XCTAssertFalse(api.created[0].2.isEmpty, "an idempotency key is always sent")
-        let filed = try await sync.setMissionProject(missionID: "ms_1", project: "pj_new")
-        XCTAssertEqual(filed.projectID, "pj_new")
-        XCTAssertEqual(try store.mission(id: "ms_1")?.projectID, "pj_new")
+        let filed = try await sync.setMissionProject(missionID: "ms_1", project: "pj_a")
+        XCTAssertEqual(filed.projectID, "pj_a")
+        XCTAssertEqual(try store.mission(id: "ms_1")?.projectID, "pj_a")
         try await sync.mergeProject(id: "pj_a", into: "pj_b")
         XCTAssertEqual(api.merged.map(\.1), ["pj_b"])
     }
@@ -379,20 +368,6 @@ final class ProjectsSyncTests: XCTestCase {
         api.closeError = ProjectCloseError.alreadyClosed
         try await sync.closeProject(id: "pj_a", summary: "s")
         XCTAssertEqual(api.listCalls, lists + 1)
-    }
-
-    /// A created project must survive a list GET that left before it existed.
-    func testACreateDuringAListFetchSurvivesTheReplace() async throws {
-        let api = FakeProjects()
-        api.list = []
-        api.blockNextList = true
-        let (sync, store, _, _) = try make(api: api)
-        let list = Task { await sync.refresh() }
-        try await waitUntil { api.isListGated }
-        _ = try await sync.createProject(title: "Fresh", body: nil)
-        api.releaseListGate()
-        _ = await list.value
-        XCTAssertNotNil(try store.project(id: "pj_new"))
     }
 
     /// Fix round 1: the fixed 50ms sleep was a guess at how long `stop()`

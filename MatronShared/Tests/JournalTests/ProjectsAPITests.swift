@@ -141,25 +141,6 @@ final class ProjectsAPITests: XCTestCase {
         catch { XCTAssertEqual(error as? JournalAPIError, .notFound) }
     }
 
-    func testCreateProjectPostsTitleBodyAndIdempotencyKey() async throws {
-        let (api, recorder) = makeStubbedAPI(status: 201, body: ["project": ProjectModelTests.projectJSON])
-        let project = try await api.createProject(title: "Promo launch", body: "Site and blog", idempotencyKey: "k-1")
-        XCTAssertEqual(project.id, "pj_1")
-        let req = try XCTUnwrap(recorder.lastRequest)
-        XCTAssertEqual(req.httpMethod, "POST")
-        XCTAssertEqual(req.url?.path, "/projects")
-        XCTAssertEqual(req.value(forHTTPHeaderField: "Idempotency-Key"), "k-1")
-        let sent = try sentBody(recorder)
-        XCTAssertEqual(sent["title"] as? String, "Promo launch")
-        XCTAssertEqual(sent["body"] as? String, "Site and blog")
-    }
-
-    func testCreateProjectOmitsAnEmptyBody() async throws {
-        let (api, recorder) = makeStubbedAPI(status: 201, body: ["project": ProjectModelTests.projectJSON])
-        _ = try await api.createProject(title: "T", body: "  ", idempotencyKey: "k")
-        XCTAssertNil(try sentBody(recorder)["body"])
-    }
-
     func testMergePostsInto() async throws {
         let (api, recorder) = makeStubbedAPI(status: 200, body: ["project": ProjectModelTests.projectJSON])
         try await api.mergeProject(id: "pj_1", into: "pj_2")

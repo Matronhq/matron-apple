@@ -25,7 +25,6 @@ public protocol ProjectsSyncing: Sendable {
     @discardableResult func refreshProject(id: String) async -> ProjectRefreshOutcome
     func beginWatching(convoID: String) async
     func endWatching(convoID: String) async
-    func createProject(title: String, body: String?) async throws -> Project
     func mergeProject(id: String, into: String) async throws
     func renameProject(id: String, title: String) async throws
     func closeProject(id: String, summary: String) async throws

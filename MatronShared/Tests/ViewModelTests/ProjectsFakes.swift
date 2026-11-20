@@ -69,7 +69,6 @@ final class FakeProjectsSync: ProjectsSyncing, @unchecked Sendable {
         get { lock.withLock { _projectOutcomes } } set { lock.withLock { _projectOutcomes = newValue } }
     }
     var refreshedProjects: [String] { lock.withLock { _refreshedProjects } }
-    var created: [(String, String?)] { lock.withLock { _created } }
     var merged: [(String, String)] { lock.withLock { _merged } }
     var renamed: [(String, String)] { lock.withLock { _renamed } }
     var closed: [(String, String)] { lock.withLock { _closed } }
@@ -78,7 +77,6 @@ final class FakeProjectsSync: ProjectsSyncing, @unchecked Sendable {
     private var _refreshCalls = 0
     private var _projectOutcomes: [String: ProjectRefreshOutcome] = [:]
     private var _refreshedProjects: [String] = []
-    private var _created: [(String, String?)] = []
     private var _merged: [(String, String)] = []
     private var _renamed: [(String, String)] = []
     private var _closed: [(String, String)] = []
@@ -109,11 +107,6 @@ final class FakeProjectsSync: ProjectsSyncing, @unchecked Sendable {
     }
     func beginWatching(convoID: String) async {}
     func endWatching(convoID: String) async {}
-    func createProject(title: String, body: String?) async throws -> Project {
-        if let e = failWrites { throw e }
-        lock.withLock { _created.append((title, body)) }
-        return Project(id: "pj_new", num: 9000, title: title)
-    }
     func mergeProject(id: String, into: String) async throws {
         if let e = failWrites { throw e }
         lock.withLock { _merged.append((id, into)) }

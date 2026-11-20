@@ -52,18 +52,8 @@ public final class MissionsDashboardViewModel {
     /// Open mission id → its agent-chat room count, for the project page's
     /// "+N rooms" beside the session chips.
     public private(set) var roomCountsByMission: [String: Int] = [:]
-    /// The Projects home (spec 2026-09-30 §2, §6).
-    public private(set) var home = ProjectsHomeSnapshot()
     /// `false` once `GET /projects` 404s: the host shows today's dashboard.
     public private(set) var projectsSupported: Bool?
-    public var canCreateProject: Bool { projects != nil && projectsSupported != false }
-    /// The journal's `TITLE_MAX`, in UTF-16 units (preflight R6).
-    public static let maxProjectTitleUTF16 = 200
-    @ObservationIgnored private let projectsStore: (any ProjectsStoreReading)?
-    /// The session's "Latest briefing" card state, shown at the top of the
-    /// Projects home. Owned and started by the session (like the notify
-    /// settings), not by this view model; `nil` in tests and previews.
-    @ObservationIgnored public let briefing: LatestBriefingStore?
     @ObservationIgnored private let projects: (any ProjectsSyncing)?
     /// How many project pages show (Bugbot 281-1): a count, not a flag,
     /// because one project page replacing another (iOS: a chip pushes
@@ -205,12 +195,11 @@ public final class MissionsDashboardViewModel {
                 send: @escaping @Sendable (_ convoID: String, _ body: String) async throws -> Void,
                 rosterInterval: Duration = .seconds(60),
                 now: @escaping @Sendable () -> Date = { Date() },
-                projectsStore: (any ProjectsStoreReading)? = nil, projects: (any ProjectsSyncing)? = nil,
-                briefing: LatestBriefingStore? = nil, gate: LiveUpdateGate? = nil) {
+                projects: (any ProjectsSyncing)? = nil, gate: LiveUpdateGate? = nil) {
         self.gate = gate
         self.store = store; self.sync = sync; self.summariesSource = summaries
         self.rosterSource = roster; self.send = send; self.rosterInterval = rosterInterval; self.now = now
-        self.projectsStore = projectsStore; self.projects = projects; self.briefing = briefing
+        self.projects = projects
     }
 
     // MARK: Session lifetime
@@ -232,9 +221,6 @@ public final class MissionsDashboardViewModel {
         tasks.append(observe(store.needsYouItemsByMissionStream()) { $0.inputs.needsYouItems = $1 })
         tasks.append(observe(store.latestSummaryTOCsStream()) { $0.inputs.tocs = $1 })
         tasks.append(observe(store.sessionStatesStream()) { $0.inputs.sessionStates = $1 })
-        if let projectsStore {
-            tasks.append(observe(projectsStore.projectsStream()) { $0.inputs.projects = $1 })
-        }
         if let projects {
             tasks.append(Task { [weak self] in
                 let stream = await projects.supportedStream()
@@ -383,9 +369,6 @@ public final class MissionsDashboardViewModel {
         if closed != snapshot.closed { closed = snapshot.closed }
         if sessionsByMission != snapshot.sessionsByMission { sessionsByMission = snapshot.sessionsByMission }
         if roomCountsByMission != snapshot.roomCountsByMission { roomCountsByMission = snapshot.roomCountsByMission }
-        let nextHome = ProjectsHomeAssembly.assemble(projects: inputs.projects, missions: inputs.missions,
-                                                     needsYouItems: inputs.needsYouItems, now: now())
-        if home != nextHome { home = nextHome; StallCauseRecorder.shared.note("Missions.home") }
         updateNeedsYouTotal()
         updatePageMissionSessions()
     }
@@ -399,7 +382,6 @@ public final class MissionsDashboardViewModel {
         if isStarted { startSummariesIfNeeded() }
         startRosterLoopIfNeeded()
         refreshProjectsInBackground()
-        refreshBriefingInBackground()
         if hasLoadedMissions { startDetailFanOut() } else { detailFanOutPending = true }
     }
 
@@ -451,14 +433,6 @@ public final class MissionsDashboardViewModel {
     private func refreshProjectsInBackground() {
         guard let projects, projectsSupported != false else { return }
         Task { _ = await projects.refresh() }
-    }
-
-    /// The briefing store already re-reads on every connect and every
-    /// `briefing` frame; the Projects home appearing re-reads too, in case
-    /// a frame went missing. Not on a journal that already answered 404.
-    private func refreshBriefingInBackground() {
-        guard let briefing, briefing.isSupported != false else { return }
-        Task { await briefing.refresh() }
     }
 
     private func updatePageMissionSessions() {
@@ -754,43 +728,6 @@ public final class MissionsDashboardViewModel {
         } catch {
             self.error = error.localizedDescription
         }
-    }
-
-    // MARK: Projects (spec 2026-09-30 §6 "Filing")
-
-    /// "New project". Returns the project so the host can open it.
-    public func createProject(title: String, body: String?) async -> Project? {
-        guard let projects else { return nil }
-        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            error = "Give the project a title."
-            return nil
-        }
-        guard trimmed.utf16.count <= Self.maxProjectTitleUTF16 else {
-            error = "Keep the title to 200 characters or fewer."
-            return nil
-        }
-        let trimmedBody = body?.trimmingCharacters(in: .whitespacesAndNewlines)
-        do {
-            return try await projects.createProject(title: trimmed, body: trimmedBody?.isEmpty == true ? nil : trimmedBody)
-        } catch {
-            self.error = error.localizedDescription
-            return nil
-        }
-    }
-
-    /// "Move to project…" on a row. `nil` takes it out of its project.
-    /// The target must be a project the store knows is open (preflight
-    /// R5), like `ProjectDetailViewModel.moveMission`: a closed or unknown
-    /// target (a stale menu entry) is refused here rather than surfacing
-    /// the journal's 409 (Bugbot 280-3). Unfiling always works.
-    public func moveMission(_ missionID: String, to projectID: String?) async {
-        guard let projects else { return }
-        if let projectID {
-            guard inputs.projects.contains(where: { $0.id == projectID && $0.state == .open }) else { return }
-        }
-        do { _ = try await projects.setMissionProject(missionID: missionID, project: projectID) }
-        catch { self.error = error.localizedDescription }
     }
 
     private func startAskCooldown() {

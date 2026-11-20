@@ -422,17 +422,6 @@ public actor ProjectsSync {
 
     // MARK: Writes (interactive; each throws its real message)
 
-    public func createProject(title: String, body: String?) async throws -> Project {
-        let project = try await api.createProject(title: title, body: body, idempotencyKey: UUID().uuidString)
-        guard !stopped else { return project }
-        // The journal created it; only this device's copy can be behind.
-        if try writeUnlessSuspended({ try store.upsertProjects([project]) },
-                                    orDefer: { projectsDeferredUntilResume.insert(project.id) }) {
-            protectedSinceListStart.insert(project.id)
-        }
-        return project
-    }
-
     public func mergeProject(id: String, into: String) async throws {
         try await api.mergeProject(id: id, into: into)
         guard !stopped else { return }
