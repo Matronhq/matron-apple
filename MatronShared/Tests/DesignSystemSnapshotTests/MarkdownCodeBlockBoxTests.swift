@@ -11,6 +11,11 @@ import XCTest
 /// single background the text view draws from its own live layout.
 @MainActor
 final class MarkdownCodeBlockBoxTests: XCTestCase {
+    override class func setUp() {
+        super.setUp()
+        keepDisplayAwake()
+    }
+
     private static let diagram = """
     Intro paragraph.
 

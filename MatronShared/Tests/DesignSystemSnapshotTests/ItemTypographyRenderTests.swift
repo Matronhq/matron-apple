@@ -12,6 +12,11 @@ import MarkdownUI
 /// bumps" on 2026-09-14 while every snapshot looked plausible.
 @MainActor
 final class ItemTypographyRenderTests: XCTestCase {
+    override class func setUp() {
+        super.setUp()
+        keepDisplayAwake()
+    }
+
     private let sample = "The quick brown fox jumps over the lazy dog"
 
     /// Width of the rendered ink of one line, in points.

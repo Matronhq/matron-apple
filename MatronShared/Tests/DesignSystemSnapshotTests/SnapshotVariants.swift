@@ -143,6 +143,7 @@ final class MacSnapshotHost {
     private(set) var settled = false
 
     init<V: View>(_ content: V, appearance: NSAppearance.Name) {
+        keepDisplayAwake()
         let host = NSHostingView(rootView: content)
         let frame = NSRect(origin: .zero, size: host.fittingSize)
         let backdrop = SnapshotBackdropView(frame: frame)

@@ -18,6 +18,11 @@ import MarkdownUI
 /// `matronMessage` and `matron` render identically.
 @MainActor
 final class MessageThemeRenderTests: XCTestCase {
+    override class func setUp() {
+        super.setUp()
+        keepDisplayAwake()
+    }
+
     private let sample = "Two options"
 
     /// Width of the rendered ink of one line, in points. Mirrors

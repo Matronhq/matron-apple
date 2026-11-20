@@ -10,6 +10,11 @@ import XCTest
 /// captures it; it skips on a headless runner where capture is unavailable.
 @MainActor
 final class MessageCopyTextViewOnScreenTests: XCTestCase {
+    override class func setUp() {
+        super.setUp()
+        keepDisplayAwake()
+    }
+
     func test_highlightAddShrinkAndClearRepaintOnScreen() throws {
         let controller = MessageSelectionController()
         let text = "The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog."
