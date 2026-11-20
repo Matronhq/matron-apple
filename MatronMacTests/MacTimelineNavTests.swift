@@ -247,6 +247,22 @@ final class MacTimelineNavTests: XCTestCase {
         XCTAssertFalse(MacTimelineNav.closesSection(from: files, to: MacPlace(detail: .timeline(place: week, story: nil))))
     }
 
+    /// A journal too old for the timeline: the timeline shown before its
+    /// first answer turns into the missions dashboard in place, so one Back
+    /// returns to where the user was.
+    func testRecord_anUnansweredTimelineTurningIntoTheDashboardIsNotANewVisit() {
+        let history = MacNavigationHistory()
+        let chat = MacPlace(detail: .conversation(id: "c1", pane: nil))
+        history.visit(chat)
+        MacChatListView.record(MacPlace(detail: .timeline(place: nil, story: nil)), in: history)
+        MacChatListView.record(MacPlace(detail: .mission(id: nil)), in: history)
+        XCTAssertEqual(history.current, MacPlace(detail: .mission(id: nil)))
+        XCTAssertEqual(history.back, [chat])
+        XCTAssertFalse(MacTimelineNav.fillsIn(from: MacPlace(detail: .timeline(place: week, story: nil)),
+                                              to: MacPlace(detail: .mission(id: nil))),
+                       "leaving a timeline that has answered is a move")
+    }
+
     /// A project place (one restored from history) turning into the
     /// project's page over the timeline: the same place filling in, so Back
     /// never lands on a place that turns straight back into this one.

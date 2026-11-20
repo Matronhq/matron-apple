@@ -43,8 +43,11 @@ import MatronViewModels
     /// first week loaded, becoming the timeline; and likewise today's
     /// project page becoming the project's page over the timeline. That is
     /// not a move, so Back goes where the user was before, and never onto
-    /// a place that turns straight back into this one.
+    /// a place that turns straight back into this one. The timeline before
+    /// its first answer turning into the missions dashboard (a journal too
+    /// old for the timeline) fills in the same way.
     static func fillsIn(from current: MacPlace?, to next: MacPlace) -> Bool {
+        if case .mission(nil) = next.detail, case .timeline(nil, nil, nil)? = current?.detail { return true }
         guard case .timeline(let place, let story, let section) = next.detail, let current else { return false }
         switch current.detail {
         case .mission(nil): return story == nil
