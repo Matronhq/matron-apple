@@ -76,6 +76,9 @@ extension AppDependencies {
         let revocation: CredentialRevocationMonitor
         /// This device's id on the journal, revoked on sign-out.
         var deviceID: Int64?
+        /// The account this stack belongs to; sign-out clears its
+        /// per-account caches by it.
+        var userID: String?
         /// The account's approval keys and this device's own; set when the
         /// stack is built (`installApprovals`).
         var approvals: ApprovalCenter?

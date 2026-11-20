@@ -58,7 +58,7 @@ final class MacItemDetailLifetimeTests: XCTestCase {
                                   homeserverURL: URL(string: "https://journal.invalid")!, accessToken: "lifetime")
         let deps = AppDependencies()
         self.deps = deps
-        storeFile = StoragePaths.appSupport.appendingPathComponent("journal-store/\(userID).sqlite")
+        storeFile = deps.journalStoreURL(for: session)
         try Self.seed(deps.journalStore(for: session), ids: ids)
 
         let box = SelectionBox(nil)

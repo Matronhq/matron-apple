@@ -428,7 +428,8 @@ struct MatronMacApp: App {
         dependencies.onCredentialsRevoked = { revoked in signOutRemotely(revoked) }
         let restored = try? await dependencies.auth.restoreSession()
         // Never publish an account a revoke has just signed out.
-        session = restored?.userID == revokedSession?.userID ? nil : restored
+        let wasRevoked = restored.map { restored in revokedSession.map { restored.isSameSignIn(as: $0) } ?? false } ?? false
+        session = wasRevoked ? nil : restored
         bootstrapDone = true
     }
 
@@ -459,7 +460,9 @@ struct MatronMacApp: App {
     /// scene restored the session and found the revoke first), before
     /// `session` is published — so a missing `session` does not stop it.
     private func signOutRemotely(_ revoked: UserSession) {
-        if let session, session.userID != revoked.userID { return }
+        // The same sign-in, not just the same account: a late revoke for
+        // the sign-in before this one must not sign this one out.
+        if let session, !session.isSameSignIn(as: revoked) { return }
         revokedSession = revoked
         tearDownSession()
     }

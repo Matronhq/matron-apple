@@ -1,6 +1,7 @@
 #if os(macOS)
 import XCTest
 import MatronChat
+import MatronJournal
 import MatronModels
 import MatronViewModels
 @testable import MatronMac
@@ -331,6 +332,97 @@ final class MacAppDependenciesTests: XCTestCase {
         try await drainMainActor()
 
         XCTAssertTrue(revoked.isEmpty)
+    }
+
+    // MARK: Sign out, then sign in again to the same account
+
+    private func signIn(device: String, token: String) -> UserSession {
+        UserSession(userID: "alice", deviceID: device,
+                    homeserverURL: URL(string: "https://chat.example.com")!, accessToken: token)
+    }
+
+    /// The QR re-link race: the user signs out, a view that outlived the
+    /// sign-out asks for the old sign-in's stack, and then the account is
+    /// linked again. The late call used to rebuild a live stack on the
+    /// revoked token under the account's user id; the new sign-in picked it
+    /// up, its socket was refused, and the app said "signed out from another
+    /// device". The fresh-login wipe also deleted the database that stack
+    /// held open, which gave "disk I/O error".
+    func test_lateCallForTheOldSignIn_neitherSignsOutNorBreaksTheNewOne() async throws {
+        deps = AppDependencies()
+        let old = signIn(device: "23", token: "old")
+        let new = signIn(device: "26", token: "new")
+        var revoked: [UserSession] = []
+        deps.onCredentialsRevoked = { revoked.append($0) }
+
+        let oldEngine = deps.syncEngine(for: old)
+        deps.signOut()
+        await deps.awaitPendingTeardown()
+
+        // A view still holding the old session after sign-out.
+        let lateEngine = deps.syncEngine(for: old)
+        let lateStore = deps.journalStore(for: old)
+        XCTAssertFalse(lateEngine === oldEngine)
+        XCTAssertNil(lateStore.databaseURL, "a signed-out sign-in gets an in-memory store, not a file")
+
+        // The new sign-in, the way the sign-in screen runs it.
+        await deps.wipeLocalDataForFreshLogin()
+        let newEngine = deps.syncEngine(for: new)
+        let newStore = deps.journalStore(for: new)
+        XCTAssertFalse(newEngine === lateEngine, "the new sign-in must get its own stack")
+        XCTAssertEqual(newStore.databaseURL, deps.journalStoreURL(for: new))
+
+        // The old token is refused, on the socket and over REST.
+        deps.simulateConnectionAuthRejected(for: old)
+        for _ in 0..<5 { deps.simulateRESTResponse(status: 401, for: old) }
+        try await drainMainActor()
+        XCTAssertTrue(revoked.isEmpty, "the old sign-in's revoke must not sign out the new one")
+
+        // The new sign-in's database reads and writes.
+        XCTAssertNoThrow(try newStore.conversations())
+        XCTAssertNoThrow(try newStore.wipeOutbox())
+
+        // And its own revoke is still heard.
+        deps.simulateConnectionAuthRejected(for: new)
+        try await drainMainActor()
+        XCTAssertEqual(revoked, [new])
+    }
+
+    /// Each sign-in has its own database file, so a fresh sign-in's wipe
+    /// never deletes one a live stack holds open.
+    func test_freshLoginWipe_keepsAFileALiveStackHolds() async throws {
+        deps = AppDependencies()
+        let live = signIn(device: "27", token: "t")
+        let store = deps.journalStore(for: live)
+        let file = try XCTUnwrap(store.databaseURL)
+        XCTAssertEqual(file.lastPathComponent, "alice.d27.sqlite")
+
+        await deps.wipeLocalDataForFreshLogin()
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+        XCTAssertNoThrow(try store.conversations())
+        XCTAssertNoThrow(try store.wipeOutbox())
+    }
+
+    /// An update keeps the local copy: a restored session moves the mirror
+    /// an older build named `<user>.sqlite` to its per-sign-in name.
+    func test_restoredSession_adoptsTheOldStoreFile() async throws {
+        deps = AppDependencies()
+        let session = signIn(device: "31", token: "t")
+        let fm = FileManager.default
+        let legacy = deps.journalStoreDirectory.appendingPathComponent(session.legacyJournalStoreFileName)
+        let target = deps.journalStoreURL(for: session)
+        try? fm.removeItem(at: target)
+        do {
+            let seed = try JournalStore(databaseURL: legacy, ownSender: "user:alice")
+            XCTAssertNoThrow(try seed.wipeOutbox())
+        }
+
+        let store = deps.journalStore(for: session)
+
+        XCTAssertEqual(store.databaseURL, target)
+        XCTAssertFalse(fm.fileExists(atPath: legacy.path), "the old file is moved, not copied")
+        XCTAssertTrue(fm.fileExists(atPath: target.path))
     }
 }
 #endif

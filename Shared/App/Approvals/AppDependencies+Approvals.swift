@@ -56,7 +56,7 @@ extension AppDependencies {
             sign: { since in try await center.signUnlock(since: since) },
             adoptToken: { [weak self] token in try await self?.adoptToken(token, core: core, session: session) },
             pending: Self.pendingUnlock(for: session),
-            isCurrent: { [weak self] in self?.isCurrent(core, userID: session.userID) ?? false },
+            isCurrent: { [weak self] in self?.isCurrent(core, session: session) ?? false },
             attempt: .init(begin: { core.revocation.hold() },
                            end: { tookNewToken in core.revocation.release(discard: tookNewToken) }))
     }
@@ -73,7 +73,7 @@ extension AppDependencies {
     /// back after a sign-out (or a new sign-in) is thrown away, so it can
     /// never sign the device back in.
     func adoptToken(_ token: String, core: JournalCore, session: UserSession) async throws {
-        guard isCurrent(core, userID: session.userID) else { return }
+        guard isCurrent(core, session: session) else { return }
         let saved: Error?
         do {
             try auth.persist(UserSession(userID: session.userID, deviceID: session.deviceID,
