@@ -109,6 +109,9 @@ private let snapshotLocalePin: Void = {
     var arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
     arguments["AppleLocale"] = "en_US"
     arguments["AppleLanguages"] = ["en-US"]
+    // The Mac's "24-hour time" switch overrides the locale's own clock.
+    arguments["AppleICUForce24HourTime"] = false
+    arguments["AppleICUForce12HourTime"] = false
     UserDefaults.standard.setVolatileDomain(arguments, forName: UserDefaults.argumentDomain)
     NSTimeZone.default = TimeZone(identifier: "Europe/London")!
 }()
