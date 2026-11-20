@@ -697,23 +697,35 @@ final class ItemQueuedRepliesTests: XCTestCase {
     /// takes its place, and a reply held aside stays apart from it.
     func testAHeldReplyStaysApartWhenTheQueuedReplyIsCancelledElsewhere() async throws {
         let cards = Cards(); let release = Release(); let store = Store(); let sync = Sync()
+        let directory = unsentDirectory()
         store.thread = [Self.reply("ic_1", body: "Use OAuth")]
         let (vm, _, _) = try await make(cards: cards, release: release, store: store, sync: sync,
-                                        unsentReplies: UnsentReplyStore(directory: unsentDirectory()))
+                                        unsentReplies: UnsentReplyStore(directory: directory))
         try await waitUntil { vm.comments.count == 1 }
         cards.land([Self.resendCard(10, prompt: "pr_a", comment: "ic_1")])
         try await waitUntil { vm.editableQueuedReplies == ["ic_1"] }
         await vm.editQueuedReply(commentID: "ic_1")
         vm.draft = "Use OAuth with PKCE"
-        vm.takeBack(UnsentReply(text: "came back"))
+        let source = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID())-note.png")
+        try Data([1]).write(to: source)
+        let file = try StagedAttachment.stage(moving: source, filename: "note.png")
+        vm.takeBack(UnsentReply(text: "came back", attachments: [file]))
+        XCTAssertTrue(vm.stagedAttachments.isEmpty, "the returned file is held aside")
         cards.land([Self.resendCard(10, prompt: "pr_a", comment: "ic_1"), Self.release(11, prompt: "pr_a", action: "cancel")])
         try await waitUntil { vm.editingQueuedReplyID == nil }
         XCTAssertEqual(vm.replacingCommentID, "ic_1")
         XCTAssertEqual(vm.draft, "Use OAuth with PKCE", "the held reply is not in the edit")
+        XCTAssertTrue(vm.stagedAttachments.isEmpty)
         await vm.submitComment()
         XCTAssertEqual(sync.queued.map(\.body), ["Use OAuth with PKCE"])
         XCTAssertEqual(sync.queued.map(\.replaces), ["ic_1"])
+        XCTAssertEqual(sync.queued.first?.files ?? ["?"], [], "the file didn't go with the edit")
         XCTAssertEqual(vm.draft, "came back")
+        XCTAssertEqual(vm.stagedAttachments.map(\.filename), ["note.png"])
+        let saved = UnsentReplyStore(directory: directory).reply(for: .item("it_1"))
+        XCTAssertEqual(saved.text, "came back")
+        XCTAssertEqual(saved.attachments.map(\.filename), ["note.png"])
+        file.deleteStagedCopy()
     }
 
     /// Cancel edit: a held reply joins what was typed before Edit.
