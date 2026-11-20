@@ -531,6 +531,9 @@ public final class ComposerViewModel {
     /// need (the pending text for `restoreInput`, the staged attachments
     /// to delete their temp copies) BEFORE calling this — it clears both.
     private func clearComposerAfterSend() {
+        // A recalled line being sent: the walk ends first, so the cleared
+        // composer is what is saved, not the draft the walk began from.
+        if history.isNavigating { history.endRecall() }
         input = ""
         stagedAttachments = []
         lastRecalledValue = nil

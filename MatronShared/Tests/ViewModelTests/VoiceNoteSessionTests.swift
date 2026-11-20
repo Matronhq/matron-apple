@@ -789,6 +789,39 @@ extension VoiceNoteSessionTests {
         XCTAssertEqual(relaunched.failures.map(\.target), [chatA])
     }
 
+    /// A restart while a kept note is being retried (its audio still being
+    /// checked) doesn't lose it: it stays on the saved list until the send
+    /// settles.
+    func test_aKeptNote_staysSavedWhileItsRetryIsUnderWay() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("failed-\(UUID())")
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let session = makeSession(failedNotes: directory)
+        session.restoreSavedFailures { _ in nil }
+        let inbox = Inbox()
+        inbox.result = "offline"
+        try await session.start(chatA, deliver: inbox.deliver)
+        await session.stopAndSend()?.value
+        let id = try XCTUnwrap(session.failures.first?.id)
+
+        inbox.result = nil
+        let held = SendGate()
+        let recorder = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in FakeRecording() },
+                                     observeInterruptions: interruptions.source)
+        let slow = VoiceNoteSession(recorder: recorder, failedNotesDirectory: directory, measureAudio: { _ in
+            await held.markStarted()
+            await held.wait()
+            return 5
+        })
+        slow.restoreSavedFailures { _ in inbox.deliver }
+        let retry = slow.retry(id)
+        while await !held.isStarted() { await Task.yield() }
+        XCTAssertEqual(makeSessionAfterRestart(directory).failures.map(\.id), [id], "still saved mid-retry")
+
+        await held.open()
+        await retry?.value
+        XCTAssertTrue(makeSessionAfterRestart(directory).failures.isEmpty, "gone once sent")
+    }
+
     private func makeSessionAfterRestart(_ directory: URL) -> VoiceNoteSession {
         let session = makeSession(failedNotes: directory)
         session.restoreSavedFailures { _ in nil }

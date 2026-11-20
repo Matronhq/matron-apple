@@ -192,11 +192,25 @@ public final class ItemDetailViewModel {
     /// is what comes back if the edit is never sent.
     private func saveBox() {
         guard loadedBox, !isStopped, !isStandIn, let unsentReplies else { return }
-        // Another page shows this item now (this view model was made to
-        // retry a voice note): that page owns the saved box.
+        // Another page shows this item now: that page owns the saved box.
         if let live = unsentReplies.box(for: unsentPlace), live !== self { return }
         let text = editingQueuedReplyID != nil ? preEditDraft : draft
-        unsentReplies.save(UnsentReply(text: text, attachments: stagedAttachments), for: unsentPlace, epoch: unsentEpoch)
+        let box = UnsentReplyStore.merge(heldDuringEdit, into: UnsentReply(text: text, attachments: stagedAttachments))
+        unsentReplies.save(box, for: unsentPlace, epoch: unsentEpoch)
+    }
+
+    /// A reply that came back while Edit had a queued reply's text in the
+    /// box: kept aside (and saved with the box) so it isn't sent as part
+    /// of the edit, and put in the box once the edit ends.
+    private var heldDuringEdit = UnsentReply() { didSet { saveBox() } }
+
+    /// The edit has ended (sent, cancelled or given up): what came back
+    /// meanwhile joins the box.
+    private func releaseHeldReply() {
+        guard editingQueuedReplyID == nil, !heldDuringEdit.isEmpty else { return }
+        let held = heldDuringEdit
+        heldDuringEdit = UnsentReply()
+        takeBack(held)
     }
 
     /// Whether this view model is the one showing its item's reply box now
@@ -570,6 +584,7 @@ public final class ItemDetailViewModel {
         editingQueuedReplyID = nil
         draft = preEditDraft
         preEditDraft = ""
+        releaseHeldReply()
         guard let queuedRelease else { return }
         let target: (convoID: String, seq: Int64)
         switch queuedReplies[commentID] {
@@ -929,10 +944,17 @@ public final class ItemDetailViewModel {
         if let unsentReplies {
             unsentReplies.unregister(self, for: unsentPlace)
             // The box is on disk. Emptied here (unsaved: this has stopped)
-            // so a voice note this page still sends goes alone, and never
-            // re-sends what waits in the box.
+            // so a voice note this page still sends goes alone, never
+            // re-sends what waits in the box, and never stands in for a
+            // queued reply this page was editing (that reply goes as it
+            // was once its hold lapses).
             draft = ""
             stagedAttachments = []
+            heldDuringEdit = UnsentReply()
+            editingQueuedReplyID = nil
+            editTextInBox = false
+            preEditDraft = ""
+            replacingCommentID = nil
         } else {
             discardAttachments()
         }
@@ -1190,6 +1212,7 @@ public final class ItemDetailViewModel {
         // reply stays here, the note back in the tray.
         if editingQueuedReplyID != nil, let failure = await withdrawEditedOriginal() {
             if let note { restoreUnsent([note.attachment], text: "", note: note, localID: "") }
+            releaseHeldReply()
             return failure
         }
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1202,6 +1225,9 @@ public final class ItemDetailViewModel {
         replacingCommentID = nil
         draft = ""
         stagedAttachments = []
+        // What came back while this was an edit joins the box once this
+        // send has settled (after a failed send's own text is back).
+        defer { releaseHeldReply() }
         // Kept on disk until it is queued or back in a box: if the app
         // stops while it uploads, the next launch puts it back.
         unsentReplies?.beginSend(localID, UnsentReply(text: pending, attachments: attachments),
@@ -1678,12 +1704,9 @@ extension ItemDetailViewModel: UnsentReplyBox {
     /// box: its files ahead of the tray, its text after what is typed.
     public func takeBack(_ reply: UnsentReply) {
         // While Edit has a queued reply's text in the box, the returned
-        // text joins what was typed before Edit: that is what is saved,
-        // and what comes back when the edit ends.
+        // reply is held aside, not sent with the edit (`heldDuringEdit`).
         if editingQueuedReplyID != nil {
-            let merged = UnsentReplyStore.merge(reply, into: UnsentReply(text: preEditDraft, attachments: stagedAttachments))
-            preEditDraft = merged.text
-            stagedAttachments = merged.attachments
+            heldDuringEdit = UnsentReplyStore.merge(reply, into: heldDuringEdit)
             return
         }
         let merged = UnsentReplyStore.merge(reply, into: UnsentReply(text: draft, attachments: stagedAttachments))
@@ -1737,13 +1760,14 @@ extension ItemDetailViewModel: AttachmentStaging {
             }.value
             switch staged {
             case .success(let attachment):
-                // The item closed while this was copying: it goes to the
-                // item's saved box, or, without one, nothing will show or
-                // send it.
+                // The item closed (or another page took it over) while this
+                // was copying: it goes to the item's box, or, without a
+                // store, nothing will show or send it.
                 if let unsentReplies, unsentReplies.epoch != unsentEpoch {
                     // Signed out while this was copying.
                     attachment.deleteStagedCopy()
-                } else if !isStopped {
+                } else if !isStopped, !isStandIn,
+                          unsentReplies?.box(for: unsentPlace).map({ $0 === self }) ?? true {
                     stagedAttachments.append(attachment)
                 } else if let unsentReplies {
                     unsentReplies.giveBack(UnsentReply(attachments: [attachment]), to: unsentPlace, epoch: unsentEpoch)

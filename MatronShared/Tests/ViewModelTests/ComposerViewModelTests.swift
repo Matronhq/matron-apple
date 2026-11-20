@@ -1809,6 +1809,22 @@ final class ComposerViewModelTests: XCTestCase {
         XCTAssertEqual(saved.text, "my draft\n\ncame back")
     }
 
+    /// Sending a recalled line saves the cleared composer, not the draft
+    /// the walk began from.
+    @MainActor
+    func test_unsentMessage_sendingARecalledLineClearsTheSavedMessage() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("unsent-\(UUID())")
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(), commands: [],
+                                   recentFolders: emptyRecentFolders(),
+                                   unsentReplies: UnsentReplyStore(directory: directory))
+        vm.input = "sent earlier"
+        await vm.send()
+        vm.recallOlder()
+        await vm.send()
+        XCTAssertEqual(UnsentReplyStore(directory: directory).reply(for: .conversation("!r")).text, "")
+    }
+
     /// Up/Down shows a sent line in the field; what is saved stays the
     /// draft it was walking away from.
     @MainActor

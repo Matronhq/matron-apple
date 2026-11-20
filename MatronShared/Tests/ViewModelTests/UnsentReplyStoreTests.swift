@@ -66,7 +66,8 @@ final class UnsentReplyStoreTests: XCTestCase {
     func testMergeKeepsTextThatOnlyEndsTheSame() {
         let merged = UnsentReplyStore.merge(UnsentReply(text: "yes"), into: UnsentReply(text: "not yes"))
         XCTAssertEqual(merged.text, "not yes\n\nyes")
-        XCTAssertEqual(UnsentReplyStore.merge(UnsentReply(text: "same"), into: UnsentReply(text: "same")).text, "same")
+        XCTAssertEqual(UnsentReplyStore.merge(UnsentReply(text: "yes"), into: UnsentReply(text: "yes")).text, "yes\n\nyes",
+                       "a second reply that says the same is still a reply")
     }
 
     /// At the next launch a send still recorded comes back to the box —

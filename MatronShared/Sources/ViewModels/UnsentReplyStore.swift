@@ -158,14 +158,14 @@ public final class UnsentReplyStore {
 
     /// `reply` ahead of `box`: its attachments first, its text after
     /// whatever `box` already says. An attachment already there isn't
-    /// added twice.
+    /// added twice. Text always is: two replies can say the same thing.
     static func merge(_ reply: UnsentReply, into box: UnsentReply) -> UnsentReply {
         let known = Set(box.attachments.map(\.id))
         let attachments = reply.attachments.filter { !known.contains($0.id) } + box.attachments
         let typed = box.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let back = reply.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let text: String
-        if back.isEmpty || typed == back { text = box.text }
+        if back.isEmpty { text = box.text }
         else if typed.isEmpty { text = reply.text }
         else { text = typed + "\n\n" + back }
         return UnsentReply(text: text, attachments: attachments)

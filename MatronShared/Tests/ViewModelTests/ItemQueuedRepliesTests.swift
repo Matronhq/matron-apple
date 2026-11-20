@@ -148,7 +148,7 @@ final class ItemQueuedRepliesTests: XCTestCase {
         }
     }
     private final class API: ItemsProviding, @unchecked Sendable {
-        func uploadMedia(_ data: Data, contentType: String) async throws -> String { fatalError() }
+        func uploadMedia(_ data: Data, contentType: String) async throws -> String { "blob-1" }
         func closeItem(id: String, resolution: ItemResolution, comment: String?) async throws -> TrackerItem { fatalError() }
         func reopenItem(id: String, comment: String?) async throws -> TrackerItem { fatalError() }
         func listItems(_ query: ItemsListQuery) async throws -> ItemsPage { fatalError() }
@@ -197,8 +197,9 @@ final class ItemQueuedRepliesTests: XCTestCase {
                                           title: "Which auth?", body: "", labels: [], links: [], originConvoID: "c1")
 
     private func make(cards: Cards = Cards(), release: Release? = Release(), store: Store = Store(),
-                      sync: Sync = Sync()) async throws -> (ItemDetailViewModel, Store, Sync) {
-        let vm = ItemDetailViewModel(itemID: "it_1", store: store, api: API(), sync: sync, queuedCards: cards, queuedRelease: release)
+                      sync: Sync = Sync(), unsentReplies: UnsentReplyStore? = nil) async throws -> (ItemDetailViewModel, Store, Sync) {
+        let vm = ItemDetailViewModel(itemID: "it_1", store: store, api: API(), sync: sync, queuedCards: cards, queuedRelease: release,
+                                     unsentReplies: unsentReplies)
         vm.start()
         try await waitUntil { sync.refetched == ["it_1"] && store.itemCont != nil }
         store.itemCont?.yield(Self.item)
@@ -415,6 +416,62 @@ final class ItemQueuedRepliesTests: XCTestCase {
         XCTAssertEqual(vm.draft, "")
         XCTAssertEqual(vm.queuedReplies["ic_1"], .cancelled)
         XCTAssertNil(vm.error)
+    }
+
+    /// A reply that comes back while Edit is open (an earlier page's send
+    /// failed) is held aside: it isn't sent with the edit, it is saved
+    /// meanwhile, and it is in the box once the edit has gone.
+    func testAReplyComingBackDuringAnEditIsKeptOutOfTheEdit() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("unsent-\(UUID())")
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let replies = UnsentReplyStore(directory: directory)
+        let cards = Cards(); let release = Release(); let store = Store(); let sync = Sync()
+        store.thread = [Self.reply("ic_1", body: "Use OAuth")]
+        let (vm, _, _) = try await make(cards: cards, release: release, store: store, sync: sync, unsentReplies: replies)
+        try await waitUntil { vm.comments.count == 1 }
+        cards.land([Self.resendCard(10, prompt: "pr_a", comment: "ic_1")])
+        try await waitUntil { vm.editableQueuedReplies == ["ic_1"] }
+        vm.draft = "typed before"
+        await vm.editQueuedReply(commentID: "ic_1")
+        vm.draft = "Use OAuth with PKCE"
+
+        vm.takeBack(UnsentReply(text: "came back"))
+        XCTAssertEqual(vm.draft, "Use OAuth with PKCE")
+        XCTAssertEqual(UnsentReplyStore(directory: directory).reply(for: .item("it_1")).text, "typed before\n\ncame back")
+
+        let send = Task { await vm.submitComment() }
+        try await waitUntil { release.sent.count == 2 }
+        cards.land([Self.resendCard(10, prompt: "pr_a", comment: "ic_1"), Self.release(11, prompt: "pr_a", action: "cancel")])
+        await send.value
+        XCTAssertEqual(sync.queued.map(\.body), ["Use OAuth with PKCE"])
+        XCTAssertEqual(vm.draft, "came back")
+        XCTAssertEqual(UnsentReplyStore(directory: directory).reply(for: .item("it_1")).text, "came back")
+    }
+
+    /// Leaving the item mid-edit ends the edit on that page: a voice note
+    /// it still sends goes as a reply of its own, and never withdraws or
+    /// stands in for the queued reply.
+    func testAVoiceNoteFromAPageClosedMidEditDoesNotReplaceTheQueuedReply() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("unsent-\(UUID())")
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let cards = Cards(); let release = Release(); let store = Store(); let sync = Sync()
+        store.thread = [Self.reply("ic_1", body: "Use OAuth")]
+        let (vm, _, _) = try await make(cards: cards, release: release, store: store, sync: sync,
+                                        unsentReplies: UnsentReplyStore(directory: directory))
+        try await waitUntil { vm.comments.count == 1 }
+        cards.land([Self.resendCard(10, prompt: "pr_a", comment: "ic_1")])
+        try await waitUntil { vm.editableQueuedReplies == ["ic_1"] }
+        await vm.editQueuedReply(commentID: "ic_1")
+        vm.stop()
+        XCTAssertNil(vm.editingQueuedReplyID)
+
+        let recording = FileManager.default.temporaryDirectory.appendingPathComponent("v-\(UUID()).m4a")
+        try Data("AUDIO".utf8).write(to: recording)
+        let message = await vm.sendVoiceNote(url: recording)
+        XCTAssertNil(message)
+        XCTAssertEqual(release.sent.map(\.2), ["edit"], "nothing withdrew the queued reply")
+        XCTAssertEqual(sync.queued.map(\.replaces), [nil])
+        XCTAssertEqual(sync.queued.map(\.body), [""])
     }
 
     // MARK: - An edit takes the cancelled reply's place
