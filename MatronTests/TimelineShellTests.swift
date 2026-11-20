@@ -5,48 +5,54 @@ import MatronModels
 import MatronViewModels
 @testable import Matron
 
-/// The Projects timeline on iPad and iPhone: with the journal answering, the iPad lists the weeks
-/// beside Projects and the iPhone's Projects root is the week page;
-/// otherwise both keep the Projects home they have today. The state's reads
-/// and what a place shows are shared and tested in MatronShared
-/// (`TimelineHostStateTests`); this pins the iOS layout and navigation.
+/// The Projects timeline on iPad and iPhone: the iPad lists the weeks
+/// beside Projects and the iPhone's Projects root is the week page, from
+/// the first visit on; a journal too old for the timeline keeps the
+/// missions dashboard. The state's reads and what a place shows are shared
+/// and tested in MatronShared (`TimelineHostStateTests`); this pins the iOS
+/// layout and navigation.
 @MainActor
 final class TimelineShellTests: XCTestCase {
     // MARK: Layout
 
-    func testFlagOff_keepsTodaysSidebarAndRoot() {
+    func testBeforeTheFirstVisit_nothingAsksTheJournal_andTheRootWaits() {
         let state = TimelineHostState()
-        XCTAssertNil(state.projectsShown(flagOn: false) { XCTFail("built with the flag off"); return Self.viewModel() })
         XCTAssertNil(state.viewModel, "nothing asks the journal")
         XCTAssertFalse(state.isShown)
         XCTAssertEqual(SplitShellRule.sidebarList(for: .missions, missionsPath: [], timelineShown: state.isShown),
                        .conversations)
         XCTAssertEqual(SplitShellRule.sidebarWidth(listing: .conversations), SplitShellRule.sidebarWidth)
-        XCTAssertEqual(ProjectsTabRoot.content(projectsSupported: true, timelineShown: state.isShown), .home)
+        XCTAssertEqual(ProjectsTabRoot.content(projectsSupported: nil, timelineSupported: nil, timelineBuilt: false),
+                       .loading)
     }
 
-    func testFlagOnAndSupported_selectsTheTimelineSidebarAndThePhoneRoot() async {
+    func testAVisit_selectsTheTimelineSidebarAndThePhoneRoot_atOnce() async {
         let state = TimelineHostState()
-        await state.projectsShown(flagOn: true) { Self.viewModel() }?.value
+        let task = state.projectsShown { Self.viewModel() }
+        XCTAssertTrue(state.isShown, "shown before the journal answers: the pages show their loading state")
+        XCTAssertEqual(ProjectsTabRoot.content(projectsSupported: nil, timelineSupported: state.viewModel?.isSupported,
+                                               timelineBuilt: true), .timeline)
+        await task?.value
         XCTAssertTrue(state.isShown)
         XCTAssertEqual(SplitShellRule.sidebarList(for: .missions, missionsPath: [], timelineShown: state.isShown),
                        .timeline)
         XCTAssertEqual(SplitShellRule.sidebarWidth(listing: .timeline), SplitShellRule.sidebarWidth(for: .decisions),
                        "as wide as For you")
-        XCTAssertEqual(ProjectsTabRoot.content(projectsSupported: true, timelineShown: state.isShown), .timeline)
+        XCTAssertEqual(ProjectsTabRoot.content(projectsSupported: true, timelineSupported: state.viewModel?.isSupported,
+                                               timelineBuilt: true), .timeline)
     }
 
-    func testUnsupportedOrNotYetAnswered_fallsBack() async {
+    /// A journal too old for the timeline (a 404 on its weeks) keeps the
+    /// missions dashboard and the Conversations list beside it.
+    func testAJournalWithoutTheTimeline_keepsTheMissionsDashboard() async {
         let state = TimelineHostState()
-        let task = state.projectsShown(flagOn: true) { Self.viewModel(StubTimeline(supported: false)) }
-        XCTAssertFalse(state.isShown, "not shown before the journal answers")
-        XCTAssertEqual(ProjectsTabRoot.content(projectsSupported: true, timelineShown: state.isShown), .home)
-        await task?.value
+        await state.projectsShown { Self.viewModel(StubTimeline(supported: false)) }?.value
         XCTAssertEqual(state.viewModel?.isSupported, false)
         XCTAssertFalse(state.isShown)
         XCTAssertEqual(SplitShellRule.sidebarList(for: .missions, missionsPath: [], timelineShown: state.isShown),
                        .conversations)
-        XCTAssertEqual(ProjectsTabRoot.content(projectsSupported: true, timelineShown: state.isShown), .home)
+        XCTAssertEqual(ProjectsTabRoot.content(projectsSupported: nil, timelineSupported: state.viewModel?.isSupported,
+                                               timelineBuilt: true), .legacy)
     }
 
     /// The timeline changes only the Projects page's list: Memories, which
@@ -72,24 +78,24 @@ final class TimelineShellTests: XCTestCase {
 
     /// A journal without `/projects` keeps the missions dashboard, whatever the timeline.
     func testAnOldJournalKeepsTheMissionsDashboard() {
-        XCTAssertEqual(ProjectsTabRoot.content(projectsSupported: false, timelineShown: false), .legacy)
-        XCTAssertEqual(ProjectsTabRoot.content(projectsSupported: nil, timelineShown: false), .home)
+        XCTAssertEqual(ProjectsTabRoot.content(projectsSupported: false, timelineSupported: nil, timelineBuilt: true),
+                       .legacy)
+        XCTAssertEqual(ProjectsTabRoot.content(projectsSupported: false, timelineSupported: nil, timelineBuilt: false),
+                       .legacy)
     }
 
     // MARK: iPhone
 
-    /// With the week page as the root, the toolbar keeps Memories (the
-    /// week picker is the title's menu); New project and the Ask stay with
-    /// today's home and dashboard.
+    /// The week page's toolbar keeps Memories (the week picker is the
+    /// title's menu); the Ask stays with the missions dashboard.
     func testTheWeekPageToolbarKeepsOnlyMemories() {
-        XCTAssertEqual(ProjectsTabRoot.toolbarButtons(content: .timeline, canCreateProject: true, canAskCoordinator: true,
-                                                      hasMemories: true), [.memories])
-        XCTAssertEqual(ProjectsTabRoot.toolbarButtons(content: .home, canCreateProject: true, canAskCoordinator: true,
-                                                      hasMemories: true), [.newProject, .ask, .memories])
-        XCTAssertEqual(ProjectsTabRoot.toolbarButtons(content: .legacy, canCreateProject: false, canAskCoordinator: true,
-                                                      hasMemories: true), [.ask, .memories])
-        XCTAssertEqual(ProjectsTabRoot.toolbarButtons(content: .home, canCreateProject: false, canAskCoordinator: false,
-                                                      hasMemories: false), [])
+        XCTAssertEqual(ProjectsTabRoot.toolbarButtons(content: .timeline, canAskCoordinator: true, hasMemories: true),
+                       [.memories])
+        XCTAssertEqual(ProjectsTabRoot.toolbarButtons(content: .loading, canAskCoordinator: true, hasMemories: true),
+                       [.memories])
+        XCTAssertEqual(ProjectsTabRoot.toolbarButtons(content: .legacy, canAskCoordinator: true, hasMemories: true),
+                       [.ask, .memories])
+        XCTAssertEqual(ProjectsTabRoot.toolbarButtons(content: .legacy, canAskCoordinator: false, hasMemories: false), [])
     }
 
     /// The iPhone's week page stays under a pushed list: it shows the last
@@ -97,7 +103,7 @@ final class TimelineShellTests: XCTestCase {
     func testThePhonesWeekPageIsTheLastWeekPicked() async {
         let state = TimelineHostState()
         XCTAssertNil(TimelinePhoneRoot.place(state))
-        await state.projectsShown(flagOn: true) { Self.viewModel() }?.value
+        await state.projectsShown { Self.viewModel() }?.value
         XCTAssertEqual(TimelinePhoneRoot.place(state), .week("2026-11-02"))
         state.select(.week("2026-10-26"))
         state.select(.finished)
@@ -159,19 +165,12 @@ final class TimelineShellTests: XCTestCase {
         }
     }
 
-    /// The page a stack entry shows, on every stack: the new page (or its
-    /// section) only while the timeline is shown, else the project page
-    /// there is today, whatever route was pushed before the answer came.
-    func testAProjectShowsItsNewPageOnlyWhileTheTimelineIsShown() throws {
-        let page = try XCTUnwrap(ProjectPageTarget(pathValue: "project/pj_a"))
-        let story = try XCTUnwrap(ProjectPageTarget(pathValue: "story/pj_a"))
-        let files = try XCTUnwrap(ProjectPageTarget(pathValue: "story-section/files/pj_a"))
-        XCTAssertEqual(page.page(timelineShown: true), .summary(section: nil))
-        XCTAssertEqual(story.page(timelineShown: true), .summary(section: nil))
-        XCTAssertEqual(files.page(timelineShown: true), .summary(section: .files))
-        for target in [page, story, files] {
-            XCTAssertEqual(target.page(timelineShown: false), .todaysPage)
-        }
+    /// Every project route is the project's page, or a section of it.
+    func testEveryProjectRouteNamesItsPageOrSection() throws {
+        XCTAssertEqual(ProjectPageTarget(pathValue: "project/pj_a"), ProjectPageTarget(projectID: "pj_a", section: nil))
+        XCTAssertEqual(ProjectPageTarget(pathValue: "story/pj_a"), ProjectPageTarget(projectID: "pj_a", section: nil))
+        XCTAssertEqual(ProjectPageTarget(pathValue: "story-section/files/pj_a"),
+                       ProjectPageTarget(projectID: "pj_a", section: .files))
     }
 
     /// Where a merged project's page goes: either of its two reads can
@@ -200,27 +199,17 @@ final class TimelineShellTests: XCTestCase {
                                          detailProjectID: "pj_1"))
     }
 
-    /// What the new page draws: a journal without the project-page route
-    /// shows the project page it has, before anything else.
-    func testAJournalWithoutThePageRouteFallsBackToTodaysPage() {
+    /// What the page draws: the page or its section, else why there is none.
+    func testWhatAProjectPageDraws() {
         typealias Host = TimelineStoryHost
-        XCTAssertEqual(Host.content(hasPage: false, isMissing: false, isUnsupported: true, loadFailed: false, section: nil),
-                       .todaysPage)
-        XCTAssertEqual(Host.content(hasPage: false, isMissing: false, isUnsupported: true, loadFailed: true,
-                                    section: .files), .todaysPage)
-        XCTAssertEqual(Host.content(hasPage: true, isMissing: false, isUnsupported: false, loadFailed: false, section: nil),
-                       .summary)
-        XCTAssertEqual(Host.content(hasPage: true, isMissing: false, isUnsupported: false, loadFailed: false,
-                                    section: .history), .section(.history))
+        XCTAssertEqual(Host.content(hasPage: true, isMissing: false, loadFailed: false, section: nil), .summary)
+        XCTAssertEqual(Host.content(hasPage: true, isMissing: false, loadFailed: false, section: .history),
+                       .section(.history))
         // A failed re-read keeps the page on screen.
-        XCTAssertEqual(Host.content(hasPage: true, isMissing: false, isUnsupported: false, loadFailed: true, section: nil),
-                       .summary)
-        XCTAssertEqual(Host.content(hasPage: false, isMissing: true, isUnsupported: false, loadFailed: false, section: nil),
-                       .missing)
-        XCTAssertEqual(Host.content(hasPage: false, isMissing: false, isUnsupported: false, loadFailed: true, section: nil),
-                       .loadFailed)
-        XCTAssertEqual(Host.content(hasPage: false, isMissing: false, isUnsupported: false, loadFailed: false,
-                                    section: .missions), .loading)
+        XCTAssertEqual(Host.content(hasPage: true, isMissing: false, loadFailed: true, section: nil), .summary)
+        XCTAssertEqual(Host.content(hasPage: false, isMissing: true, loadFailed: false, section: nil), .missing)
+        XCTAssertEqual(Host.content(hasPage: false, isMissing: false, loadFailed: true, section: nil), .loadFailed)
+        XCTAssertEqual(Host.content(hasPage: false, isMissing: false, loadFailed: false, section: .missions), .loading)
     }
 
     /// A picture opens the image viewer over the project's pictures, a

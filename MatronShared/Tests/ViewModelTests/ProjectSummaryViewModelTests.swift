@@ -91,7 +91,6 @@ final class ProjectSummaryViewModelTests: XCTestCase {
         XCTAssertEqual(vm.page, page())
         XCTAssertEqual(fake.pageCalls, ["pj_promo"])
         XCTAssertFalse(vm.isMissing)
-        XCTAssertFalse(vm.isUnsupported)
         XCTAssertNil(vm.redirectedTo)
         XCTAssertNil(vm.error)
         XCTAssertEqual(fake.listCalls, [], "a page that loads needs no probe")
@@ -126,38 +125,14 @@ final class ProjectSummaryViewModelTests: XCTestCase {
         XCTAssertEqual(vm.error, JournalAPIError.forbidden.localizedDescription)
     }
 
-    func testAPageNotFoundWhileTheListWorksIsMissing() async {
+    func testAPageNotFoundIsMissing() async {
         let (vm, fake) = make()
         fake.page = .failure(JournalAPIError.notFound)
         await vm.start()
         XCTAssertTrue(vm.isMissing)
-        XCTAssertFalse(vm.isUnsupported)
         XCTAssertNil(vm.page)
         XCTAssertNil(vm.error)
-        XCTAssertEqual(fake.listCalls, [1], "the probe asks for one row")
-    }
-
-    /// A journal without the project-page routes: the host shows the
-    /// project page it had before.
-    func testPageRouteMissingFallsBack() async {
-        let (vm, fake) = make()
-        fake.page = .failure(JournalAPIError.notFound)
-        fake.list = .failure(JournalAPIError.notFound)
-        await vm.start()
-        XCTAssertTrue(vm.isUnsupported)
-        XCTAssertFalse(vm.isMissing)
-        XCTAssertNil(vm.page)
-        XCTAssertNil(vm.error)
-    }
-
-    func testAPageNotFoundWithAProbeThatFailsOtherwiseSetsError() async {
-        let (vm, fake) = make()
-        fake.page = .failure(JournalAPIError.notFound)
-        fake.list = .failure(JournalAPIError.forbidden)
-        await vm.start()
-        XCTAssertFalse(vm.isUnsupported, "nothing says the journal lacks the route")
-        XCTAssertFalse(vm.isMissing, "nor that the project is gone")
-        XCTAssertEqual(vm.error, JournalAPIError.forbidden.localizedDescription)
+        XCTAssertEqual(fake.listCalls, [], "a 404 is settled without reading the all-projects list")
     }
 
     func testAMergedPageRedirects() async {
@@ -215,16 +190,6 @@ final class ProjectSummaryViewModelTests: XCTestCase {
         fake.page = .failure(CancellationError())
         await vm.refresh()
         XCTAssertNil(vm.error)
-    }
-
-    func testACancelledProbeSetsNoError() async {
-        let (vm, fake) = make()
-        fake.page = .failure(JournalAPIError.notFound)
-        fake.list = .failure(JournalAPIError.transport("cancelled"))
-        await vm.start()
-        XCTAssertNil(vm.error)
-        XCTAssertFalse(vm.isMissing, "nothing was learnt")
-        XCTAssertFalse(vm.isUnsupported)
     }
 
     func testACancelledHistoryReadSetsNoError() async {

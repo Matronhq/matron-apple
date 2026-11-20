@@ -89,21 +89,6 @@ public struct ProjectsHomeSnapshot: Equatable, Sendable {
     public var openProjects: [Project] { cards.map(\.project) }
 }
 
-/// Every tap on the Projects home, routed through one function per host.
-public enum ProjectsHomeAction: Equatable, Hashable, Sendable {
-    case openProject(String)
-    case openMission(String)
-    case newProject
-    /// `projectID == nil` takes the mission out of its project.
-    case moveMission(missionID: String, projectID: String?)
-    /// A conversation at one event — the briefing reader's "Open in chat"
-    /// (the Coordinator's conversation at the briefing's own message).
-    case openConversation(convoID: String, seq: Int64)
-    /// A tracker item by id — a `matron://item/<n>` link in the briefing
-    /// reader, resolved by the host.
-    case openItem(String)
-}
-
 /// Everything the project page draws (spec §2 "Project page").
 public struct ProjectPageModel: Equatable, Sendable {
     public var project: Project

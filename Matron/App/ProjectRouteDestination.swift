@@ -9,9 +9,8 @@ import MatronViewModels
 /// returns to the chat or item the link sat in, rather than the Projects
 /// tab coming forward with no way back. What the page opens rides the same
 /// stack, through the caller's closures (each tab opens a conversation by
-/// its own rule, as with `MissionRouteDestination`). While the Projects
-/// timeline is shown the page is the new one, its sections pushed onto
-/// this stack too (`ProjectPageTarget.page`).
+/// its own rule, as with `MissionRouteDestination`). The page's sections
+/// are pushed onto this stack too.
 struct ProjectRouteDestination: View {
     let route: ProjectPageTarget
     let session: UserSession?
@@ -24,9 +23,6 @@ struct ProjectRouteDestination: View {
     /// The shell's Projects view model, which the project page reads its
     /// mission rows from (`AppShellView` puts it in the environment).
     @Environment(MissionsDashboardViewModel.self) private var missionsViewModel: MissionsDashboardViewModel?
-    /// The shell's timeline state: whether the timeline is shown decides
-    /// the page (`AppShellView` puts it in the environment).
-    @Environment(TimelineHostState.self) private var timeline: TimelineHostState?
     /// The stack this page is on: a section pushes onto it.
     @Environment(\.chatNavigationPath) private var path
 
@@ -37,19 +33,11 @@ struct ProjectRouteDestination: View {
                 let (chat, _) = vmCache.viewModels(for: convoID, deps: deps, session: session)
                 Task { await chat.jumpToMilestone(seq: seq) }
             }
-            switch route.page(timelineShown: timeline?.isShown == true) {
-            case .summary(let section):
-                TimelineStoryHost(
-                    projectID: route.projectID, section: section, session: session,
-                    missionsViewModel: missionsViewModel, onOpenSection: pushSection,
-                    onOpenMission: onOpenMission, onOpenItem: onOpenItem, onOpenSession: onOpenConversation,
-                    onOpenMilestone: openMilestone)
-            case .todaysPage:
-                ProjectDetailHost(
-                    projectID: route.projectID, session: session, missionsViewModel: missionsViewModel,
-                    onOpenMission: onOpenMission, onOpenItem: onOpenItem, onOpenSession: onOpenConversation,
-                    onOpenMilestone: openMilestone)
-            }
+            TimelineStoryHost(
+                projectID: route.projectID, section: route.section, session: session,
+                missionsViewModel: missionsViewModel, onOpenSection: pushSection,
+                onOpenMission: onOpenMission, onOpenItem: onOpenItem, onOpenSession: onOpenConversation,
+                onOpenMilestone: openMilestone)
         } else {
             ContentUnavailableView("Session unavailable", systemImage: "exclamationmark.triangle",
                                    description: Text("Sign in again to open this project."))
