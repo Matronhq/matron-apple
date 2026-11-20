@@ -702,7 +702,7 @@ extension VoiceNoteSessionTests {
     private func makeSession(failedNotes directory: URL) -> VoiceNoteSession {
         let recorder = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in FakeRecording() },
                                      observeInterruptions: interruptions.source)
-        return VoiceNoteSession(recorder: recorder, measureAudio: { _ in 5 }, failedNotesDirectory: directory)
+        return VoiceNoteSession(recorder: recorder, failedNotesDirectory: directory, measureAudio: { _ in 5 })
     }
 
     /// A note that couldn't go back into a reply box keeps its Retry after

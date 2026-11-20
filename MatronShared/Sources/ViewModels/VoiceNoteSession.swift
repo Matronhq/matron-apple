@@ -150,9 +150,9 @@ public final class VoiceNoteSession {
     private let measureAudio: @Sendable (URL) async -> TimeInterval?
 
     public init(recorder: VoiceRecorder,
-                measureAudio: @escaping @Sendable (URL) async -> TimeInterval? = VoiceNoteSession.audioDuration,
-                settle: @escaping @Sendable () async -> Void = { try? await Task.sleep(for: .milliseconds(500)) },
-                failedNotesDirectory: URL? = nil) {
+                failedNotesDirectory: URL? = nil,
+                measureAudio: @escaping @Sendable (URL) async -> TimeInterval? = { await VoiceNoteSession.audioDuration(of: $0) },
+                settle: @escaping @Sendable () async -> Void = { try? await Task.sleep(for: .milliseconds(500)) }) {
         self.recorder = recorder
         self.measureAudio = measureAudio
         self.settle = settle
