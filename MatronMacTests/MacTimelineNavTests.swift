@@ -167,7 +167,7 @@ final class MacTimelineNavTests: XCTestCase {
         history.visit(first)
         MacChatListView.record(MacPlace(detail: .timeline(place: .quiet, story: nil)), in: history)
         MacChatListView.record(MacPlace(detail: .timeline(place: .quiet, story: "pj_a")), in: history)
-        MacChatListView.record(MacPlace(detail: .timeline(place: .quiet, story: "pj_a")), in: history)
+        MacChatListView.record(MacPlace(detail: .timeline(place: .quiet, story: "pj_b")), in: history)
         XCTAssertEqual(history.back, [first, MacPlace(detail: .timeline(place: .quiet, story: nil)),
                                       MacPlace(detail: .timeline(place: .quiet, story: "pj_a"))])
         XCTAssertEqual(history.goBack(), MacPlace(detail: .timeline(place: .quiet, story: "pj_a")))
