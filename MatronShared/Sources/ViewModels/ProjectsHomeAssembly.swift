@@ -1,8 +1,8 @@
 import Foundation
 import MatronModels
 
-/// The Projects home and page rules (spec 2026-09-30 §2), pure so every
-/// one is a plain unit test.
+/// A project page's mission rows and their order (spec 2026-09-30 §2),
+/// pure so every rule is a plain unit test.
 public enum ProjectsHomeAssembly {
     /// "Quiet for over a week" (spec §2, decision 5).
     public static let quietAfter: TimeInterval = 7 * 86_400
@@ -45,83 +45,5 @@ public enum ProjectsHomeAssembly {
         if a.activity.sortRank != b.activity.sortRank { return a.activity.sortRank < b.activity.sortRank }
         if a.lastActivity != b.lastActivity { return a.lastActivity > b.lastActivity }
         return a.mission.num > b.mission.num
-    }
-
-    public static func card(for project: Project, missions: [Mission], needsYouItems: [String: [TrackerItem]]) -> ProjectCard {
-        let mine = missions.filter { $0.projectID == project.id && $0.state == .open }
-        let local = mine.reduce(0) { $0 + max($1.needsYou, needsYouItems[$1.id]?.count ?? 0) }
-        let latest = mine.compactMap(\.lastMilestone).max { $0.createdAt < $1.createdAt }
-        let (waiting, more) = waitingRows(journal: project.waitingOn, local: mine.flatMap { needsYouItems[$0.id] ?? [] })
-        return ProjectCard(project: project, needsYouCount: max(project.needsYou, local), latestMilestone: latest,
-                           waiting: waiting, waitingMore: more, latest: project.latest, sessionsNow: project.sessionsNow,
-                           missionTitles: missionTitles(in: project, missions: missions))
-    }
-
-    /// What the home's filter searches on a card besides the project's
-    /// title: each of its missions' title and short name, open missions
-    /// first, then by number.
-    static func missionTitles(in project: Project, missions: [Mission]) -> [String] {
-        missions.filter { $0.projectID == project.id }
-            .sorted { a, b in a.state != b.state ? a.state == .open : a.num < b.num }
-            .flatMap { [$0.title, $0.name ?? ""] }
-            .filter { !$0.isEmpty }
-    }
-
-    /// The waiting-on box's rows: the journal's `waiting_on` first (it
-    /// sees every mission, synced here or not), then this device's open
-    /// needs-you items on the project's missions, newest first, the
-    /// journal's row not repeated. `more` counts what is behind the rows
-    /// shown — the journal's `1 + more` when it knows of more than the
-    /// device holds.
-    public static func waitingRows(journal: ProjectWaitingOn?, local: [TrackerItem])
-        -> (rows: [ProjectWaitingOn], more: Int) {
-        var all = journal.map { [$0] } ?? []
-        let sorted = local.sorted { a, b in a.updatedAt != b.updatedAt ? a.updatedAt > b.updatedAt : a.num > b.num }
-        for item in sorted where !all.contains(where: { $0.itemID == item.id }) {
-            all.append(ProjectWaitingOn(itemID: item.id, num: item.num, kind: item.kind, title: item.title,
-                                        missionNum: item.missionNum))
-        }
-        let total = max(all.count, journal.map { 1 + $0.more } ?? 0)
-        let rows = Array(all.prefix(ProjectCard.waitingShown))
-        return (rows, total - rows.count)
-    }
-
-    /// Needs you first, then anything running, then newest activity.
-    static func cardPrecedes(_ a: ProjectCard, _ b: ProjectCard) -> Bool {
-        let (na, nb) = (a.needsYouCount > 0, b.needsYouCount > 0)
-        if na != nb { return na }
-        let (ra, rb) = (a.project.missions.running > 0, b.project.missions.running > 0)
-        if ra != rb { return ra }
-        let (la, lb) = (a.project.lastActivityAt ?? .distantPast, b.project.lastActivityAt ?? .distantPast)
-        if la != lb { return la > lb }
-        return a.project.num > b.project.num
-    }
-
-    public static func assemble(projects: [Project], missions: [Mission], needsYouItems: [String: [TrackerItem]],
-                                now: Date) -> ProjectsHomeSnapshot {
-        let openProjects = projects.filter { $0.state == .open }
-        let openIDs = Set(openProjects.map(\.id))
-        // Unfiled includes a mission whose project this device doesn't know
-        // or that closed — it must stay visible somewhere.
-        let unfiledRows = missionRows(missions.filter { m in m.projectID.map { !openIDs.contains($0) } ?? true },
-                                      needsYouItems: needsYouItems, now: now)
-        let closed = missions.filter { $0.state == .closed }.sorted { a, b in
-            let (ca, cb) = (a.closedAt ?? .distantPast, b.closedAt ?? .distantPast)
-            return ca != cb ? ca > cb : a.num > b.num
-        }
-        // Each card reads only its own project's missions: hand it those,
-        // rather than every card filtering (and copying) all of them.
-        var byProject: [String: [Mission]] = [:]
-        for index in missions.indices {
-            guard let projectID = missions[index].projectID, openIDs.contains(projectID) else { continue }
-            byProject[projectID, default: []].append(missions[index])
-        }
-        return ProjectsHomeSnapshot(
-            cards: openProjects.map { card(for: $0, missions: byProject[$0.id] ?? [], needsYouItems: needsYouItems) }
-                .sorted(by: cardPrecedes),
-            unfiled: unfiledRows.filter { $0.activity != .quiet },
-            quiet: unfiledRows.filter { $0.activity == .quiet }.sorted { $0.lastActivity > $1.lastActivity },
-            closed: closed,
-            statusRefreshedAt: projects.compactMap(\.statusUpdatedAt).max())
     }
 }

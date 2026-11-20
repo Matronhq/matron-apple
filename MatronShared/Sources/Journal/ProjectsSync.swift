@@ -38,7 +38,7 @@ public actor ProjectsSync {
     /// Set when a refresh is requested while one runs: the running pass
     /// repeats ONCE, however many requests arrived (the marker flood rule).
     private var refreshAgain = false
-    /// Ids a detail fetch or a create wrote since the current list GET
+    /// Ids a detail fetch wrote since the current list GET
     /// started — kept by `replaceProjects` (same race as `MissionsSync` H1).
     private var protectedSinceListStart: Set<String> = []
     /// Conversation id → number of on-screen chat views showing it. Fix
@@ -421,17 +421,6 @@ public actor ProjectsSync {
     }
 
     // MARK: Writes (interactive; each throws its real message)
-
-    public func createProject(title: String, body: String?) async throws -> Project {
-        let project = try await api.createProject(title: title, body: body, idempotencyKey: UUID().uuidString)
-        guard !stopped else { return project }
-        // The journal created it; only this device's copy can be behind.
-        if try writeUnlessSuspended({ try store.upsertProjects([project]) },
-                                    orDefer: { projectsDeferredUntilResume.insert(project.id) }) {
-            protectedSinceListStart.insert(project.id)
-        }
-        return project
-    }
 
     public func mergeProject(id: String, into: String) async throws {
         try await api.mergeProject(id: id, into: into)

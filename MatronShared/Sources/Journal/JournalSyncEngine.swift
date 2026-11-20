@@ -212,7 +212,6 @@ public actor JournalSyncEngine {
     private var defaultsContinuations: [UUID: AsyncStream<NewChatDefaults>.Continuation] = [:]
     private var boxDefaultsContinuations: [UUID: AsyncStream<BoxDefaultsUpdate>.Continuation] = [:]
     private var userSettingsContinuations: [UUID: AsyncStream<UserSettings>.Continuation] = [:]
-    private var briefingContinuations: [UUID: AsyncStream<BriefingSignal>.Continuation] = [:]
     private var sharedMissionContinuations: [UUID: AsyncStream<SharedMissionSignal>.Continuation] = [:]
     /// The latest known whole answer, replayed to a late subscriber: the
     /// hello arrives during the handshake, before any subscriber can exist.
@@ -1671,26 +1670,10 @@ public actor JournalSyncEngine {
     }
     private func unregisterBoxDefaults(id: UUID) { boxDefaultsContinuations.removeValue(forKey: id) }
 
-    /// Live `briefing` frames (journal "Coordinator briefings"): a briefing
-    /// was published, or a refresh was asked for or failed.
-    /// `LatestBriefingStore` subscribes and refetches on each. No replay:
-    /// the store also refetches on every connect. Mirrors `notifyUpdates()`.
-    public nonisolated func briefingUpdates() -> AsyncStream<BriefingSignal> {
-        AsyncStream { continuation in
-            let id = UUID()
-            Task { await self.registerBriefing(id: id, continuation: continuation) }
-            continuation.onTermination = { _ in Task { await self.unregisterBriefing(id: id) } }
-        }
-    }
-    private func registerBriefing(id: UUID, continuation: AsyncStream<BriefingSignal>.Continuation) {
-        briefingContinuations[id] = continuation
-    }
-    private func unregisterBriefing(id: UUID) { briefingContinuations.removeValue(forKey: id) }
-
     /// Live `shared` frames: a mission another person shares with this
     /// user was added, changed or removed. `ItemsSync` subscribes and
     /// reconciles its cache on a removal. No replay: it also reconciles on
-    /// every launch and sign-in. Mirrors `briefingUpdates()`.
+    /// every launch and sign-in. Mirrors `notifyUpdates()`.
     public nonisolated func sharedMissionUpdates() -> AsyncStream<SharedMissionSignal> {
         AsyncStream { continuation in
             let id = UUID()
@@ -2320,8 +2303,6 @@ public actor JournalSyncEngine {
                         for c in boxDefaultsContinuations.values { c.yield(update) }
                     case .settings(let settings):
                         for c in userSettingsContinuations.values { c.yield(settings) }
-                    case .briefing(let signal):
-                        for c in briefingContinuations.values { c.yield(signal) }
                     case .pins(let pins):
                         for c in pinsContinuations.values { c.yield(pins) }
                     case .archive(let delta):

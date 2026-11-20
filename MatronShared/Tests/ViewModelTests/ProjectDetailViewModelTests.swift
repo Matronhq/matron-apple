@@ -688,7 +688,6 @@ private final class GatedProjectsSync: ProjectsSyncing, @unchecked Sendable {
     }
     func beginWatching(convoID: String) async {}
     func endWatching(convoID: String) async {}
-    func createProject(title: String, body: String?) async throws -> Project { Project(id: "pj_x", num: 1, title: title) }
     func mergeProject(id: String, into: String) async throws {}
     func renameProject(id: String, title: String) async throws {}
     func closeProject(id: String, summary: String) async throws {}

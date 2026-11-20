@@ -26,8 +26,6 @@ public struct MissionsDashboardInputs: Equatable, Sendable {
     /// (`MissionConversation.state`), which can be stale the moment this
     /// device has synced fresher activity.
     public var sessionStates: [String: String] = [:]
-    /// The Projects home's projects (`JournalStore.projectsStream()`).
-    public var projects: [Project] = []
     public init() {}
 }
 

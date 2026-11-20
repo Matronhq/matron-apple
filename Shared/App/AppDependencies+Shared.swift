@@ -61,10 +61,6 @@ extension AppDependencies {
         /// switch in Settings. Started right after construction, stopped on
         /// sign-out.
         let userSettings: UserSettingsStore
-        /// The Coordinator's latest briefing (journal "Coordinator
-        /// briefings"): the card at the top of Projects. Started right after
-        /// construction, stopped on sign-out.
-        let briefing: LatestBriefingStore
         /// The user's pinned desk chats (journal "Pinned desk chats"): the
         /// entries under the Coordinator and Settings → Pinned chats.
         /// Started right after construction, stopped on sign-out.
@@ -94,7 +90,7 @@ extension AppDependencies {
         var connectedMarkTask: Task<Void, Never>?
         init(api: JournalAPI, store: JournalStore, engine: JournalSyncEngine, items: ItemsSync, missions: MissionsSync,
              projects: ProjectsSync, coordinator: CoordinatorSync, notify: NotifySettingsStore,
-             defaults: NewChatDefaultsStore, userSettings: UserSettingsStore, briefing: LatestBriefingStore, pins: PinsStore,
+             defaults: NewChatDefaultsStore, userSettings: UserSettingsStore, pins: PinsStore,
              maintenance: JournalMaintenance, revocation: CredentialRevocationMonitor) {
             self.api = api
             self.store = store
@@ -106,7 +102,6 @@ extension AppDependencies {
             self.notify = notify
             self.defaults = defaults
             self.userSettings = userSettings
-            self.briefing = briefing
             self.pins = pins
             self.maintenance = maintenance
             self.revocation = revocation
@@ -283,6 +278,14 @@ extension AppDependencies {
                           askCoordinator: coordinatorAsk(for: session, coordinatorConvoID: coordinatorConvoID))
     }
 
+    /// Why "Ask the Coordinator" could not be sent.
+    enum CoordinatorAskError: Error, LocalizedError, Equatable {
+        /// No Coordinator is chosen to ask.
+        case noCoordinator
+
+        var errorDescription: String? { "Choose a Coordinator first." }
+    }
+
     /// Sends a message to the Coordinator conversation `coordinatorConvoID`
     /// names when asked: the timeline's and a project page's "Ask the
     /// Coordinator". Throws when there is no Coordinator to ask.
@@ -290,7 +293,7 @@ extension AppDependencies {
                                    coordinatorConvoID: @escaping @MainActor () -> String?) -> (String) async throws -> Void {
         let engine = core(for: session).engine
         return { body in
-            guard let convoID = coordinatorConvoID(), !convoID.isEmpty else { throw BriefingsError.noCoordinator }
+            guard let convoID = coordinatorConvoID(), !convoID.isEmpty else { throw CoordinatorAskError.noCoordinator }
             try await engine.sendMessage(convoID: convoID, body: body, localID: UUID().uuidString)
         }
     }
