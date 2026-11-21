@@ -76,6 +76,9 @@ extension AppDependencies {
         let revocation: CredentialRevocationMonitor
         /// This device's id on the journal, revoked on sign-out.
         var deviceID: Int64?
+        /// The account this stack belongs to; sign-out clears its
+        /// per-account caches by it.
+        var userID: String?
         /// The account's approval keys and this device's own; set when the
         /// stack is built (`installApprovals`).
         var approvals: ApprovalCenter?
@@ -421,18 +424,22 @@ extension AppDependencies {
         await core(for: session).engine.ensurePlaceholderConversation(id: id, title: "New chat")
     }
 
-    /// Per-room `TimelineService` factory. Cached by `(userID, roomID)` so
+    /// Per-room `TimelineService` factory. Cached by `(sign-in, roomID)` so
     /// repeat navigations to the same room re-use the same journal timeline
-    /// handle instead of rebuilding the overlay state from scratch.
+    /// handle instead of rebuilding the overlay state from scratch. Keyed by
+    /// the sign-in, not the user id, like the stacks: a timeline a leftover
+    /// view asked for after sign-out sits on that sign-in's inert stack, and
+    /// the next sign-in to the same account must not pick it up. Such a
+    /// timeline is not cached at all.
     func timelineService(for session: UserSession, roomID: String) -> any TimelineService {
-        let key = TimelineCacheKey(userID: session.userID, roomID: roomID)
+        let key = TimelineCacheKey(signInKey: session.signInKey, roomID: roomID)
         if let cached = timelineCache[key] { return cached }
         let core = core(for: session)
         let service = JournalTimelineService(
             convoID: roomID, store: core.store, engine: core.engine,
             api: core.api, session: session, search: search
         )
-        timelineCache[key] = service
+        if isCurrent(core, session: session) { timelineCache[key] = service }
         return service
     }
 
@@ -440,8 +447,8 @@ extension AppDependencies {
     var timelineCacheCount: Int { timelineCache.count }
 
     /// Test seam: whether the timeline cache currently holds an entry for
-    /// `(userID, roomID)`.
-    func timelineCacheContains(userID: String, roomID: String) -> Bool {
-        timelineCache.contains(TimelineCacheKey(userID: userID, roomID: roomID))
+    /// `session`'s sign-in and `roomID`.
+    func timelineCacheContains(session: UserSession, roomID: String) -> Bool {
+        timelineCache.contains(TimelineCacheKey(signInKey: session.signInKey, roomID: roomID))
     }
 }

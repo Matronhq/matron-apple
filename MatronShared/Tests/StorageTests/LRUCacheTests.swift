@@ -107,9 +107,9 @@ final class LRUCacheTests: XCTestCase {
     }
 
     func test_timelineCacheKey_equalityAndHashing() {
-        let a = TimelineCacheKey(userID: "@u:s", roomID: "!r1:s")
-        let b = TimelineCacheKey(userID: "@u:s", roomID: "!r1:s")
-        let c = TimelineCacheKey(userID: "@u:s", roomID: "!r2:s")
+        let a = TimelineCacheKey(signInKey: "@u:s", roomID: "!r1:s")
+        let b = TimelineCacheKey(signInKey: "@u:s", roomID: "!r1:s")
+        let c = TimelineCacheKey(signInKey: "@u:s", roomID: "!r2:s")
         XCTAssertEqual(a, b, "same userID + roomID must compare equal")
         XCTAssertNotEqual(a, c, "different roomID must not collide")
         // Hashing is the load-bearing property since LRUCache uses these

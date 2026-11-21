@@ -129,12 +129,26 @@ final class AppDependencies {
     private let sessionsDirectory: URL
     private let journalDirectory: URL
 
+    /// One journal stack per sign-in, keyed by `UserSession.signInKey`
+    /// (user, journal and device id), never by the user id alone: after a
+    /// sign-out and a new sign-in to the same account, a late call for the
+    /// old sign-in must not hand the new one the old token's stack.
     private var cores: [String: JournalCore] = [:]
 
-    /// Whether `core` is still the signed-in account's: a sign-out removes
-    /// it, and a new sign-in replaces it. Never creates one.
-    func isCurrent(_ core: JournalCore, userID: String) -> Bool {
-        cores[userID] === core
+    /// Sign-ins this object has signed out of. `core(for:)` refuses them:
+    /// a view that still holds the old session after sign-out gets an inert
+    /// stack (see `refusedCore(for:)`) instead of a new live one on the
+    /// revoked token.
+    private var retiredSignIns: Set<String> = []
+
+    /// The inert stacks handed to retired sign-ins, one each, so repeated
+    /// late calls don't build one per call.
+    private var refusedCores: [String: JournalCore] = [:]
+
+    /// Whether `core` is still the signed-in session's: a sign-out removes
+    /// it, and a new sign-in has its own. Never creates one.
+    func isCurrent(_ core: JournalCore, session: UserSession) -> Bool {
+        cores[session.signInKey] === core
     }
     /// Read-state reporter per session (`SeenTracker`), created on first use
     /// and dropped with the cores on sign-out.
@@ -142,10 +156,10 @@ final class AppDependencies {
 
     /// What this session's timelines and item details report as seen.
     func seenTracker(for session: UserSession) -> SeenTracker {
-        if let existing = seenTrackers[session.userID] { return existing }
+        if let existing = seenTrackers[session.signInKey] { return existing }
         let engine = core(for: session).engine
         let tracker = SeenTracker(isActive: UIApplication.shared.applicationState == .active) { op in try await engine.sendOp(op) }
-        seenTrackers[session.userID] = tracker
+        seenTrackers[session.signInKey] = tracker
         return tracker
     }
     /// Per-session `MediaService` cache. Task 11's journal swap dropped the
@@ -257,22 +271,69 @@ final class AppDependencies {
     /// caller would have to null-check. Not `private`: the shared factories
     /// (`Shared/App`) call it.
     func core(for session: UserSession) -> JournalCore {
-        if let existing = cores[session.userID] { return existing }
+        let key = session.signInKey
+        if let existing = cores[key] { return existing }
+        // A sign-in this object already signed out of: never a live stack
+        // again. Building one here used to reopen the account's database and
+        // reconnect on the revoked token, and a new sign-in to the same
+        // account then picked that stack up, was refused, and signed out.
+        if retiredSignIns.contains(key) { return refusedCore(for: session) }
+        let core = buildCore(for: session, databaseURL: adoptLegacyStoreFile(for: session), live: true)
+        cores[key] = core
+        return core
+    }
+
+    /// An inert stack for a sign-in that has been signed out: its database
+    /// is in memory, nothing in it is started, and its revocation check is
+    /// off, so it can neither touch the next sign-in's files nor sign it
+    /// out. Views that outlive their session read empty data from it until
+    /// they go away.
+    private func refusedCore(for session: UserSession) -> JournalCore {
+        if let existing = refusedCores[session.signInKey] { return existing }
+        Self.logger.notice("refused a journal stack for a signed-out session")
+        let core = buildCore(for: session, databaseURL: nil, live: false)
+        refusedCores[session.signInKey] = core
+        return core
+    }
+
+    /// This sign-in's local journal mirror, named per sign-in (see
+    /// `UserSession.journalStoreFileName`).
+    func journalStoreURL(for session: UserSession) -> URL {
+        journalDirectory.appendingPathComponent(session.journalStoreFileName)
+    }
+
+    /// Moves the mirror an older build kept as `<user>.sqlite` to this
+    /// sign-in's name, once. Only a restored session can find one: a fresh
+    /// sign-in empties the directory first.
+    /// Returns the file to open: the old one, for now, if the move could
+    /// not finish, or nil (an in-memory database for this launch) if the
+    /// old one could not be made whole (see `LegacyStoreFileMove`).
+    private func adoptLegacyStoreFile(for session: UserSession) -> URL? {
+        LegacyStoreFileMove.adopt(
+            legacy: journalDirectory.appendingPathComponent(session.legacyJournalStoreFileName),
+            target: journalStoreURL(for: session)
+        )
+    }
+
+    /// Builds a journal stack. `live: false` is the refused stack: no
+    /// revocation check, no account-lock reports, no search, no launch
+    /// timings, and nothing started.
+    private func buildCore(for session: UserSession, databaseURL dbURL: URL?, live: Bool) -> JournalCore {
         // Built first so the API client and the engine report to it from
         // their very first request — a revoke discovered while a restored
         // session is still connecting at launch counts too.
         let revocation = CredentialRevocationMonitor { [weak self] in
             Task { @MainActor in self?.credentialsRevoked(for: session) }
         }
+        if !live { revocation.cancel() }
         let accountLock = self.accountLock
         let api = JournalAPI(serverURL: session.homeserverURL, token: session.accessToken,
                              authResponses: { [revocation, accountLock] status in
                                  revocation.noteResponse(status: status)
-                                 accountLock.note(status: status)
+                                 if live { accountLock.note(status: status) }
                              },
-                             accountLocks: { [accountLock] lock in accountLock.note(lock: lock) })
-        let dbURL = journalDirectory.appendingPathComponent("\(session.userID).sqlite")
-        LaunchTimeline.shared.beginStoreOpen()
+                             accountLocks: { [accountLock] lock in if live { accountLock.note(lock: lock) } })
+        if live { LaunchTimeline.shared.beginStoreOpen() }
         // The mirror opens as a `DatabasePool`, so reads stop waiting
         // behind sync writes and behind each other: on a queue, Settings'
         // storage count held a main-thread read for seconds. `store.pool`
@@ -280,22 +341,24 @@ final class AppDependencies {
         let store = try! JournalStore(
             databaseURL: dbURL, ownSender: "user:\(session.userID)",
             usesPool: JournalStore.usesPool(UserDefaults.standard, default: true))
-        LaunchTimeline.shared.endStoreOpen()
-        // Un-gated, like MainThreadStallMonitor: a once-a-minute line per
-        // store observation and hot write (category `store-observation`).
-        StoreMetricsReporter.shared.start()
-        // Same re-assert as the search open: a store opened while the
-        // databases are suspended must not start out holding locks.
-        DatabaseSuspensionController.shared.databaseDidOpen()
+        if live {
+            LaunchTimeline.shared.endStoreOpen()
+            // Un-gated, like MainThreadStallMonitor: a once-a-minute line per
+            // store observation and hot write (category `store-observation`).
+            StoreMetricsReporter.shared.start()
+            // Same re-assert as the search open: a store opened while the
+            // databases are suspended must not start out holding locks.
+            DatabaseSuspensionController.shared.databaseDidOpen()
+        }
         // Nested inside the store-open interval: present on the one launch
         // that ran v11, absent on every later one. That contrast is the
         // headline result of this whole plan, so it has to be visible.
-        if let migration = store.lastMigrationDuration {
+        if live, let migration = store.lastMigrationDuration {
             LaunchTimeline.shared.recordMigration(migration)
         }
         // One read, used for both: on a locked background launch this is nil
         // and stays nil for this core until `adoptSearch` fills it in.
-        let search = self.search
+        let search = live ? self.search : nil
         let engine = JournalSyncEngine(
             api: api, store: store,
             connector: URLSessionWebSocketConnector(),
@@ -305,8 +368,8 @@ final class AppDependencies {
             credentialSignals: { [revocation, accountLock] signal in
                 revocation.handle(signal)
                 switch signal {
-                case .accountLocked(let lock): accountLock.noteLockedBySocket(lock)
-                case .accepted: accountLock.noteSocketAccepted()
+                case .accountLocked(let lock): if live { accountLock.noteLockedBySocket(lock) }
+                case .accepted: if live { accountLock.noteSocketAccepted() }
                 case .rejected: break
                 }
             },
@@ -342,6 +405,8 @@ final class AppDependencies {
                                 defaults: defaults, userSettings: userSettings, pins: pins,
                                 maintenance: maintenance, revocation: revocation)
         core.deviceID = Int64(session.deviceID)
+        core.userID = session.userID
+        guard live else { return core }
         installApprovals(on: core, session: session, directory: sessionsDirectory)
         core.itemsStartTask = Task {
             // Launch timings: when For you first matched the journal, and
@@ -400,7 +465,6 @@ final class AppDependencies {
         // pending (or the journal predates the tag route). A Task keeps
         // itself alive; nil (no legacy overrides) is the steady state.
         _ = BoxLetterMigration.runIfNeeded(api: api, store: store, userID: session.userID)
-        cores[session.userID] = core
         return core
     }
 
@@ -438,11 +502,11 @@ final class AppDependencies {
     }
 
     func mediaService(for session: UserSession) -> any MediaService {
-        if let existing = mediaServices[session.userID] { return existing }
+        if let existing = mediaServices[session.signInKey] { return existing }
         let cache = MediaDiskCache(directory: MediaDiskCache.directory(forAccount: session.userID))
         let service = JournalMediaService(api: core(for: session).api, cache: cache)
-        mediaServices[session.userID] = service
-        mediaCaches[session.userID] = cache
+        mediaServices[session.signInKey] = service
+        mediaCaches[session.signInKey] = cache
         return service
     }
 
@@ -656,7 +720,7 @@ final class AppDependencies {
     func credentialsRevoked(for session: UserSession) {
         // `hasFired` tells this session's current core apart from one a
         // sign-out already replaced: a fresh core's monitor has not fired.
-        guard let core = cores[session.userID], core.revocation.hasFired else { return }
+        guard let core = cores[session.signInKey], core.revocation.hasFired else { return }
         if let onCredentialsRevoked {
             onCredentialsRevoked(session)
             return
@@ -704,8 +768,12 @@ final class AppDependencies {
         // the old token (push deregistration), and a revoked token's 401s
         // must not ask for a second sign-out.
         for core in oldCores { core.revocation.cancel() }
-        // Keyed by user id, captured before `cores.removeAll()` below.
-        let oldUserIDs = Array(cores.keys)
+        // Captured before `cores.removeAll()` below.
+        let oldUserIDs = Array(Set(cores.values.compactMap(\.userID)))
+        // These sign-ins are over: a late `core(for:)` with one of them gets
+        // an inert stack, never a live one on the old token.
+        retiredSignIns.formUnion(cores.keys)
+        refusedCores.removeAll()
         // Wiped inside the teardown. `removeAll()` also closes each cache,
         // so a fetch still in flight can't write the old account's image
         // back.
@@ -908,8 +976,11 @@ final class AppDependencies {
     /// session — matching the class's existing on-main file work.
     func wipeLocalDataForFreshLogin() async {
         let fm = FileManager.default
+        // Never a file a live stack holds open: deleting it under an open
+        // connection gives "disk I/O error" on its next query.
+        let held = cores.values.compactMap { $0.store.databaseURL?.lastPathComponent }
         if let files = try? fm.contentsOfDirectory(at: journalDirectory, includingPropertiesForKeys: nil) {
-            for file in files {
+            for file in files where !held.contains(where: { file.lastPathComponent.hasPrefix($0) }) {
                 try? fm.removeItem(at: file)
             }
         }

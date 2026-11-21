@@ -50,7 +50,7 @@ final class WindowLiveUpdatePerfHarness: XCTestCase {
         let store = deps.journalStore(for: session)
         defer {
             UserDefaults.standard.removeObject(forKey: CoordinatorSetting.defaultsKey(for: userID))
-            let file = StoragePaths.appSupport.appendingPathComponent("journal-store/\(userID).sqlite")
+            let file = deps.journalStoreURL(for: session)
             for suffix in ["", "-wal", "-shm"] {
                 try? FileManager.default.removeItem(atPath: file.path + suffix)
             }

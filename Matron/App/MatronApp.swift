@@ -286,7 +286,8 @@ struct MatronApp: App {
             AppLockOverlay.update(controller: appLock, shield: false)
         }
         // Never publish an account a revoke has just signed out.
-        let live = restored?.userID == revokedSession?.userID ? nil : restored
+        let wasRevoked = restored.map { restored in revokedSession.map { restored.isSameSignIn(as: $0) } ?? false } ?? false
+        let live = wasRevoked ? nil : restored
         session = live
         CarPlayLink.shared.publish(session: live)
         bootstrapDone = true
@@ -317,7 +318,9 @@ struct MatronApp: App {
     /// scene restored the session and found the revoke first), before
     /// `session` is published — so a missing `session` does not stop it.
     private func signOutRemotely(_ revoked: UserSession) {
-        if let session, session.userID != revoked.userID { return }
+        // The same sign-in, not just the same account: a late revoke for
+        // the sign-in before this one must not sign this one out.
+        if let session, !session.isSameSignIn(as: revoked) { return }
         revokedSession = revoked
         if session == nil {
             // Nothing published yet, so the teardown's `publish(session:
