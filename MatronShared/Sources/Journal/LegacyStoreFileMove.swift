@@ -16,20 +16,24 @@ import os
 ///   moved;
 /// - stops on the first error, puts every side file at the new name back
 ///   beside the old main file, and tells the caller to open the old file
-///   for now, so the next launch tries again.
+///   for now, so the next launch tries again;
+/// - if a side file cannot be put back either, opens neither file: the
+///   caller runs on an in-memory database for that launch and leaves both
+///   files alone, and the next launch finishes the move.
 public enum LegacyStoreFileMove {
     static let sideSuffixes = ["-wal", "-shm"]
     private static let logger = os.Logger(subsystem: "chat.matron", category: "journal-store")
 
     /// Returns the database file to open: `target` once the old file has
-    /// moved (or there was none), `legacy` if the move could not finish.
+    /// moved (or there was none), `legacy` if the move could not finish,
+    /// or nil (open in memory) if the old file could not be made whole.
     @discardableResult
     public static func adopt(
         legacy: URL,
         target: URL,
         fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) },
         move: (String, String) throws -> Void = { try FileManager.default.moveItem(atPath: $0, toPath: $1) }
-    ) -> URL {
+    ) -> URL? {
         // No old database: nothing to move.
         guard fileExists(legacy.path) else { return target }
         // A database already sits at the new name. The main file moves last,
@@ -46,7 +50,12 @@ public enum LegacyStoreFileMove {
                 // Put back every side file that has moved, in this launch or
                 // an interrupted one, so the old database opens whole.
                 for suffix in sideSuffixes where fileExists(target.path + suffix) && !fileExists(legacy.path + suffix) {
-                    try? move(target.path + suffix, legacy.path + suffix)
+                    do {
+                        try move(target.path + suffix, legacy.path + suffix)
+                    } catch {
+                        logger.error("could not put back the old journal database's \(suffix, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                        return nil
+                    }
                 }
                 return legacy
             }

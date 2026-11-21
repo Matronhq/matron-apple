@@ -174,8 +174,9 @@ final class AppDependencies {
     /// sign-in's name, once. Only a restored session can find one: a fresh
     /// sign-in empties the directory first.
     /// Returns the file to open: the old one, for now, if the move could
-    /// not finish (see `LegacyStoreFileMove`).
-    private func adoptLegacyStoreFile(for session: UserSession) -> URL {
+    /// not finish, or nil (an in-memory database for this launch) if the
+    /// old one could not be made whole (see `LegacyStoreFileMove`).
+    private func adoptLegacyStoreFile(for session: UserSession) -> URL? {
         LegacyStoreFileMove.adopt(
             legacy: journalDirectory.appendingPathComponent(session.legacyJournalStoreFileName),
             target: journalStoreURL(for: session)

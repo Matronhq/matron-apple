@@ -114,6 +114,28 @@ final class LegacyStoreFileMoveTests: XCTestCase {
         XCTAssertEqual(read(legacy.path + "-wal"), "wal")
     }
 
+    /// The main file fails to move and the -wal cannot be put back either:
+    /// neither file opens (the caller uses an in-memory database), nothing
+    /// is deleted, and the next launch finishes the move.
+    func test_aFailedRollback_opensNeitherFile() {
+        write(legacy.path, "main")
+        write(legacy.path + "-wal", "wal")
+
+        let opened = LegacyStoreFileMove.adopt(legacy: legacy, target: target, move: { from, to in
+            if from == self.legacy.path { throw MoveFailed() }
+            if to == self.legacy.path + "-wal" { throw MoveFailed() }
+            try FileManager.default.moveItem(atPath: from, toPath: to)
+        })
+
+        XCTAssertNil(opened, "the old file without its -wal must not open")
+        XCTAssertEqual(read(legacy.path), "main")
+        XCTAssertEqual(read(target.path + "-wal"), "wal")
+
+        XCTAssertEqual(LegacyStoreFileMove.adopt(legacy: legacy, target: target), target)
+        XCTAssertEqual(read(target.path), "main")
+        XCTAssertEqual(read(target.path + "-wal"), "wal")
+    }
+
     func test_noOldFile_opensTheNewName() {
         XCTAssertEqual(LegacyStoreFileMove.adopt(legacy: legacy, target: target), target)
     }
