@@ -278,8 +278,7 @@ final class AppDependencies {
         // reconnect on the revoked token, and a new sign-in to the same
         // account then picked that stack up, was refused, and signed out.
         if retiredSignIns.contains(key) { return refusedCore(for: session) }
-        adoptLegacyStoreFile(for: session)
-        let core = buildCore(for: session, databaseURL: journalStoreURL(for: session), live: true)
+        let core = buildCore(for: session, databaseURL: adoptLegacyStoreFile(for: session), live: true)
         cores[key] = core
         return core
     }
@@ -306,14 +305,13 @@ final class AppDependencies {
     /// Moves the mirror an older build kept as `<user>.sqlite` to this
     /// sign-in's name, once. Only a restored session can find one: a fresh
     /// sign-in empties the directory first.
-    private func adoptLegacyStoreFile(for session: UserSession) {
-        let fm = FileManager.default
-        let legacy = journalDirectory.appendingPathComponent(session.legacyJournalStoreFileName)
-        let target = journalStoreURL(for: session)
-        guard fm.fileExists(atPath: legacy.path), !fm.fileExists(atPath: target.path) else { return }
-        for suffix in ["", "-wal", "-shm"] where fm.fileExists(atPath: legacy.path + suffix) {
-            try? fm.moveItem(atPath: legacy.path + suffix, toPath: target.path + suffix)
-        }
+    /// Returns the file to open: the old one, for now, if the move could
+    /// not finish (see `LegacyStoreFileMove`).
+    private func adoptLegacyStoreFile(for session: UserSession) -> URL {
+        LegacyStoreFileMove.adopt(
+            legacy: journalDirectory.appendingPathComponent(session.legacyJournalStoreFileName),
+            target: journalStoreURL(for: session)
+        )
     }
 
     /// Builds a journal stack. `live: false` is the refused stack: no
