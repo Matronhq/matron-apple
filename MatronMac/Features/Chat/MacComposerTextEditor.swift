@@ -46,6 +46,9 @@ struct MacComposerTextEditor: NSViewRepresentable {
     /// Only `MacComposerView` sets it; a tracker reply field built from the
     /// same editor leaves it `false`.
     var isChatComposer = false
+    /// The tallest the caller lets the editor grow before it scrolls. The
+    /// vertical scroll bar shows only past it (see `Coordinator.reportHeight`).
+    var maxVisibleHeight: CGFloat = .greatestFiniteMagnitude
 
     /// Matches the `.padding(8)` the SwiftUI field carried, so the swap
     /// doesn't move the text. `MacComposerField.singleLineHeight`
@@ -91,7 +94,8 @@ struct MacComposerTextEditor: NSViewRepresentable {
 
         let scrollView = NSScrollView()
         scrollView.documentView = textView
-        scrollView.hasVerticalScroller = true
+        // Off until the text passes `maxVisibleHeight`: see `reportHeight`.
+        scrollView.hasVerticalScroller = false
         scrollView.autohidesScrollers = true
         scrollView.hasHorizontalScroller = false
         scrollView.drawsBackground = false
@@ -201,6 +205,20 @@ struct MacComposerTextEditor: NSViewRepresentable {
             layoutManager.ensureLayout(for: container)
             let height = ceil(layoutManager.usedRect(for: container).height)
                 + textView.textContainerInset.height * 2
+            // The scroll bar shows only once the editor scrolls. The text
+            // view grows a line before the frame catches up, and with scroll
+            // bars that take up room ("Always", or a mouse plugged in) an
+            // auto-hiding scroll bar showed for that moment. It made the
+            // text narrower, so it re-wrapped, and close to a wrap point the
+            // height swung back and forth: the composer flickered. Toggling
+            // on the reported height settles: a scroll bar shown past the
+            // cap only makes the text taller, and one hidden under it only
+            // makes the text shorter.
+            let scrolls = height > parent.maxVisibleHeight
+            if let scrollView = textView.enclosingScrollView,
+               scrollView.hasVerticalScroller != scrolls {
+                scrollView.hasVerticalScroller = scrolls
+            }
             guard height != lastReportedHeight else { return }
             lastReportedHeight = height
             let report = parent.onHeightChange

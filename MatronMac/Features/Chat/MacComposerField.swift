@@ -71,7 +71,8 @@ struct MacComposerField: View {
             onPasteAttachments: onPasteAttachments,
             onAttachablePasteboardTypes: onAttachablePasteboardTypes,
             onFocusChange: onFocusChange,
-            isChatComposer: isChatComposer
+            isChatComposer: isChatComposer,
+            maxVisibleHeight: Self.maxHeight
         )
             .frame(height: min(max(contentHeight, Self.singleLineHeight), Self.maxHeight))
             // White (dark-mode: elevated warm) input surface, same

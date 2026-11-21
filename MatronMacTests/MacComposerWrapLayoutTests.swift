@@ -240,5 +240,83 @@ final class MacComposerWrapLayoutTests: XCTestCase {
             "an unbroken token must break mid-word and grow the composer (short: \(short), token: \(token))"
         )
     }
+
+    /// With scroll bars that take up room (System Settings "Always", or a
+    /// mouse plugged in), the composer flickered where typed text wrapped
+    /// onto a new line. The text view grew a line before the composer did,
+    /// so the scroll bar showed, the text got narrower and re-wrapped, the
+    /// composer grew, the scroll bar hid, and the text got wider again.
+    /// Close to a wrap point that could keep swinging. The text width must
+    /// not change while typing under the height cap.
+    func test_typingAcrossWrapPoints_withLegacyScrollers_keepsTheTextWidth() {
+        let vm = ComposerViewModel(
+            roomID: "!wrap-flicker:s",
+            timeline: FakeTimelineForWrap(),
+            commands: BotCommandCatalog.claudeBridge
+        )
+        let host = NSHostingView(rootView: MacComposerView(viewModel: vm))
+        host.frame = NSRect(x: 0, y: 0, width: 420, height: 320)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.titled, .resizable],
+                              backing: .buffered, defer: false)
+        window.contentView = host
+        window.orderFrontRegardless()
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.2))
+
+        guard let editor = firstTextView(in: host),
+              let scrollView = editor.enclosingScrollView else {
+            return XCTFail("no NSTextView in composer hierarchy")
+        }
+        scrollView.scrollerStyle = .legacy
+        window.makeFirstResponder(editor)
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
+        let startWidth = editor.frame.width
+
+        var widths: [CGFloat] = []
+        let observer = NotificationCenter.default.addObserver(
+            forName: NSView.frameDidChangeNotification, object: editor, queue: nil
+        ) { _ in widths.append(editor.frame.width) }
+        defer { NotificationCenter.default.removeObserver(observer) }
+
+        // An unbroken run of letters, one keystroke at a time: about four
+        // lines, every one wrapping mid-word.
+        let letters = Array("qwhdjrkeuxbnvmzlpaotgsiyfc")
+        for index in 0..<130 {
+            editor.insertText(String(letters[(index * 7) % letters.count]),
+                              replacementRange: editor.selectedRange())
+            window.displayIfNeeded()
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.03))
+        }
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.2))
+        let lines = laidOutTextHeight(editor)
+        window.orderOut(nil)
+
+        XCTAssertGreaterThan(lines, 40, "the letters must wrap onto several lines")
+        XCTAssertEqual(Set(widths + [startWidth]), [startWidth],
+                       "the text width changed while typing: a scroll bar came and went")
+    }
+
+    /// Past the height cap the composer scrolls, and then its scroll bar
+    /// shows.
+    func test_pastTheHeightCap_theScrollBarShows() {
+        let vm = ComposerViewModel(
+            roomID: "!wrap-cap:s",
+            timeline: FakeTimelineForWrap(),
+            commands: BotCommandCatalog.claudeBridge
+        )
+        vm.input = (1...14).map { "line \($0)" }.joined(separator: "\n")
+        let host = NSHostingView(rootView: MacComposerView(viewModel: vm))
+        host.frame = NSRect(x: 0, y: 0, width: 420, height: 400)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.titled, .resizable],
+                              backing: .buffered, defer: false)
+        window.contentView = host
+        window.orderFrontRegardless()
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.3))
+        guard let scrollView = firstTextView(in: host)?.enclosingScrollView else {
+            return XCTFail("no NSTextView in composer hierarchy")
+        }
+        let shows = scrollView.hasVerticalScroller
+        window.orderOut(nil)
+        XCTAssertTrue(shows, "a composer past its height cap scrolls, with a scroll bar")
+    }
 }
 #endif
