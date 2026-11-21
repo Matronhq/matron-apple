@@ -48,16 +48,22 @@ public final class JournalMediaService: MediaService, @unchecked Sendable {
     }
 
     /// Extracts the blob reference from a URL of the form
-    /// `serverURL/media/<ref>`. `internal` so the extraction logic itself
-    /// can be pinned by a direct test if the URL-matching rules ever grow
-    /// more edge cases than the two covered by `JournalMediaServiceTests`.
+    /// `serverURL/media/<ref>`: the same scheme, host and port as the
+    /// server, under the server's own path. A journal served under a path
+    /// (`https://example.com/journal`) has its media at
+    /// `/journal/media/<ref>`, which is what every caller builds with
+    /// `serverURL.appendingPathComponent("media")`. Anything else is not
+    /// this journal's media and gets no request. `internal` so the matching
+    /// rules are pinned by direct tests.
     static func blobRef(for url: URL, serverURL: URL) -> String? {
         guard url.scheme == serverURL.scheme,
               url.host == serverURL.host,
               url.port == serverURL.port
         else { return nil }
 
-        let mediaPrefix = "/media/"
+        var basePath = serverURL.path
+        while basePath.hasSuffix("/") { basePath.removeLast() }
+        let mediaPrefix = basePath + "/media/"
         guard url.path.hasPrefix(mediaPrefix) else { return nil }
         let ref = String(url.path.dropFirst(mediaPrefix.count))
         return ref.isEmpty ? nil : ref

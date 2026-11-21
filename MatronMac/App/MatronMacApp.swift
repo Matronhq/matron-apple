@@ -405,6 +405,9 @@ struct MatronMacApp: App {
                         .frame(width: 420, height: 200)
                 }
             }
+            // Every sign-out path clears `session`; the window closes then
+            // instead of lingering over the sign-in screen.
+            .closesOnSignOut(isSignedIn: session != nil)
             // Settings is its own window: without this overlay, ⌘, while
             // locked would expose account details — and the Privacy toggle
             // that turns the lock off.
