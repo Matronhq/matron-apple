@@ -38,6 +38,7 @@ func assertVariants<V: View>(
     if ["MATRON_SKIP_SNAPSHOT_TESTS", "TEST_RUNNER_MATRON_SKIP_SNAPSHOT_TESTS"].contains(where: { env[$0] == "1" }) {
         return
     }
+    pinSnapshotLocale()
     #if canImport(UIKit) && !os(macOS)
     assertSnapshot(
         of: view,
@@ -64,6 +65,16 @@ func assertVariants<V: View>(
         let light = MacSnapshotHost(view, appearance: .aqua)
         let dark = MacSnapshotHost(view, appearance: .darkAqua)
         defer { light.close(); dark.close() }
+        // The references are 2× (Retina) captures, and a capture takes the
+        // scale of the screen the window lands on: on a 1× screen, or with
+        // no screen, every image differs, and recording would write 1×
+        // references that fail on every other Mac.
+        let scale = light.window.backingScaleFactor
+        guard scale == 2 else {
+            XCTFail("mac-\(base): the screen renders at \(scale)×; Mac snapshots need a 2× (Retina) main display",
+                    file: file, line: line)
+            return
+        }
         // A dark capture identical to the light one means the appearance
         // never reached the view (every Mac pair was).
         if light.pngData() == dark.pngData() {
@@ -81,12 +92,37 @@ func assertVariants<V: View>(
     #endif
 }
 
+/// Captions with times and dates render in the process's locale and time
+/// zone, so a baseline recorded on one Mac failed on a Mac set to another
+/// language or region ("7:13 pm" against "7:13 PM", "2 hr ago" against
+/// "2h ago"). Every snapshot renders in US English on London time, whatever
+/// the machine is set to. US English is also what CI runs in, so the string
+/// tests in this target that run after the first snapshot still see the
+/// forms they expect. The language goes in the argument domain, which
+/// outranks the user's own settings and is never written to disk;
+/// `Locale.current` reads it from then on.
+func pinSnapshotLocale() {
+    _ = snapshotLocalePin
+}
+
+private let snapshotLocalePin: Void = {
+    var arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
+    arguments["AppleLocale"] = "en_US"
+    arguments["AppleLanguages"] = ["en-US"]
+    // The Mac's "24-hour time" switch overrides the locale's own clock.
+    arguments["AppleICUForce24HourTime"] = false
+    arguments["AppleICUForce12HourTime"] = false
+    UserDefaults.standard.setVolatileDomain(arguments, forName: UserDefaults.argumentDomain)
+    NSTimeZone.default = TimeZone(identifier: "Europe/London")!
+}()
+
 #if os(macOS)
 import AppKit
 
 /// Renders `view` through the Mac harness and returns the captured bitmap.
 @MainActor
 func macSnapshotImage<V: View>(of view: V, appearance: NSAppearance.Name) -> NSBitmapImageRep? {
+    pinSnapshotLocale()
     let host = MacSnapshotHost(view, appearance: appearance)
     defer { host.close() }
     return host.bitmap()
@@ -120,6 +156,7 @@ final class MacSnapshotHost {
     private(set) var settled = false
 
     init<V: View>(_ content: V, appearance: NSAppearance.Name) {
+        keepDisplayAwake()
         let host = NSHostingView(rootView: content)
         let frame = NSRect(origin: .zero, size: host.fittingSize)
         let backdrop = SnapshotBackdropView(frame: frame)

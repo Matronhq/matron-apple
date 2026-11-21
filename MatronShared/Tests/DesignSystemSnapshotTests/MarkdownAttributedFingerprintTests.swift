@@ -10,6 +10,11 @@ import AppKit
 /// must reproduce it byte for byte. Re-record ONLY on purpose:
 /// `MATRON_RECORD_MARKDOWN_FINGERPRINT=1 swift test --filter MarkdownAttributedFingerprintTests`.
 final class MarkdownAttributedFingerprintTests: XCTestCase {
+    override class func setUp() {
+        super.setUp()
+        keepDisplayAwake()
+    }
+
     static let corpus: [String] = [
         "Plain paragraph with **bold**, *italic*, ~~struck~~ and `inline code`.",
         "# Heading one\n\nBody under it.\n\n## Heading two\n\n### Heading three\n\nClosing.",
