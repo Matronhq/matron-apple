@@ -77,12 +77,13 @@ public struct LRUCache<Key: Hashable, Value> {
 /// and `MatronMac/App/AppDependencies.swift`. Public so the
 /// `LRUCache<TimelineCacheKey, TimelineService>` declaration can live in
 /// each app target while the type itself is single-sourced.
+/// `signInKey` is `UserSession.signInKey`: one sign-in, not one account.
 public struct TimelineCacheKey: Hashable, Sendable {
-    public let userID: String
+    public let signInKey: String
     public let roomID: String
 
-    public init(userID: String, roomID: String) {
-        self.userID = userID
+    public init(signInKey: String, roomID: String) {
+        self.signInKey = signInKey
         self.roomID = roomID
     }
 }

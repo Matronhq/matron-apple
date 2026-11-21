@@ -71,13 +71,13 @@ final class MacAppDependenciesTests: XCTestCase {
             _ = deps.timelineService(for: session, roomID: "!room\(i):s")
         }
         XCTAssertEqual(deps.timelineCacheCount, limit)
-        XCTAssertTrue(deps.timelineCacheContains(userID: session.userID, roomID: "!room0:s"))
+        XCTAssertTrue(deps.timelineCacheContains(session: session, roomID: "!room0:s"))
 
         _ = deps.timelineService(for: session, roomID: "!room\(limit):s")
 
         XCTAssertEqual(deps.timelineCacheCount, limit)
-        XCTAssertFalse(deps.timelineCacheContains(userID: session.userID, roomID: "!room0:s"))
-        XCTAssertTrue(deps.timelineCacheContains(userID: session.userID, roomID: "!room\(limit):s"))
+        XCTAssertFalse(deps.timelineCacheContains(session: session, roomID: "!room0:s"))
+        XCTAssertTrue(deps.timelineCacheContains(session: session, roomID: "!room\(limit):s"))
     }
 
     /// Mac mirror of the iOS no-touch / FIFO-eviction test. Reads do
@@ -98,8 +98,8 @@ final class MacAppDependenciesTests: XCTestCase {
         _ = deps.timelineService(for: session, roomID: "!room0:s")
         _ = deps.timelineService(for: session, roomID: "!room\(limit):s")
 
-        XCTAssertFalse(deps.timelineCacheContains(userID: session.userID, roomID: "!room0:s"))
-        XCTAssertTrue(deps.timelineCacheContains(userID: session.userID, roomID: "!room1:s"))
+        XCTAssertFalse(deps.timelineCacheContains(session: session, roomID: "!room0:s"))
+        XCTAssertTrue(deps.timelineCacheContains(session: session, roomID: "!room1:s"))
     }
 
     // MARK: - Sign-out teardown chaining + fresh-login wipe
@@ -386,6 +386,29 @@ final class MacAppDependenciesTests: XCTestCase {
         deps.simulateConnectionAuthRejected(for: new)
         try await drainMainActor()
         XCTAssertEqual(revoked, [new])
+    }
+
+    /// A leftover view asking for a conversation's timeline after sign-out
+    /// gets one on the old sign-in's inert stack. It must not be cached
+    /// where the next sign-in to the same account would pick it up.
+    func test_lateTimelineForTheOldSignIn_isNotReusedByTheNewOne() async throws {
+        deps = AppDependencies()
+        let old = signIn(device: "23", token: "old")
+        let new = signIn(device: "26", token: "new")
+        _ = deps.timelineService(for: old, roomID: "!room:s")
+        XCTAssertTrue(deps.timelineCacheContains(session: old, roomID: "!room:s"))
+
+        deps.signOut()
+        await deps.awaitPendingTeardown()
+        let late = deps.timelineService(for: old, roomID: "!room:s") as AnyObject
+        XCTAssertFalse(deps.timelineCacheContains(session: old, roomID: "!room:s"),
+                       "a timeline on a signed-out sign-in's inert stack is not cached")
+
+        await deps.wipeLocalDataForFreshLogin()
+        let fresh = deps.timelineService(for: new, roomID: "!room:s") as AnyObject
+        XCTAssertFalse(fresh === late, "the new sign-in must get its own timeline")
+        XCTAssertTrue(deps.timelineCacheContains(session: new, roomID: "!room:s"))
+        XCTAssertFalse(deps.timelineCacheContains(session: old, roomID: "!room:s"))
     }
 
     /// Each sign-in has its own database file, so a fresh sign-in's wipe

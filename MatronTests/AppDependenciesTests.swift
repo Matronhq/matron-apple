@@ -81,7 +81,7 @@ final class AppDependenciesTests: XCTestCase {
         }
         XCTAssertEqual(deps.timelineCacheCount, limit,
                        "cache must reach exactly the limit before evicting")
-        XCTAssertTrue(deps.timelineCacheContains(userID: session.userID, roomID: "!room0:s"),
+        XCTAssertTrue(deps.timelineCacheContains(session: session, roomID: "!room0:s"),
                       "earliest entry must be live before the limit is exceeded")
 
         // One more distinct room — this must evict the least-recently-used
@@ -90,9 +90,9 @@ final class AppDependenciesTests: XCTestCase {
 
         XCTAssertEqual(deps.timelineCacheCount, limit,
                        "cache must stay bounded at the LRU limit after over-fill")
-        XCTAssertFalse(deps.timelineCacheContains(userID: session.userID, roomID: "!room0:s"),
+        XCTAssertFalse(deps.timelineCacheContains(session: session, roomID: "!room0:s"),
                        "least-recently-used entry must be evicted on over-fill")
-        XCTAssertTrue(deps.timelineCacheContains(userID: session.userID, roomID: "!room\(limit):s"),
+        XCTAssertTrue(deps.timelineCacheContains(session: session, roomID: "!room\(limit):s"),
                       "newly-inserted entry must remain in the cache")
     }
 
@@ -120,9 +120,9 @@ final class AppDependenciesTests: XCTestCase {
         // Trigger eviction.
         _ = deps.timelineService(for: session, roomID: "!room\(limit):s")
 
-        XCTAssertFalse(deps.timelineCacheContains(userID: session.userID, roomID: "!room0:s"),
+        XCTAssertFalse(deps.timelineCacheContains(session: session, roomID: "!room0:s"),
                        "FIFO eviction: oldest insert (room0) goes first regardless of re-access")
-        XCTAssertTrue(deps.timelineCacheContains(userID: session.userID, roomID: "!room1:s"),
+        XCTAssertTrue(deps.timelineCacheContains(session: session, roomID: "!room1:s"),
                       "second-oldest must still be cached after a single eviction")
     }
 
@@ -439,6 +439,29 @@ final class AppDependenciesTests: XCTestCase {
         deps.simulateConnectionAuthRejected(for: new)
         try await drainMainActor()
         XCTAssertEqual(revoked, [new])
+    }
+
+    /// A leftover view asking for a conversation's timeline after sign-out
+    /// gets one on the old sign-in's inert stack. It must not be cached
+    /// where the next sign-in to the same account would pick it up.
+    func test_lateTimelineForTheOldSignIn_isNotReusedByTheNewOne() async throws {
+        deps = AppDependencies()
+        let old = signIn(device: "23", token: "old")
+        let new = signIn(device: "26", token: "new")
+        _ = deps.timelineService(for: old, roomID: "!room:s")
+        XCTAssertTrue(deps.timelineCacheContains(session: old, roomID: "!room:s"))
+
+        deps.signOut()
+        await deps.awaitPendingTeardown()
+        let late = deps.timelineService(for: old, roomID: "!room:s") as AnyObject
+        XCTAssertFalse(deps.timelineCacheContains(session: old, roomID: "!room:s"),
+                       "a timeline on a signed-out sign-in's inert stack is not cached")
+
+        await deps.wipeLocalDataForFreshLogin()
+        let fresh = deps.timelineService(for: new, roomID: "!room:s") as AnyObject
+        XCTAssertFalse(fresh === late, "the new sign-in must get its own timeline")
+        XCTAssertTrue(deps.timelineCacheContains(session: new, roomID: "!room:s"))
+        XCTAssertFalse(deps.timelineCacheContains(session: old, roomID: "!room:s"))
     }
 
     /// Each sign-in has its own database file, so a fresh sign-in's wipe
