@@ -176,7 +176,9 @@ struct ItemDetailHost: View {
                         openableConvoIDs: vm.openableCommentConvoIDs,
                         working: vm.workingIndicator,
                         editableQueuedReplies: vm.editableQueuedReplies,
-                        editingQueuedReplyID: vm.editingQueuedReplyID
+                        editingQueuedReplyID: vm.editingQueuedReplyID,
+                        multiSelect: vm.itemMultiSelect,
+                        commentMultiSelects: vm.commentMultiSelects
                     ),
                     draft: ItemReplyDraft(get: { vm.draft }, set: { vm.draft = $0 }),
                     image: { imageCache[$0.blobRef] },
@@ -214,7 +216,8 @@ struct ItemDetailHost: View {
                     onOpenMission: openPageLink.map { open in { open(.mission($0)) } },
                     // A file chip's Save or Share (button and context
                     // menu): straight to the share sheet.
-                    attachmentActions: .init(download: { download($0, share: true) })
+                    attachmentActions: .init(download: { download($0, share: true) }),
+                    multiSelectActions: ItemDetailHostHelpers.multiSelectActions(vm)
                 )
                 // The thread recycles its rows; `detail` draws the pieces
                 // it hosts.

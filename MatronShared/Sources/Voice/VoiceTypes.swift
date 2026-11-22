@@ -48,9 +48,10 @@ public struct VoiceItem: Equatable, Sendable {
 
     /// Secret requests carry the `secret` label (matron-bridge
     /// `lib/secret-requests.js`); consent asks carry a consent link and
-    /// the `consent` label (matron-journal `src/consent-items.js`).
+    /// the `consent` label (matron-journal `src/consent-items.js`). A
+    /// multi-select question is answered by ticking rows on screen.
     public static func needsScreen(_ item: TrackerItem) -> Bool {
-        item.labels.contains("secret") || item.labels.contains("consent")
+        item.multiSelect || item.labels.contains("secret") || item.labels.contains("consent")
             || item.links.contains { ConsentLink.parse($0.url) != nil }
     }
 }

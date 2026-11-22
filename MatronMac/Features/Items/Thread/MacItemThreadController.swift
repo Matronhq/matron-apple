@@ -356,7 +356,7 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
                        attachments: model.item.attachments).drawn
         case .comment(let id):
             guard let comment = commentsByID[id] else { return [] }
-            return ids(ofCard: id, body: comment.body, attachments: comment.attachments).drawn
+            return ids(ofCard: id, body: comment.threadBody, attachments: comment.attachments).drawn
         default:
             return []
         }

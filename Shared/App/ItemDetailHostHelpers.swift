@@ -19,6 +19,12 @@ enum ItemDetailHostHelpers {
               cancelQueuedEdit: { Task { await vm.cancelQueuedReplyEdit() } })
     }
 
+    /// Ticks and Send on multi-select questions, wired to `vm`.
+    static func multiSelectActions(_ vm: ItemDetailViewModel) -> ItemDetailView.MultiSelectActions {
+        .init(toggle: { commentID, label in vm.toggleTick(label, commentID: commentID) },
+              send: { commentID in Task { await vm.sendSelection(commentID: commentID) } })
+    }
+
     /// Replies still settling (`sendingReplies`) as "Sending…" rows —
     /// attempts 0, no error — skipping any whose outbox row already shows.
     static func sending(_ vm: ItemDetailViewModel) -> [ItemDetailView.PendingComment] {

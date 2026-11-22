@@ -16,9 +16,13 @@ public struct ItemMarkerEvent: Equatable, Sendable {
         /// together, enough to mark the choice without a refetch.
         public let action: String?
         public let replyTo: String?
-        public init(id: String, body: String, attachments: [TrackerAttachment] = [], action: String? = nil, replyTo: String? = nil) {
+        /// Every label a multi-select answer ticked (`action` is the first);
+        /// `[]` on every other comment.
+        public let selected: [String]
+        public init(id: String, body: String, attachments: [TrackerAttachment] = [], action: String? = nil, replyTo: String? = nil,
+                    selected: [String] = []) {
             self.id = id; self.body = body; self.attachments = attachments
-            self.action = action; self.replyTo = replyTo
+            self.action = action; self.replyTo = replyTo; self.selected = selected
         }
     }
     public let itemID: String
@@ -64,7 +68,8 @@ public struct ItemMarkerEvent: Equatable, Sendable {
         if let c = payload["comment"] as? [String: Any], let cid = c["id"] as? String {
             comment = Comment(id: cid, body: c["body"] as? String ?? "",
                               attachments: (c["attachments"] as? [[String: Any]] ?? []).compactMap(TrackerAttachment.init(json:)),
-                              action: c["action"] as? String, replyTo: c["reply_to"] as? String)
+                              action: c["action"] as? String, replyTo: c["reply_to"] as? String,
+                              selected: c["selected"] as? [String] ?? [])
         }
         return ItemMarkerEvent(itemID: itemID, num: num, kind: kind, title: title, action: action, by: by,
                                awaiting: (payload["awaiting"] as? String).flatMap(ItemAwaiting.init(rawValue:)),
