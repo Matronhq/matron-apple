@@ -827,8 +827,9 @@ public final class ItemDetailViewModel {
                 : "Couldn't cancel that reply. Try again."
             return
         }
-        // A queued tap's body is just its button's label, nothing to edit.
-        if row.commentAction == nil, let body = row.commentBody {
+        // A queued tap's body is just its button's label, and a queued
+        // multi-select answer's just its labels: nothing to edit.
+        if row.commentAction == nil, row.commentSelected == nil, let body = row.commentBody {
             restoreToDraft(body)
             // Still an edit of the reply it stood in for.
             if replacingCommentID == nil { replacingCommentID = row.commentReplaces }
@@ -1729,6 +1730,14 @@ public final class ItemDetailViewModel {
     /// live (nothing ticked, the answer unchanged, a write in flight).
     public func sendSelection(commentID: String?) async {
         guard let state = multiSelectState(commentID: commentID), state.canSend else { return }
+        // The journal never pairs multi-select with step-up; should a
+        // step-up question ever carry it, refuse rather than send an
+        // answer unsigned.
+        let asking = commentID.flatMap { id in comments.first { $0.id == id } }
+        if item?.stepUp == true || asking?.stepUp == true {
+            error = "This answer needs a signature from your approval key, which multi-select answers can't carry."
+            return
+        }
         let key = Self.selectionKey(commentID)
         let labels = state.labels.filter(state.ticked.contains)
         enqueueingSelections[key] = labels

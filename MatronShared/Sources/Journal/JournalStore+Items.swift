@@ -203,7 +203,7 @@ public struct ItemCommentRecord: Codable, FetchableRecord, PersistableRecord, Eq
                                 contributor: c.contributor, attribution: c.attribution, replaces: c.replaces,
                                 stepUp: c.stepUp ? true : nil, subject: c.subject, signedKeyID: c.signedKeyID,
                                 multiSelect: c.multiSelect ? true : nil,
-                                chosenActions: c.chosenActions.isEmpty ? nil : c.chosenActions,
+                                chosenActions: c.chosenActions == (c.chosenAction.map { [$0] } ?? []) ? nil : c.chosenActions,
                                 selected: c.selected.isEmpty ? nil : c.selected))
         } else { metaJson = nil }
     }

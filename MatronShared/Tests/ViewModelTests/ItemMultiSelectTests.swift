@@ -140,8 +140,8 @@ final class ItemMultiSelectTests: XCTestCase {
 
     func testAnswersHeldInFlightUntilTheItemRecordsThem() async throws {
         let (vm, store, sync) = try await start(question())
-        // The post lands at once: no queued row, the store's item not yet
-        // carrying the answer — the marker keeps the ticks until it does.
+        // An answer that landed nowhere (no queued row, nothing recorded)
+        // lets go at once.
         sync.onEnqueue = { _, _, _ in }
         vm.toggleTick(Self.labels[1], commentID: nil)
         await vm.sendSelection(commentID: nil)
@@ -150,8 +150,10 @@ final class ItemMultiSelectTests: XCTestCase {
         sync.onEnqueue = { id, selected, replyTo in store.storedOutbox = [self.row(id, selected: selected, replyTo: replyTo)] }
         vm.toggleTick(Self.labels[1], commentID: nil)
         await vm.sendSelection(commentID: nil)
+        try await waitUntil { !vm.pendingComments.isEmpty }
         store.outboxCont?.yield([])
-        XCTAssertEqual(vm.itemMultiSelect?.answered, [Self.labels[1]], "a stale empty outbox doesn't drop the answer")
+        try await waitUntil { vm.pendingComments.isEmpty }
+        XCTAssertEqual(vm.itemMultiSelect?.answered, [Self.labels[1]], "while the store still holds the row, a stale empty outbox doesn't drop the answer")
         store.storedOutbox = []
         let answered = question(chosen: [Self.labels[1]])
         store.storedItem = answered
@@ -171,6 +173,16 @@ final class ItemMultiSelectTests: XCTestCase {
         vm.toggleTick("Billing", commentID: "ic_ask")
         await vm.sendSelection(commentID: "ic_ask")
         XCTAssertEqual(sync.answers, [.init(selected: ["Billing"], body: "Billing", replyTo: "ic_ask")])
+    }
+
+    func testAStepUpItemsAnswerIsNeverSentUnsigned() async throws {
+        let item = TrackerItem(id: "it_1", num: 1, kind: .question, awaiting: .user, title: "Q", originConvoID: "c1",
+                               actions: Self.labels, stepUp: true, multiSelect: true)
+        let (vm, _, sync) = try await start(item)
+        vm.toggleTick(Self.labels[0], commentID: nil)
+        await vm.sendSelection(commentID: nil)
+        XCTAssertEqual(sync.answers, [])
+        XCTAssertNotNil(vm.error)
     }
 
     func testAOneTapQuestionIsUnchanged() async throws {
