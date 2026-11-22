@@ -827,8 +827,9 @@ public final class ItemDetailViewModel {
                 : "Couldn't cancel that reply. Try again."
             return
         }
-        // A queued tap's body is just its button's label, nothing to edit.
-        if row.commentAction == nil, let body = row.commentBody {
+        // A queued tap's body is just its button's label, and a queued
+        // multi-select answer's just its labels: nothing to edit.
+        if row.commentAction == nil, row.commentSelected == nil, let body = row.commentBody {
             restoreToDraft(body)
             // Still an edit of the reply it stood in for.
             if replacingCommentID == nil { replacingCommentID = row.commentReplaces }
@@ -915,6 +916,7 @@ public final class ItemDetailViewModel {
                 guard let self, !Task.isCancelled else { return }
                 self.item = v
                 self.settleEnqueueingAction(with: v)
+                self.settleEnqueueingSelections(item: v)
                 self.subscribeConsentRows()
                 self.subscribeQueuedRows()
                 self.subscribeContext()
@@ -952,6 +954,7 @@ public final class ItemDetailViewModel {
                 self.pendingComments = v
                 self.settleEnqueueingAction(outbox: v)
                 self.settleEnqueueingCommentActions(outbox: v)
+                self.settleEnqueueingSelections(outbox: v)
                 self.settleSendingReplies()
             }
         })
@@ -1042,6 +1045,7 @@ public final class ItemDetailViewModel {
                 guard let self, !Task.isCancelled else { return }
                 self.comments = v
                 self.settleEnqueueingCommentActions(with: v)
+                self.settleEnqueueingSelections(thread: v)
                 self.refreshSpawnConsent()
                 self.settleSendingReplies()
             }
@@ -1440,7 +1444,8 @@ public final class ItemDetailViewModel {
     /// its way, and while another write is in flight (`isBusy` — a tap
     /// racing a close would reopen the item).
     public func chooseAction(_ label: String) async {
-        guard !isBusy, offeredActions.contains(label), label != selectedAction else { return }
+        // A multi-select question is answered with `sendSelection`.
+        guard !isBusy, item?.multiSelect != true, offeredActions.contains(label), label != selectedAction else { return }
         enqueueingAction = label
         sawEnqueuedRow = false
         // A step-up item's tap is confirmed, signed and posted at once; it
@@ -1551,7 +1556,7 @@ public final class ItemDetailViewModel {
     /// label the thread doesn't offer, for the one already chosen or on
     /// its way, on a closed item, and while another write is in flight.
     public func chooseCommentAction(commentID: String, label: String) async {
-        guard !isBusy, let item, let asking = comments.first(where: { $0.id == commentID }),
+        guard !isBusy, let item, let asking = comments.first(where: { $0.id == commentID }), !asking.multiSelect,
               asking.offeredActions(itemIsOpen: item.state == .open).contains(label),
               label != selectedCommentActions[commentID] else { return }
         enqueueingCommentActions[commentID] = label
@@ -1638,6 +1643,168 @@ public final class ItemDetailViewModel {
         for (commentID, pending) in enqueueingCommentActions {
             guard let asking = thread.first(where: { $0.id == commentID }) else { continue }
             if asking.chosenAction == pending || !asking.actions.contains(pending) { clearEnqueueingCommentAction(commentID) }
+        }
+    }
+
+    // MARK: Multi-select answers
+
+    /// The labels ticked on each multi-select question but not sent yet,
+    /// keyed by asking comment id (`""` for the item's own question). A
+    /// question with no entry shows its latest answer ticked.
+    private var tickDrafts: [String: Set<String>] = [:]
+    /// The answers being enqueued right now, by question — held, as
+    /// `enqueueingAction` is, until the outbox row or the journal's
+    /// `chosen_actions` proves the answer, so the ticks never flick back.
+    private var enqueueingSelections: [String: [String]] = [:]
+    /// The questions whose in-flight answer has been seen queued.
+    private var sawEnqueuedSelectionRows: Set<String> = []
+
+    private static func selectionKey(_ commentID: String?) -> String { commentID ?? "" }
+    private static func commentID(ofSelectionKey key: String) -> String? { key.isEmpty ? nil : key }
+
+    /// The labels a multi-select question offers: the item's own when
+    /// `commentID` is `nil`, else that comment's. Empty for a one-tap
+    /// question, a closed item, and a spawn ask whose card answers it.
+    public func multiSelectLabels(commentID: String?) -> [String] {
+        guard let item else { return [] }
+        guard let commentID else { return item.multiSelect ? offeredActions : [] }
+        guard let asking = comments.first(where: { $0.id == commentID }), asking.multiSelect else { return [] }
+        return asking.offeredActions(itemIsOpen: item.state == .open)
+    }
+
+    /// The labels of a multi-select question's latest answer, in offered
+    /// order: one on its way (in flight, then the newest queued) outranks
+    /// the journal's `chosen_actions`, as a tap does. Labels the question
+    /// no longer offers are left out. Empty before any answer.
+    public func answeredSelection(commentID: String?) -> [String] {
+        let offered = multiSelectLabels(commentID: commentID)
+        guard !offered.isEmpty else { return [] }
+        let queued = pendingComments.last(where: { !$0.isRejected && $0.commentSelected != nil && $0.commentReplyTo == commentID })?
+            .commentSelected
+        let recorded = commentID == nil ? item?.chosenActions : comments.first(where: { $0.id == commentID })?.chosenActions
+        for candidate in [enqueueingSelections[Self.selectionKey(commentID)], queued, recorded] {
+            guard let candidate else { continue }
+            let kept = offered.filter(candidate.contains)
+            if !kept.isEmpty { return kept }
+        }
+        return []
+    }
+
+    /// What a multi-select question draws, or `nil` for any other.
+    public func multiSelectState(commentID: String?) -> ItemMultiSelectState? {
+        let offered = multiSelectLabels(commentID: commentID)
+        guard !offered.isEmpty else { return nil }
+        let answered = Set(answeredSelection(commentID: commentID))
+        let ticked = (tickDrafts[Self.selectionKey(commentID)] ?? answered).intersection(offered)
+        return ItemMultiSelectState(labels: offered, ticked: ticked, answered: answered,
+                                    canSend: !isBusy && !ticked.isEmpty && ticked != answered)
+    }
+
+    /// The item's own multi-select question, or `nil`.
+    public var itemMultiSelect: ItemMultiSelectState? { multiSelectState(commentID: nil) }
+
+    /// Each follow-up comment's multi-select question, by comment id.
+    public var commentMultiSelects: [String: ItemMultiSelectState] {
+        var states: [String: ItemMultiSelectState] = [:]
+        for comment in comments where comment.multiSelect {
+            if let state = multiSelectState(commentID: comment.id) { states[comment.id] = state }
+        }
+        return states
+    }
+
+    /// Ticks or unticks one label of a multi-select question. Nothing is
+    /// sent until `sendSelection`; ticking back to the latest answer drops
+    /// the edit.
+    public func toggleTick(_ label: String, commentID: String?) {
+        guard let state = multiSelectState(commentID: commentID), state.labels.contains(label) else { return }
+        var ticked = state.ticked
+        if ticked.contains(label) { ticked.remove(label) } else { ticked.insert(label) }
+        tickDrafts[Self.selectionKey(commentID)] = ticked == state.answered ? nil : ticked
+    }
+
+    /// Sends the ticked labels as the answer to a multi-select question —
+    /// `selected`, with `reply_to` for a follow-up comment's — through the
+    /// same offline-safe outbox as a tap. The labels go in offered order
+    /// and, as the body, joined the way the journal joins them, so the
+    /// answer reads the same while it waits. Ignored while Send is not
+    /// live (nothing ticked, the answer unchanged, a write in flight).
+    public func sendSelection(commentID: String?) async {
+        guard let state = multiSelectState(commentID: commentID), state.canSend else { return }
+        // The journal never pairs multi-select with step-up; should a
+        // step-up question ever carry it, refuse rather than send an
+        // answer unsigned.
+        let asking = commentID.flatMap { id in comments.first { $0.id == id } }
+        if item?.stepUp == true || asking?.stepUp == true {
+            error = "This answer needs a signature from your approval key, which multi-select answers can't carry."
+            return
+        }
+        let key = Self.selectionKey(commentID)
+        let labels = state.labels.filter(state.ticked.contains)
+        enqueueingSelections[key] = labels
+        sawEnqueuedSelectionRows.remove(key)
+        tickDrafts[key] = nil
+        await sync.enqueueSelection(itemID: itemID, localID: UUID().uuidString, selected: labels,
+                                    body: labels.joined(separator: ", "), replyTo: commentID)
+        // The store's answer now, as after a tap: the row still queued, or
+        // the item / thread the posted answer updated.
+        let rows = try? store.itemOutboxRows(itemID: itemID)
+        if let rows { pendingComments = rows }
+        let fresh = try? store.item(id: itemID)
+        if let fresh { item = fresh }
+        let thread = try? store.comments(itemID: itemID)
+        if let thread { comments = thread }
+        let queued = rows?.contains(where: Self.isSelectionRow(labels, commentID: commentID)) ?? false
+        let recorded = commentID == nil ? fresh?.chosenActions : thread?.first(where: { $0.id == commentID })?.chosenActions
+        if queued, enqueueingSelections[key] == labels { sawEnqueuedSelectionRows.insert(key) }
+        if !queued, Set(recorded ?? []) != Set(labels), enqueueingSelections[key] == labels { clearEnqueueingSelection(key) }
+    }
+
+    private static func isSelectionRow(_ labels: [String], commentID: String?) -> (ItemOutboxRecord) -> Bool {
+        { !$0.isRejected && $0.commentSelected == labels && $0.commentReplyTo == commentID }
+    }
+
+    private func clearEnqueueingSelection(_ key: String) {
+        enqueueingSelections[key] = nil
+        sawEnqueuedSelectionRows.remove(key)
+    }
+
+    /// Once an in-flight answer's row has been seen and has left the
+    /// outbox (the store agreeing), it was posted or dropped: the marker
+    /// yields, and the store's item and thread say which.
+    private func settleEnqueueingSelections(outbox rows: [ItemOutboxRecord]) {
+        guard !enqueueingSelections.isEmpty else { return }
+        var left = false
+        var stored: [ItemOutboxRecord]?
+        for (key, pending) in enqueueingSelections {
+            let isRow = Self.isSelectionRow(pending, commentID: Self.commentID(ofSelectionKey: key))
+            if rows.contains(where: isRow) {
+                sawEnqueuedSelectionRows.insert(key)
+            } else if sawEnqueuedSelectionRows.contains(key) {
+                if stored == nil { stored = (try? store.itemOutboxRows(itemID: itemID)) ?? [] }
+                if stored?.contains(where: isRow) == true { continue }
+                clearEnqueueingSelection(key)
+                left = true
+            }
+        }
+        guard left else { return }
+        if let fresh = try? store.item(id: itemID) { item = fresh }
+        if let thread = try? store.comments(itemID: itemID) { comments = thread }
+    }
+
+    /// The item's own answer is handed over once the item stream records
+    /// it, or dropped once the item stops offering one of its labels.
+    private func settleEnqueueingSelections(item fresh: TrackerItem?) {
+        guard let pending = enqueueingSelections[""] else { return }
+        let offered = fresh?.offeredActions ?? []
+        if Set(fresh?.chosenActions ?? []) == Set(pending) || !pending.allSatisfy(offered.contains) { clearEnqueueingSelection("") }
+    }
+
+    /// The same for each follow-up comment's answer, from the comments
+    /// stream. A snapshot without the asking comment proves nothing.
+    private func settleEnqueueingSelections(thread: [TrackerComment]) {
+        for (key, pending) in enqueueingSelections where !key.isEmpty {
+            guard let asking = thread.first(where: { $0.id == key }) else { continue }
+            if Set(asking.chosenActions) == Set(pending) || !pending.allSatisfy(asking.actions.contains) { clearEnqueueingSelection(key) }
         }
     }
 

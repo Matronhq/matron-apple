@@ -49,6 +49,11 @@ public protocol ItemsSyncing: Sendable {
     /// reply) and `replyTo` names the comment whose buttons it answers
     /// (`nil` for the item's own); both ride the outbox row to the POST.
     func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment], action: String?, replyTo: String?) async
+    /// Queues a multi-select answer: the ticked labels as `selected`,
+    /// `replyTo` naming the asking comment (`nil` for the item's own
+    /// question), `body` the text the thread shows for it. Same outbox and
+    /// delivery as `enqueueComment`.
+    func enqueueSelection(itemID: String, localID: String, selected: [String], body: String, replyTo: String?) async
     /// Queues a typed reply and returns as soon as its outbox row is
     /// durable — `true` — or `false` when nothing was queued (stopped, or
     /// the local write failed). Delivery is a background drain, NOT awaited,
@@ -93,6 +98,12 @@ public protocol ItemsSyncing: Sendable {
 }
 
 public extension ItemsSyncing {
+    /// A sync that knows nothing of multi-select answers queues the labels
+    /// as a typed reply: the words still go.
+    func enqueueSelection(itemID: String, localID: String, selected: [String], body: String, replyTo: String?) async {
+        await enqueueComment(itemID: itemID, localID: localID, body: body, attachments: [], action: nil, replyTo: nil)
+    }
+
     /// Nothing is ever deferred — test doubles and read-only hosts.
     func deferredItemsRead() async -> AsyncStream<Set<String>> { AsyncStream { $0.finish() } }
 

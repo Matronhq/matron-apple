@@ -1102,6 +1102,15 @@ public final class JournalStore: @unchecked Sendable {
             try Self.addColumnIfMissing(db, table: "item", column: "subject_json", .text)
             try db.execute(sql: "DELETE FROM meta WHERE key = 'items_watermark_all' OR key LIKE 'items_watermark_convo_%'")
         }
+        // Multi-select answers: whether an item's actions are a multi-select
+        // list, and every label of its latest answer. Cached rows read as
+        // one-tap lists; the watermarks are cleared so the next refresh
+        // refetches every item and picks the fields up.
+        migrator.registerMigration("item_multi_select") { db in
+            try Self.addColumnIfMissing(db, table: "item", column: "multi_select", .boolean)
+            try Self.addColumnIfMissing(db, table: "item", column: "chosen_actions_json", .text)
+            try db.execute(sql: "DELETE FROM meta WHERE key = 'items_watermark_all' OR key LIKE 'items_watermark_convo_%'")
+        }
         return migrator
     }
 

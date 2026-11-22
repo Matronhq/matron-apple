@@ -554,7 +554,9 @@ struct MacItemDetailHost: View {
                             openableConvoIDs: viewModel.openableCommentConvoIDs,
                             working: viewModel.workingIndicator,
                             editableQueuedReplies: viewModel.editableQueuedReplies,
-                            editingQueuedReplyID: viewModel.editingQueuedReplyID),
+                            editingQueuedReplyID: viewModel.editingQueuedReplyID,
+                            multiSelect: viewModel.itemMultiSelect,
+                            commentMultiSelects: viewModel.commentMultiSelects),
                         draft: ItemReplyDraft(get: { viewModel.draft }, set: { viewModel.draft = $0 }),
                         image: { slot.images[$0.blobRef] },
                         animation: { slot.animations[$0.blobRef] },
@@ -601,7 +603,8 @@ struct MacItemDetailHost: View {
                         // another app, which is no way to keep it.
                         attachmentActions: .init(download: { saveAttachment($0) },
                                                  drag: { dragProvider(for: $0) },
-                                                 poster: { poster(for: $0) })))
+                                                 poster: { poster(for: $0) }),
+                        multiSelectActions: ItemDetailHostHelpers.multiSelectActions(viewModel)))
                     .environment(\.itemCommentField, Self.replyField(stagingInto: viewModel))
                     // Decisions has no header over the thread: it runs up
                     // under a clear title bar, which carries the ⋯ menu

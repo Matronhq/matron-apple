@@ -836,10 +836,14 @@ public actor ItemsSync {
     /// (comment-actions contract, 2026-10-04). The refetch every marker
     /// triggers still follows and stays the authority.
     private func applyCommentTap(_ marker: ItemMarkerEvent) {
-        guard !stopped, marker.action == .commented, let tap = marker.comment,
-              let label = tap.action, let asking = tap.replyTo else { return }
+        guard !stopped, marker.action == .commented, let tap = marker.comment, let asking = tap.replyTo else { return }
         do {
-            try store.markCommentActionChosen(itemID: marker.itemID, commentID: asking, label: label)
+            // A multi-select answer names every label it ticked.
+            if !tap.selected.isEmpty {
+                try store.markCommentSelectionChosen(itemID: marker.itemID, commentID: asking, labels: tap.selected)
+            } else if let label = tap.action {
+                try store.markCommentActionChosen(itemID: marker.itemID, commentID: asking, label: label)
+            }
         } catch {
             Self.logger.warning("marking comment \(asking, privacy: .public) chosen failed: \(error.localizedDescription, privacy: .public)")
         }
@@ -848,7 +852,12 @@ public actor ItemsSync {
     /// `action` and `replyTo` are optional so rows queued by a build that
     /// predates item (or comment) action buttons still decode.
     /// `replaces` (an edited resend's cancelled original) likewise.
-    private struct CommentPayload: Codable { var body: String; var attachments: [TrackerAttachment]; var action: String?; var replyTo: String?; var replaces: String? }
+    /// `selected` (a multi-select answer's ticked labels) likewise; a row
+    /// carries it or `action`, never both.
+    private struct CommentPayload: Codable {
+        var body: String; var attachments: [TrackerAttachment]; var action: String?; var replyTo: String?; var replaces: String?
+        var selected: [String]?
+    }
     /// Only the fields the apps-side create flow currently needs.
     /// `labels`/`links`/`awaiting`/`position`/`supersedes` are deliberately
     /// not round-tripped through the outbox — `enqueueCreate` never
@@ -865,6 +874,25 @@ public actor ItemsSync {
         // that would survive into the next session's fresh sign-in.
         guard !stopped else { return }
         insertCommentRow(itemID: itemID, localID: localID, body: body, attachments: attachments, action: action, replyTo: replyTo)
+        await drainOutbox()
+    }
+
+    /// Queues a multi-select answer — the ticked labels, `replyTo` naming
+    /// the asking comment (`nil` for the item's own question) — through the
+    /// same outbox as a tap, and drains it. `body` is what the thread shows
+    /// for the answer while it waits.
+    public func enqueueSelection(itemID: String, localID: String, selected: [String], body: String, replyTo: String?) async {
+        guard !stopped, !selected.isEmpty else { return }
+        let payload = (try? String(data: JSONEncoder().encode(CommentPayload(body: body, attachments: [], action: nil, replyTo: replyTo,
+                                                                             replaces: nil, selected: selected)),
+                                   encoding: .utf8)) ?? "{}"
+        do {
+            try store.itemOutboxInsert([ItemOutboxRecord(localID: localID, itemID: itemID, op: "comment", payloadJSON: payload,
+                                                          createdAt: Int64(Date().timeIntervalSince1970 * 1000), attempts: 0, lastError: nil)])
+        } catch {
+            Self.logger.error("enqueueSelection insert failed for \(localID, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            return
+        }
         await drainOutbox()
     }
 
@@ -1169,8 +1197,11 @@ public actor ItemsSync {
     /// under that key (matron-journal `addComment`).
     private func postComment(itemID: String, payload p: CommentPayload, idempotencyKey: String) async throws -> (item: TrackerItem, comment: TrackerComment?) {
         do {
+            if let selected = p.selected, !selected.isEmpty {
+                return try await api.answerItem(id: itemID, selected: selected, body: p.body, replyTo: p.replyTo, idempotencyKey: idempotencyKey)
+            }
             return try await api.commentItem(id: itemID, body: p.body, attachments: p.attachments, action: p.action, replyTo: p.replyTo, replaces: p.replaces, idempotencyKey: idempotencyKey)
-        } catch JournalAPIError.http(status: 400, message: "unknown_action") where p.action != nil && !stopped {
+        } catch JournalAPIError.http(status: 400, message: "unknown_action") where (p.action != nil || p.selected?.isEmpty == false) && !stopped {
             Self.logger.notice("outbox row \(idempotencyKey, privacy: .public): action no longer offered — re-sending as a typed reply")
             return try await api.commentItem(id: itemID, body: p.body, attachments: p.attachments, action: nil, replyTo: nil, idempotencyKey: idempotencyKey)
         }

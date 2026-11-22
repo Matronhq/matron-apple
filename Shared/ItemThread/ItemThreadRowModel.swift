@@ -163,7 +163,7 @@ enum ItemThreadContentBuilder {
                     let delivery = comment.author == .user ? model.queuedReplies[id] : nil
                     return .card(ItemCardContent(
                         row: row, mine: comment.isMine,
-                        parts: parts(body: comment.body, attachments: comment.attachments),
+                        parts: parts(body: comment.threadBody, attachments: comment.attachments),
                         hasDelivery: delivery != nil,
                         hasActions: ItemDetailView.offersCommentActions(comment, in: model, answers: answersCommentActions),
                         hostedSignature: signature(of: row, model: model, comment: comment)))
@@ -229,11 +229,13 @@ enum ItemThreadContentBuilder {
         case .actions:
             hasher.combine(model.actions)
             hasher.combine(model.selectedAction)
+            hasher.combine(model.multiSelect)
         case .body, .divider:
             break
         case .comment(let id):
             hasher.combine(comment)
             hasher.combine(model.selectedCommentActions[id])
+            hasher.combine(model.commentMultiSelects[id])
             hasher.combine(String(describing: model.queuedReplies[id]))
             hasher.combine(item.state)
             if let convo = comment?.convoID { hasher.combine(model.openableConvoIDs.contains(convo)) }

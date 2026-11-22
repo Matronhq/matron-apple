@@ -307,6 +307,15 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
         /// The label of the most recent action the user tapped, as the journal
         /// records it; `nil` when none has been, or `actions` changed since.
         let chosenAction: String?
+        /// Whether `actions` is a multi-select list (multi-select answers):
+        /// the user ticks any of them and sends them as one answer. False
+        /// from a journal that predates the field.
+        let multiSelect: Bool
+        /// Every label of the latest answer, as the journal records it: the
+        /// ticked labels of a multi-select answer, `[label]` after a tap,
+        /// `[]` before any. Read from `chosen_action` alone on a journal
+        /// that predates the field.
+        let chosenActions: [String]
         /// When the user last acted on the item, as the journal derives it:
         /// their latest comment, action tap, close or reopen, else the filing
         /// time of an item they filed. `nil` when only agents have touched
@@ -373,6 +382,8 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
     public var originConvoTitle: String? { storage.fields.originConvoTitle }
     public var actions: [String] { storage.fields.actions }
     public var chosenAction: String? { storage.fields.chosenAction }
+    public var multiSelect: Bool { storage.fields.multiSelect }
+    public var chosenActions: [String] { storage.fields.chosenActions }
     public var lastUserInputAt: Date? { storage.fields.lastUserInputAt }
     public var working: ItemWorking? { storage.fields.working }
     public var handover: ItemHandover? { storage.fields.handover }
@@ -389,7 +400,7 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
                 originConvoTitle: String? = nil, lastUserInputAt: Date? = nil,
                 working: ItemWorking? = nil, handover: ItemHandover? = nil, contributor: Contributor? = nil,
                 deviceName: String? = nil, stepUp: Bool = false, subject: [String: String]? = nil,
-                consentKind: String? = nil) {
+                consentKind: String? = nil, multiSelect: Bool = false, chosenActions: [String]? = nil) {
         storage = Storage(Fields(
             id: id, num: num, kind: kind, state: state, resolution: resolution, awaiting: awaiting, rank: rank,
             title: title, body: body, labels: labels, links: links, attachments: attachments,
@@ -397,6 +408,7 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
             updatedAt: updatedAt, closedAt: closedAt, commentCount: commentCount, lastCommentAt: lastCommentAt,
             hasImage: hasImage, missionID: missionID, missionNum: missionNum,
             originConvoTitle: originConvoTitle, actions: actions, chosenAction: chosenAction,
+            multiSelect: multiSelect, chosenActions: chosenActions ?? chosenAction.map { [$0] } ?? [],
             lastUserInputAt: lastUserInputAt, working: working, handover: handover, contributor: contributor,
             deviceName: deviceName.flatMap {
                 let t = $0.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -445,7 +457,9 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
             deviceName: json["device_name"] as? String,
             stepUp: json["step_up"] as? Bool ?? false,
             subject: json["subject"] as? [String: String],
-            consentKind: json["consent"] as? String)
+            consentKind: json["consent"] as? String,
+            multiSelect: json["multi_select"] as? Bool ?? false,
+            chosenActions: json["chosen_actions"] as? [String])
     }
 
     /// Where a closed item sorts in the For you list's Closed tab, and the
@@ -518,7 +532,7 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
     /// one-tap answer. Empty for everything else. A tap answers the ask
     /// exactly as its card does (the journal runs the same path).
     public var rowConsentAnswers: [String] {
-        guard kind == .question, needsUser, labels.contains(Self.consentLabel), !actions.isEmpty,
+        guard kind == .question, needsUser, !multiSelect, labels.contains(Self.consentLabel), !actions.isEmpty,
               actions.allSatisfy(Self.oneTapConsentAnswers.contains) else { return [] }
         return actions
     }
@@ -564,6 +578,17 @@ public struct TrackerComment: Identifiable, Equatable, Hashable, Sendable {
     /// The label of the most recent tap on `actions`, as the journal
     /// records it; `nil` when none has been tapped.
     public let chosenAction: String?
+    /// Whether this comment's `actions` are a multi-select list (a
+    /// follow-up question answered with any number of them). False on
+    /// every other comment and from a journal that predates the field.
+    public let multiSelect: Bool
+    /// Every label of the latest answer to this comment's `actions`: the
+    /// ticked ones of a multi-select answer, `[label]` after a tap, `[]`
+    /// before any. Read from `chosen_action` alone on an older journal.
+    public let chosenActions: [String]
+    /// The labels this reply ticked, when it is a multi-select answer
+    /// (`action` is then the first of them); `[]` for every other comment.
+    public let selected: [String]
     /// The comment whose buttons this tap answered; `nil` for a tap on the
     /// item's own buttons and for every reply that is not a tap.
     public let replyTo: String?
@@ -603,7 +628,11 @@ public struct TrackerComment: Identifiable, Equatable, Hashable, Sendable {
                 actions: [String] = [], chosenAction: String? = nil, replyTo: String? = nil,
                 deviceName: String? = nil, convoID: String? = nil, convoTitle: String? = nil,
                 contributor: Contributor? = nil, attribution: String? = nil, replaces: String? = nil,
-                stepUp: Bool = false, subject: [String: String]? = nil, signedKeyID: String? = nil) {
+                stepUp: Bool = false, subject: [String: String]? = nil, signedKeyID: String? = nil,
+                multiSelect: Bool = false, chosenActions: [String]? = nil, selected: [String] = []) {
+        self.multiSelect = multiSelect
+        self.chosenActions = chosenActions ?? chosenAction.map { [$0] } ?? []
+        self.selected = selected
         self.replaces = replaces
         self.stepUp = stepUp
         self.subject = subject
@@ -671,7 +700,10 @@ public struct TrackerComment: Identifiable, Equatable, Hashable, Sendable {
                   replaces: json["replaces"] as? String ?? meta?["replaces"] as? String,
                   stepUp: json["step_up"] as? Bool ?? false,
                   subject: json["subject"] as? [String: String],
-                  signedKeyID: Self.signingKeyID(json["approval"]))
+                  signedKeyID: Self.signingKeyID(json["approval"]),
+                  multiSelect: json["multi_select"] as? Bool ?? false,
+                  chosenActions: json["chosen_actions"] as? [String],
+                  selected: json["selected"] as? [String] ?? meta?["selected"] as? [String] ?? [])
     }
 
     /// The `key_id` inside a stored approval's statement.
@@ -689,12 +721,28 @@ public struct TrackerComment: Identifiable, Equatable, Hashable, Sendable {
 
     /// This comment with `label` recorded as the tap on its buttons — what
     /// the journal's `chosen_action` will say once the thread is refetched.
-    public func choosing(_ label: String) -> TrackerComment {
+    public func choosing(_ label: String) -> TrackerComment { choosing([label]) }
+
+    /// This comment with `labels` recorded as the latest answer to its
+    /// buttons — a multi-select answer's ticked labels, or one tap's label.
+    public func choosing(_ labels: [String]) -> TrackerComment {
         TrackerComment(id: id, itemID: itemID, author: author, deviceID: deviceID, kind: kind, body: body,
                        attachments: attachments, statusFrom: statusFrom, statusTo: statusTo, createdAt: createdAt,
-                       action: action, actions: actions, chosenAction: label, replyTo: replyTo,
+                       action: action, actions: actions, chosenAction: labels.first, replyTo: replyTo,
                        deviceName: deviceName, convoID: convoID, convoTitle: convoTitle,
                        contributor: contributor, attribution: attribution, replaces: replaces,
-                       stepUp: stepUp, subject: subject, signedKeyID: signedKeyID)
+                       stepUp: stepUp, subject: subject, signedKeyID: signedKeyID,
+                       multiSelect: multiSelect, chosenActions: labels, selected: selected)
+    }
+
+    /// The text a thread card draws for this comment: its body, led by
+    /// every label it ticked when it is a multi-select answer whose body
+    /// does not already list them (an answer sent with a note of its own).
+    public var threadBody: String {
+        guard !selected.isEmpty else { return body }
+        let labels = selected.joined(separator: ", ")
+        let note = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        if note.isEmpty { return labels }
+        return note == labels ? body : labels + "\n\n" + body
     }
 }

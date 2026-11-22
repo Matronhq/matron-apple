@@ -96,6 +96,11 @@ public struct ItemRecord: Codable, FetchableRecord, PersistableRecord, Equatable
     /// migration; `nil` reads as not step-up.
     public var stepUp: Bool?
     public var subjectJson: String?
+    /// Multi-select mark and every label of the latest answer. Nullable:
+    /// added by the `item_multi_select` migration; `nil` reads as a
+    /// one-tap list whose answer is `chosen_action` alone.
+    public var multiSelect: Bool?
+    public var chosenActionsJson: String?
 
     enum CodingKeys: String, CodingKey {
         case id, num, kind, state, resolution, awaiting, rank, title, body, supersedes
@@ -113,6 +118,8 @@ public struct ItemRecord: Codable, FetchableRecord, PersistableRecord, Equatable
         case deviceName = "device_name"
         case stepUp = "step_up"
         case subjectJson = "subject_json"
+        case multiSelect = "multi_select"
+        case chosenActionsJson = "chosen_actions_json"
     }
 
     public init(_ i: TrackerItem) {
@@ -132,6 +139,8 @@ public struct ItemRecord: Codable, FetchableRecord, PersistableRecord, Equatable
         deviceName = i.deviceName
         stepUp = i.stepUp ? true : nil
         subjectJson = i.subject.map { enc($0) }
+        multiSelect = i.multiSelect ? true : nil
+        chosenActionsJson = i.chosenActions.count > 1 || i.chosenActions.first != i.chosenAction ? enc(i.chosenActions) : nil
     }
 
     public var item: TrackerItem {
@@ -150,7 +159,8 @@ public struct ItemRecord: Codable, FetchableRecord, PersistableRecord, Equatable
                     handover: handoverJson.flatMap { dec($0, ItemHandover.self) },
                     contributor: contributorJson.flatMap { dec($0, Contributor.self) },
                     deviceName: deviceName,
-                    stepUp: stepUp ?? false, subject: subjectJson.flatMap { dec($0, [String: String].self) })
+                    stepUp: stepUp ?? false, subject: subjectJson.flatMap { dec($0, [String: String].self) },
+                    multiSelect: multiSelect ?? false, chosenActions: chosenActionsJson.flatMap { dec($0, [String].self) })
     }
 }
 
@@ -174,6 +184,7 @@ public struct ItemCommentRecord: Codable, FetchableRecord, PersistableRecord, Eq
         var deviceName: String?; var convoID: String?; var convoTitle: String?
         var contributor: Contributor?; var attribution: String?; var replaces: String?
         var stepUp: Bool?; var subject: [String: String]?; var signedKeyID: String?
+        var multiSelect: Bool?; var chosenActions: [String]?; var selected: [String]?
     }
     private struct Snap: Codable { var state: String?; var resolution: String?; var awaiting: String? }
 
@@ -183,13 +194,17 @@ public struct ItemCommentRecord: Codable, FetchableRecord, PersistableRecord, Eq
         if c.statusFrom != nil || c.statusTo != nil || c.action != nil || !c.actions.isEmpty || c.chosenAction != nil || c.replyTo != nil
             || c.deviceName != nil || c.convoID != nil || c.convoTitle != nil
             || c.contributor != nil || c.attribution != nil || c.replaces != nil
-            || c.stepUp || c.subject != nil || c.signedKeyID != nil {
+            || c.stepUp || c.subject != nil || c.signedKeyID != nil
+            || c.multiSelect || !c.selected.isEmpty || c.chosenActions != (c.chosenAction.map { [$0] } ?? []) {
             let snap = { (s: TrackerItem.StatusSnapshot?) in s.map { Snap(state: $0.state?.rawValue, resolution: $0.resolution?.rawValue, awaiting: $0.awaiting?.rawValue) } }
             metaJson = enc(Meta(from: snap(c.statusFrom), to: snap(c.statusTo), action: c.action,
                                 actions: c.actions.isEmpty ? nil : c.actions, chosenAction: c.chosenAction, replyTo: c.replyTo,
                                 deviceName: c.deviceName, convoID: c.convoID, convoTitle: c.convoTitle,
                                 contributor: c.contributor, attribution: c.attribution, replaces: c.replaces,
-                                stepUp: c.stepUp ? true : nil, subject: c.subject, signedKeyID: c.signedKeyID))
+                                stepUp: c.stepUp ? true : nil, subject: c.subject, signedKeyID: c.signedKeyID,
+                                multiSelect: c.multiSelect ? true : nil,
+                                chosenActions: c.chosenActions == (c.chosenAction.map { [$0] } ?? []) ? nil : c.chosenActions,
+                                selected: c.selected.isEmpty ? nil : c.selected))
         } else { metaJson = nil }
     }
 
@@ -206,7 +221,9 @@ public struct ItemCommentRecord: Codable, FetchableRecord, PersistableRecord, Eq
                               replyTo: meta?.replyTo,
                               deviceName: meta?.deviceName, convoID: meta?.convoID, convoTitle: meta?.convoTitle,
                               contributor: meta?.contributor, attribution: meta?.attribution, replaces: meta?.replaces,
-                              stepUp: meta?.stepUp ?? false, subject: meta?.subject, signedKeyID: meta?.signedKeyID)
+                              stepUp: meta?.stepUp ?? false, subject: meta?.subject, signedKeyID: meta?.signedKeyID,
+                              multiSelect: meta?.multiSelect ?? false, chosenActions: meta?.chosenActions,
+                              selected: meta?.selected ?? [])
     }
 }
 
@@ -254,6 +271,11 @@ public struct ItemOutboxRecord: Codable, FetchableRecord, PersistableRecord, Equ
     /// that doesn't decode — lets the detail view show a tap as chosen
     /// while it is still waiting to send.
     public var commentAction: String? { commentPayload?["action"] as? String }
+
+    /// The labels a queued `comment` row ticks when it is a multi-select
+    /// answer (its payload's `selected`), or `nil` for every other row —
+    /// lets the detail view show the answer as chosen while it waits.
+    public var commentSelected: [String]? { commentPayload?["selected"] as? [String] }
 
     /// A queued `comment` row's text (its payload's `body`); `nil` for any
     /// other op or a payload that doesn't decode.
@@ -755,7 +777,9 @@ extension JournalStore {
             try ItemRecord(item).save(db)
             if let comment {
                 try ItemCommentRecord(comment).save(db)
-                if let label = comment.action, let asking = comment.replyTo {
+                if !comment.selected.isEmpty, let asking = comment.replyTo {
+                    try Self.markChosen(db, itemID: comment.itemID, commentID: asking, labels: comment.selected)
+                } else if let label = comment.action, let asking = comment.replyTo {
                     try Self.markChosen(db, itemID: comment.itemID, commentID: asking, label: label)
                 }
             }
@@ -773,9 +797,23 @@ extension JournalStore {
     }
 
     private static func markChosen(_ db: Database, itemID: String, commentID: String, label: String) throws {
-        guard let asking = try ItemCommentRecord.fetchOne(db, key: commentID)?.comment,
-              asking.itemID == itemID, asking.actions.contains(label), asking.chosenAction != label else { return }
-        try ItemCommentRecord(asking.choosing(label)).save(db)
+        try markChosen(db, itemID: itemID, commentID: commentID, labels: [label])
+    }
+
+    /// Records `labels` as a multi-select answer on a cached asking comment
+    /// (`comment.selected` + `comment.reply_to` on a `commented` marker),
+    /// under the same rule as a tap: only a cached comment of that item
+    /// that offers every label.
+    public func markCommentSelectionChosen(itemID: String, commentID: String, labels: [String]) throws {
+        try metrics.measureWrite("markCommentSelectionChosen", on: db) { db in
+            try Self.markChosen(db, itemID: itemID, commentID: commentID, labels: labels)
+        }
+    }
+
+    private static func markChosen(_ db: Database, itemID: String, commentID: String, labels: [String]) throws {
+        guard !labels.isEmpty, let asking = try ItemCommentRecord.fetchOne(db, key: commentID)?.comment,
+              asking.itemID == itemID, labels.allSatisfy(asking.actions.contains), asking.chosenActions != labels else { return }
+        try ItemCommentRecord(asking.choosing(labels)).save(db)
     }
 
     /// Also invoked inline (not via this method — see its doc comment) from

@@ -88,7 +88,16 @@ public struct ItemDetailView: View {
         /// sites and snapshot tests stay source-compatible.
         public var editableQueuedReplies: Set<String>
         public var editingQueuedReplyID: String?
-        public init(item: TrackerItem, comments: [TrackerComment], pending: [PendingComment], context: ItemContext = ItemContext(), availableResolutions: [ItemResolution], isBusy: Bool, loadedCommentCount: Int? = nil, spawnConsent: ItemSpawnConsent? = nil, actions: [String] = [], selectedAction: String? = nil, stagedAttachments: [StagedAttachment] = [], queuedReplies: [String: QueuedReplyState] = [:], selectedCommentActions: [String: String] = [:], openableConvoIDs: Set<String> = [], working: ItemWorkingIndicator? = nil, editableQueuedReplies: Set<String> = [], editingQueuedReplyID: String? = nil) {
+        /// The item's own multi-select question
+        /// (`ItemDetailViewModel.itemMultiSelect`): drawn as tick rows and
+        /// Send in place of `actions`' buttons. `nil` for a one-tap
+        /// question. Defaulted so existing call sites stay source-compatible.
+        public var multiSelect: ItemMultiSelectState?
+        /// Each follow-up comment's multi-select question, by comment id
+        /// (`ItemDetailViewModel.commentMultiSelects`).
+        public var commentMultiSelects: [String: ItemMultiSelectState]
+        public init(item: TrackerItem, comments: [TrackerComment], pending: [PendingComment], context: ItemContext = ItemContext(), availableResolutions: [ItemResolution], isBusy: Bool, loadedCommentCount: Int? = nil, spawnConsent: ItemSpawnConsent? = nil, actions: [String] = [], selectedAction: String? = nil, stagedAttachments: [StagedAttachment] = [], queuedReplies: [String: QueuedReplyState] = [:], selectedCommentActions: [String: String] = [:], openableConvoIDs: Set<String> = [], working: ItemWorkingIndicator? = nil, editableQueuedReplies: Set<String> = [], editingQueuedReplyID: String? = nil, multiSelect: ItemMultiSelectState? = nil, commentMultiSelects: [String: ItemMultiSelectState] = [:]) {
+            self.multiSelect = multiSelect; self.commentMultiSelects = commentMultiSelects
             self.item = item; self.comments = comments; self.pending = pending; self.context = context
             self.availableResolutions = availableResolutions; self.isBusy = isBusy; self.loadedCommentCount = loadedCommentCount
             self.spawnConsent = spawnConsent; self.actions = actions; self.selectedAction = selectedAction
@@ -157,6 +166,22 @@ public struct ItemDetailView: View {
     /// `ItemDetailViewModel.chooseCommentAction`). `nil` draws no buttons
     /// under comments, for the same reason.
     let onCommentAction: ((String, String) -> Void)?
+    /// Ticks and Send on multi-select questions, wired to the host's view
+    /// model. Each `nil` draws no list: rows wired to nothing would look
+    /// like an answer and send none.
+    let multiSelectActions: MultiSelectActions
+
+    public struct MultiSelectActions {
+        /// Ticks or unticks a label: the asking comment's id (`nil` for the
+        /// item's own question), then the label — `toggleTick`.
+        public var toggle: ((String?, String) -> Void)?
+        /// Sends the ticked labels — `sendSelection`.
+        public var send: ((String?) -> Void)?
+        public init(toggle: ((String?, String) -> Void)? = nil, send: ((String?) -> Void)? = nil) {
+            self.toggle = toggle; self.send = send
+        }
+    }
+
     /// Removes a staged attachment from the reply's tray (its ✕).
     let onRemoveAttachment: (UUID) -> Void
     /// What the thread's not-yet-delivered replies offer.
@@ -282,7 +307,8 @@ public struct ItemDetailView: View {
                 replyDelivery: ReplyDeliveryActions = .init(),
                 onCommentAction: ((String, String) -> Void)? = nil,
                 onOpenMission: ((Int) -> Void)? = nil,
-                attachmentActions: AttachmentActions = .init()) {
+                attachmentActions: AttachmentActions = .init(),
+                multiSelectActions: MultiSelectActions = .init()) {
         self.init(model: model, draft: ItemReplyDraft(draft), image: image, animation: animation,
                   onOpenAttachment: onOpenAttachment,
                   onOpenLink: onOpenLink, onOpenConversation: onOpenConversation, onSubmit: onSubmit, onAttach: onAttach,
@@ -290,7 +316,7 @@ public struct ItemDetailView: View {
                   onBottomVisibilityChange: onBottomVisibilityChange, onAnswerSpawn: onAnswerSpawn, onOpenRoom: onOpenRoom,
                   onAction: onAction, onRemoveAttachment: onRemoveAttachment, replyDelivery: replyDelivery,
                   onCommentAction: onCommentAction, onOpenMission: onOpenMission,
-                  attachmentActions: attachmentActions)
+                  attachmentActions: attachmentActions, multiSelectActions: multiSelectActions)
     }
 
     public init(model: Model, draft: ItemReplyDraft, image: @escaping (TrackerAttachment) -> Image?,
@@ -304,7 +330,9 @@ public struct ItemDetailView: View {
                 replyDelivery: ReplyDeliveryActions = .init(),
                 onCommentAction: ((String, String) -> Void)? = nil,
                 onOpenMission: ((Int) -> Void)? = nil,
-                attachmentActions: AttachmentActions = .init()) {
+                attachmentActions: AttachmentActions = .init(),
+                multiSelectActions: MultiSelectActions = .init()) {
+        self.multiSelectActions = multiSelectActions
         self.model = model; self.draft = draft; self.image = image; self.animation = animation
         self.onOpenAttachment = onOpenAttachment
         self.onOpenLink = onOpenLink; self.onOpenConversation = onOpenConversation; self.onSubmit = onSubmit
@@ -413,7 +441,7 @@ public struct ItemDetailView: View {
                 #endif
         case .caption(.comment(let id)):
             if let comment = model.comments.first(where: { $0.id == id }) {
-                authorCaption(comment, tapped: comment.action != nil)
+                authorCaption(comment, tapped: comment.action != nil || !comment.selected.isEmpty)
             }
         case .caption:
             authorCaption(name: item.filerName, conversation: nil, date: item.createdAt, tapped: false)
@@ -629,7 +657,12 @@ public struct ItemDetailView: View {
         case .consent: if let consent = model.spawnConsent { spawnConsentCard(consent) }
         case .body: bodyCard
         case .actions:
-            if let onAction {
+            if let state = model.multiSelect {
+                if let toggle = multiSelectActions.toggle, let send = multiSelectActions.send {
+                    ItemMultiSelectList(state: state, isEnabled: !model.isBusy,
+                                        onToggle: { toggle(nil, $0) }, onSend: { send(nil) })
+                }
+            } else if let onAction {
                 ItemActionButtons(actions: model.actions, selected: model.selectedAction, isEnabled: !model.isBusy, onChoose: onAction)
             }
         case .divider: Divider()
@@ -1213,8 +1246,8 @@ public struct ItemDetailView: View {
         } else {
             let delivery = c.author == .user ? model.queuedReplies[c.id] : nil
             VStack(alignment: .leading, spacing: 6) {
-                authorCaption(c, tapped: c.action != nil)
-                segmentedBody(c.body, attachments: c.attachments, selectionID: c.id)
+                authorCaption(c, tapped: c.action != nil || !c.selected.isEmpty)
+                segmentedBody(c.threadBody, attachments: c.attachments, selectionID: c.id)
                 if let delivery { deliveryLine(delivery, for: c) }
             }
             .itemCard(mine: c.isMine)
@@ -1250,7 +1283,13 @@ public struct ItemDetailView: View {
     @ViewBuilder
     private func commentActions(_ c: TrackerComment) -> some View {
         let offered = c.offeredActions(itemIsOpen: item.state == .open)
-        if let onCommentAction, !offered.isEmpty {
+        if c.multiSelect {
+            if let state = model.commentMultiSelects[c.id], !offered.isEmpty,
+               let toggle = multiSelectActions.toggle, let send = multiSelectActions.send {
+                ItemMultiSelectList(state: state, isEnabled: !model.isBusy, identifierPrefix: "comment-multi-\(c.id)",
+                                    onToggle: { toggle(c.id, $0) }, onSend: { send(c.id) })
+            }
+        } else if let onCommentAction, !offered.isEmpty {
             ItemActionButtons(actions: offered, selected: model.selectedCommentActions[c.id], isEnabled: !model.isBusy,
                               identifierPrefix: "comment-action-\(c.id)", onChoose: { label in onCommentAction(c.id, label) })
         }

@@ -156,6 +156,11 @@ public protocol ItemsProviding: Sendable {
     /// a consent item aimed at a protected box (a `consent` statement).
     /// Sent at once, never queued: a signature must not wait on disk.
     func tapItem(id: String, action: String, replyTo: String?, approval: SignedApproval, idempotencyKey: String) async throws -> (item: TrackerItem, comment: TrackerComment?)
+    /// Answers a multi-select question with the labels the user ticked
+    /// (`selected`, at least one, exactly as offered): the item's own when
+    /// `replyTo` is `nil`, else that follow-up comment's. Never carries an
+    /// `action`. `body` may be empty; the journal then stores the labels.
+    func answerItem(id: String, selected: [String], body: String, replyTo: String?, idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment?)
 }
 
 public extension ItemsProviding {
@@ -169,6 +174,13 @@ public extension ItemsProviding {
     /// than sending it unsigned.
     func tapItem(id: String, action: String, replyTo: String?, approval: SignedApproval, idempotencyKey: String) async throws -> (item: TrackerItem, comment: TrackerComment?) {
         throw JournalAPIError.approvalRequired
+    }
+
+    /// A provider that knows nothing of multi-select answers refuses one as
+    /// the journal refuses labels it doesn't offer, so the outbox re-sends
+    /// the words as a typed reply.
+    func answerItem(id: String, selected: [String], body: String, replyTo: String?, idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment?) {
+        throw JournalAPIError.http(status: 400, message: "unknown_action")
     }
 
     /// A provider that knows nothing of `replaces` posts the reply without
@@ -225,15 +237,33 @@ extension JournalAPI: ItemsProviding {
                               approval: nil, idempotencyKey: idempotencyKey)
     }
 
-    private func commentItem(id: String, body: String, attachments: [TrackerAttachment], action: String?, replyTo: String?, replaces: String?, approval: SignedApproval?, idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment?) {
+    public func answerItem(id: String, selected: [String], body: String, replyTo: String?, idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment?) {
+        try await commentItem(id: id, body: body, attachments: [], action: nil, selected: selected, replyTo: replyTo,
+                              replaces: nil, approval: nil, idempotencyKey: idempotencyKey)
+    }
+
+    /// The JSON a reply is posted with. `action` (one tap) and `selected`
+    /// (a multi-select answer) are never sent together, and `reply_to`
+    /// only rides with one of them: the journal refuses it on its own.
+    static func commentRequestJSON(body: String, attachments: [TrackerAttachment] = [], action: String?, selected: [String]? = nil,
+                                   replyTo: String?, replaces: String? = nil, approval: SignedApproval? = nil) -> [String: Any] {
         var json: [String: Any] = ["body": body]
         if let approval, action != nil { json["approval"] = approval.json }
         if let replaces { json["replaces"] = replaces }
-        if let action {
+        if let selected, !selected.isEmpty {
+            json["selected"] = selected
+            if let replyTo { json["reply_to"] = replyTo }
+        } else if let action {
             json["action"] = action
             if let replyTo { json["reply_to"] = replyTo }
         }
         if !attachments.isEmpty { json["attachments"] = attachments.map(outgoingAttachmentJSON) }
+        return json
+    }
+
+    private func commentItem(id: String, body: String, attachments: [TrackerAttachment], action: String?, selected: [String]? = nil, replyTo: String?, replaces: String?, approval: SignedApproval?, idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment?) {
+        let json = Self.commentRequestJSON(body: body, attachments: attachments, action: action, selected: selected,
+                                           replyTo: replyTo, replaces: replaces, approval: approval)
         let headers = idempotencyKey.map { ["Idempotency-Key": $0] } ?? [:]
         let obj = try await request(path: "/items/\(Self.pathSegment(id))/comments", method: "POST", body: json, accept: [200, 201], headers: headers)
         // A tap the journal applies as an answer (a consent ask, a file
