@@ -32,7 +32,7 @@ public struct MissionActivityDot: View {
     }
 }
 
-/// "also on #4791" / "moved to #4905" on a mission page's conversation row
+/// "also on #2171" / "moved to #2174" on a mission page's conversation row
 /// (mockup 03). Only the `#N` is a button: it opens that mission. A
 /// borderless button, so it stays tappable inside a List row whose own tap
 /// opens the conversation.
@@ -64,7 +64,7 @@ public struct LinkedMissionChip: View {
     }
 }
 
-/// "▣ Promo launch" — a mission's project, tappable when it can open.
+/// "▣ Docs site launch" — a mission's project, tappable when it can open.
 public struct ProjectChip: View {
     let title: String
     let action: (() -> Void)?

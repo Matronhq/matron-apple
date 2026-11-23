@@ -19,9 +19,9 @@ final class ProjectDetailViewModelTests: XCTestCase {
     func testPageAssemblesFromTheStreams() async {
         let (vm, store, _, _) = make()
         vm.start()
-        store.projects.send([Project(id: "pj_1", num: 1, title: "Promo"), Project(id: "pj_2", num: 2, title: "Apps")])
+        store.projects.send([Project(id: "pj_1", num: 1, title: "Docs"), Project(id: "pj_2", num: 2, title: "Apps")])
         store.unfiled.send([Mission(id: "ms_9", num: 9, title: "Loose", originConvoID: "c1")])
-        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo", needsYou: 1))
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Docs", needsYou: 1))
         store.missions("pj_1").send([
             Mission(id: "ms_1", num: 10, title: "Open", originConvoID: "c1", projectID: "pj_1", activity: .running),
             Mission(id: "ms_2", num: 11, state: .closed, title: "Done", originConvoID: "c1", projectID: "pj_1"),
@@ -48,10 +48,10 @@ final class ProjectDetailViewModelTests: XCTestCase {
     func testAClosedProjectOffersNoWrites() async {
         let (vm, store, projects, _) = make()
         vm.start()
-        store.projects.send([Project(id: "pj_1", num: 1, state: .closed, title: "Promo"),
+        store.projects.send([Project(id: "pj_1", num: 1, state: .closed, title: "Docs"),
                              Project(id: "pj_2", num: 2, title: "Apps")])
         store.unfiled.send([Mission(id: "ms_9", num: 9, title: "Loose", originConvoID: "c1")])
-        store.project("pj_1").send(Project(id: "pj_1", num: 1, state: .closed, title: "Promo"))
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, state: .closed, title: "Docs"))
         await waitForProjects { vm.page?.project.state == .closed && vm.page?.moveTargets.isEmpty == false }
         XCTAssertEqual(vm.page?.mergeTargets, [])
         XCTAssertEqual(vm.page?.moveTargets.map(\.id), ["pj_2"], "open projects stay move targets")
@@ -72,9 +72,9 @@ final class ProjectDetailViewModelTests: XCTestCase {
     func testMoveMissionRefusesAClosedOrUnknownTarget() async {
         let (vm, store, projects, _) = make()
         vm.start()
-        store.projects.send([Project(id: "pj_1", num: 1, title: "Promo"), Project(id: "pj_2", num: 2, title: "Apps"),
+        store.projects.send([Project(id: "pj_1", num: 1, title: "Docs"), Project(id: "pj_2", num: 2, title: "Apps"),
                              Project(id: "pj_3", num: 3, state: .closed, title: "Old")])
-        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Docs"))
         await waitForProjects { vm.page?.moveTargets.count == 2 }
         await vm.moveMission("ms_1", to: "pj_3")
         await vm.moveMission("ms_1", to: "pj_nope")
@@ -115,7 +115,7 @@ final class ProjectDetailViewModelTests: XCTestCase {
         let vm = ProjectDetailViewModel(projectID: "pj_1", store: store, projects: gated,
                                         missions: FakeMissionsSyncForProjects(), now: { Date() })
         vm.start()
-        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Docs"))
         await waitForProjects { vm.page != nil && gated.waiting == 1 }
         let merged = await vm.merge(into: "pj_2")
         XCTAssertTrue(merged)
@@ -140,11 +140,11 @@ final class ProjectDetailViewModelTests: XCTestCase {
         let (vm, store, projects, _) = make(refreshInterval: .milliseconds(20))
         projects.projectOutcomes["pj_1"] = .failed(MissionsRefreshFailure(message: "Couldn't reach the server"))
         vm.start()
-        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Docs"))
         await waitForProjects { vm.page != nil && projects.refreshedProjects.count >= 3 }
         XCTAssertNil(vm.error, "background refreshes never alert")
         XCTAssertFalse(vm.loadFailed, "the cached page is shown")
-        XCTAssertEqual(vm.page?.project.title, "Promo")
+        XCTAssertEqual(vm.page?.project.title, "Docs")
         vm.stop()
     }
 
@@ -171,7 +171,7 @@ final class ProjectDetailViewModelTests: XCTestCase {
         await vm.refresh()
         XCTAssertTrue(vm.loadFailed)
         vm.start()
-        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Docs"))
         await waitForProjects { vm.page != nil }
         XCTAssertFalse(vm.loadFailed)
         vm.stop()
@@ -181,8 +181,8 @@ final class ProjectDetailViewModelTests: XCTestCase {
     func testAFailedUserActionStillSetsError() async {
         let (vm, store, projects, _) = make()
         vm.start()
-        store.projects.send([Project(id: "pj_1", num: 1, title: "Promo"), Project(id: "pj_2", num: 2, title: "Apps")])
-        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
+        store.projects.send([Project(id: "pj_1", num: 1, title: "Docs"), Project(id: "pj_2", num: 2, title: "Apps")])
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Docs"))
         await waitForProjects { vm.page?.moveTargets.count == 2 }
         projects.failWrites = URLError(.notConnectedToInternet)
         await vm.moveMission("ms_1", to: "pj_2")
@@ -295,7 +295,7 @@ final class ProjectDetailViewModelTests: XCTestCase {
         store.missions("pj_1").send([openMission("ms_1", project: "pj_1")])
         store.missions("pj_2").send([openMission("ms_1", project: "pj_2"), openMission("ms_2", project: "pj_2")])
         vm.start()
-        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Docs"))
         await waitForProjects { vm.page != nil && missions.refreshedMissions == ["ms_1"] }
         let merged = await vm.merge(into: "pj_2")
         XCTAssertTrue(merged)
@@ -317,7 +317,7 @@ final class ProjectDetailViewModelTests: XCTestCase {
     func testFeedFillsThePageAndAMissingOneHidesIt() async {
         let (vm, store, _, _) = make()
         vm.start()
-        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Docs"))
         store.projectFeed("pj_1").send(nil)
         await waitForProjects { vm.page != nil }
         XCTAssertEqual(vm.page?.hasFeed, false, "an older journal: no roll-up sections")
@@ -344,7 +344,7 @@ final class ProjectDetailViewModelTests: XCTestCase {
         projects.feedPages = ["c6": .decisions(Self.decisions(4...5, next: "c4")),
                               "c4": .decisions(Self.decisions(1...3, next: nil))]
         vm.start()
-        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Docs"))
         store.projectFeed("pj_1").send(ProjectFeed(decisions: Self.decisions(6...7, next: "c6")))
         await waitForProjects { vm.page?.hasFeed == true }
 
@@ -373,7 +373,7 @@ final class ProjectDetailViewModelTests: XCTestCase {
     func testLoadMoreWithoutAFeedOrAfterAFailureAppendsNothing() async {
         let (vm, store, projects, _) = make()
         vm.start()
-        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Docs"))
         store.projectFeed("pj_1").send(nil)
         await waitForProjects { vm.page != nil }
         let none = await vm.loadMore(kind: .decisions)
@@ -403,7 +403,7 @@ final class ProjectDetailViewModelTests: XCTestCase {
         projects.feedPages = ["c6": .decisions(Self.decisions(4...5, next: nil)),
                               "m1": .milestones(ProjectFeedPage(total: 2, rows: [older], nextBefore: nil))]
         vm.start()
-        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Docs"))
         store.projectFeed("pj_1").send(ProjectFeed(decisions: Self.decisions(6...7, next: "c6"),
                                                    files: ProjectFeedPage(total: 0, rows: []),
                                                    milestones: ProjectFeedPage(total: 2, rows: [milestone], nextBefore: "m1")))
@@ -429,7 +429,7 @@ final class ProjectDetailViewModelTests: XCTestCase {
                               "c7": .decisions(Self.decisions(5...6, total: 8, next: "c5")),
                               "c5": .decisions(Self.decisions(1...4, total: 8, next: nil))]
         vm.start()
-        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Docs"))
         store.projectFeed("pj_1").send(ProjectFeed(decisions: Self.decisions(6...7, next: "c6")))
         await waitForProjects { vm.page?.hasFeed == true }
         _ = await vm.loadMore(kind: .decisions)
@@ -456,7 +456,7 @@ final class ProjectDetailViewModelTests: XCTestCase {
         projects.feedPages = ["c6": .decisions(Self.decisions(3...5, next: "c3")),
                               "c6b": .decisions(ProjectFeedPage(total: 6, rows: [5, 3, 2].map(Self.decision), nextBefore: "c2"))]
         vm.start()
-        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Docs"))
         store.projectFeed("pj_1").send(ProjectFeed(decisions: Self.decisions(6...7, next: "c6")))
         await waitForProjects { vm.page?.hasFeed == true }
         _ = await vm.loadMore(kind: .decisions)
@@ -485,7 +485,7 @@ final class ProjectDetailViewModelTests: XCTestCase {
                               "c4": .decisions(Self.decisions(1...3, next: nil)),
                               "c20": .decisions(Self.decisions(18...19, total: 21, next: "c18"))]
         vm.start()
-        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Docs"))
         store.projectFeed("pj_1").send(ProjectFeed(decisions: Self.decisions(6...7, next: "c6")))
         await waitForProjects { vm.page?.hasFeed == true }
         _ = await vm.loadMore(kind: .decisions)
@@ -517,7 +517,7 @@ final class ProjectDetailViewModelTests: XCTestCase {
         projects.feedPages = ["c6": .decisions(Self.decisions(4...5, next: "c4")),
                               "c7": .decisions(Self.decisions(5...6, total: 8, next: "c5"))]
         vm.start()
-        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Docs"))
         store.projectFeed("pj_1").send(ProjectFeed(decisions: Self.decisions(6...7, next: "c6")))
         await waitForProjects { vm.page?.hasFeed == true }
         _ = await vm.loadMore(kind: .decisions)
@@ -539,7 +539,7 @@ final class ProjectDetailViewModelTests: XCTestCase {
     func testMergeSwitchesToTheTargetAndAddMissionFiles() async {
         let (vm, store, projects, _) = make()
         vm.start()
-        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Docs"))
         await waitForProjects { vm.page != nil }
         let merged = await vm.merge(into: "pj_2")
         XCTAssertTrue(merged)
@@ -563,10 +563,10 @@ final class ProjectDetailViewModelTests: XCTestCase {
         XCTAssertEqual(ProjectActionsFormat.rename, "Rename…")
         XCTAssertEqual(ProjectActionsFormat.mergeInto, "Merge into…")
         XCTAssertEqual(ProjectActionsFormat.close, "Close project…")
-        XCTAssertEqual(ProjectActionsFormat.askMessage(title: "Promo launch"),
-                       "Tell me about the project “Promo launch”: where it is and what is next.")
-        XCTAssertEqual(ProjectActionsFormat.closeConfirmation(title: "Promo launch"),
-                       "Close “Promo launch”? Its missions stay as they are.")
+        XCTAssertEqual(ProjectActionsFormat.askMessage(title: "Docs site launch"),
+                       "Tell me about the project “Docs site launch”: where it is and what is next.")
+        XCTAssertEqual(ProjectActionsFormat.closeConfirmation(title: "Docs site launch"),
+                       "Close “Docs site launch”? Its missions stay as they are.")
         XCTAssertEqual(ProjectActionsFormat.closeSummary, "Closed from the app.")
         XCTAssertEqual(ProjectActionsFormat.openMissions, "This project still has open missions. Close or move them first.")
         XCTAssertEqual(ProjectActionsFormat.notOpen, "This project is closed, so it can't be changed.")
@@ -575,17 +575,17 @@ final class ProjectDetailViewModelTests: XCTestCase {
     func testRenameTrimsAndRefusesAnEmptyTitle() async {
         let (vm, store, projects, _) = make()
         vm.start()
-        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Docs"))
         await waitForProjects { vm.page != nil }
-        let renamed = await vm.rename(to: "  Promo launch \n")
+        let renamed = await vm.rename(to: "  Docs site launch \n")
         XCTAssertTrue(renamed)
         XCTAssertEqual(projects.renamed.map(\.0), ["pj_1"])
-        XCTAssertEqual(projects.renamed.map(\.1), ["Promo launch"])
+        XCTAssertEqual(projects.renamed.map(\.1), ["Docs site launch"])
         let empty = await vm.rename(to: " \n ")
         XCTAssertFalse(empty)
         XCTAssertEqual(projects.renamed.count, 1, "an empty title never reaches the journal")
         XCTAssertNil(vm.error, "nothing went wrong: there was nothing to send")
-        let same = await vm.rename(to: " Promo ")
+        let same = await vm.rename(to: " Docs ")
         XCTAssertTrue(same, "already its name")
         XCTAssertEqual(projects.renamed.count, 1)
         projects.failWrites = JournalAPIError.forbidden
@@ -598,7 +598,7 @@ final class ProjectDetailViewModelTests: XCTestCase {
     func testCloseSendsTheSummaryAndSaysWhyItWasRefused() async {
         let (vm, store, projects, _) = make()
         vm.start()
-        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Docs"))
         await waitForProjects { vm.page != nil }
         projects.failWrites = ProjectCloseError.openMissions
         let refused = await vm.close()
@@ -620,9 +620,9 @@ final class ProjectDetailViewModelTests: XCTestCase {
     func testAClosedProjectIsNotRenamedOrClosed() async {
         let (vm, store, projects, _) = make()
         vm.start()
-        store.project("pj_1").send(Project(id: "pj_1", num: 1, state: .closed, title: "Promo"))
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, state: .closed, title: "Docs"))
         await waitForProjects { vm.page?.project.state == .closed }
-        let renamed = await vm.rename(to: "Promo launch")
+        let renamed = await vm.rename(to: "Docs site launch")
         XCTAssertFalse(renamed)
         XCTAssertEqual(vm.error, "This project is closed, so it can't be changed.", "said, not dropped")
         vm.error = nil
@@ -638,7 +638,7 @@ final class ProjectDetailViewModelTests: XCTestCase {
     /// and nothing to say.
     func testAProjectNotYetLoadedIsNotRenamedOrClosed() async {
         let (vm, _, projects, _) = make()
-        let renamed = await vm.rename(to: "Promo launch")
+        let renamed = await vm.rename(to: "Docs site launch")
         let closed = await vm.close()
         XCTAssertFalse(renamed)
         XCTAssertFalse(closed)
@@ -663,10 +663,10 @@ final class ProjectDetailViewModelTests: XCTestCase {
             XCTAssertFalse(notWritable.merge)
             XCTAssertFalse(notWritable.close)
         }
-        XCTAssertTrue(TimelineProjectPage(project: TimelineProjectRef(id: "pj_1", num: 1, title: "Promo")).isOpen)
-        XCTAssertFalse(TimelineProjectPage(project: TimelineProjectRef(id: "pj_1", num: 1, title: "Promo"),
+        XCTAssertTrue(TimelineProjectPage(project: TimelineProjectRef(id: "pj_1", num: 1, title: "Docs")).isOpen)
+        XCTAssertFalse(TimelineProjectPage(project: TimelineProjectRef(id: "pj_1", num: 1, title: "Docs"),
                                            state: "closed").isOpen)
-        XCTAssertFalse(TimelineProjectPage(project: TimelineProjectRef(id: "pj_1", num: 1, title: "Promo"),
+        XCTAssertFalse(TimelineProjectPage(project: TimelineProjectRef(id: "pj_1", num: 1, title: "Docs"),
                                            state: "finished").isOpen, "anything but open")
     }
 }

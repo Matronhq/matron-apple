@@ -25,7 +25,7 @@ final class MacMissionPageSnapshotTests: XCTestCase {
         defaults.set(mode.rawValue, forKey: MacMissionPage.modeKey)
         return VStack(spacing: 0) {
             // `F.mission`/`F.project` so the breadcrumb pins "Projects ›
-            // Promo launch › #3778" (mockup 03), and a non-nil `onMove` so
+            // Docs site launch › #2240" (mockup 03), and a non-nil `onMove` so
             // the header's Move menu is drawn (never `canMove: false`'s
             // nil, which this fixture never exercises).
             MacMissionPageTopBar(mission: F.mission, project: F.project, backConvoID: nil, onBack: { _ in },

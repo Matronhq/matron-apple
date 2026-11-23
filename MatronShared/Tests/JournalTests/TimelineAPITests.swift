@@ -296,7 +296,7 @@ final class TimelineAPITests: XCTestCase {
         let list = try JournalAPI.decodeTimelineProjects([
             "total": 14,
             "rows": [
-                ["project": project("pj_a", num: 7, title: "Promo launch"), "last_moved_at": 1_760_000_000_000,
+                ["project": project("pj_a", num: 7, title: "Docs site launch"), "last_moved_at": 1_760_000_000_000,
                  "open_missions": 3],
                 ["project": ["num": 3, "title": "No id"], "last_moved_at": 1_760_000_000_000, "open_missions": 1],
                 ["project": project("pj_b", num: 9, title: "Docs site"), "last_moved_at": NSNull()],
@@ -305,7 +305,7 @@ final class TimelineAPITests: XCTestCase {
         ])
         XCTAssertEqual(list.total, 14)
         XCTAssertEqual(list.rows.map(\.project.id), ["pj_a", "pj_b"], "the row without a project id is dropped")
-        XCTAssertEqual(list.rows[0].project, TimelineProjectRef(id: "pj_a", num: 7, title: "Promo launch"))
+        XCTAssertEqual(list.rows[0].project, TimelineProjectRef(id: "pj_a", num: 7, title: "Docs site launch"))
         XCTAssertEqual(list.rows[0].lastMovedAt, date(1_760_000_000_000))
         XCTAssertEqual(list.rows[0].openMissions, 3)
         XCTAssertNil(list.rows[1].lastMovedAt, "a project with no recorded move")
@@ -326,7 +326,7 @@ final class TimelineAPITests: XCTestCase {
 
     private func pageJSON(_ extra: [String: Any] = [:]) -> [String: Any] {
         var json: [String: Any] = [
-            "project": ["id": "pj_a", "num": 7, "title": "Promo launch", "state": "open", "live": true],
+            "project": ["id": "pj_a", "num": 7, "title": "Docs site launch", "state": "open", "live": true],
             "sentence": "The landing page is up", "sentence_source": "milestone", "next": "Write the email",
             "needs_you": [["id": "it_1", "num": 41, "title": "Pick a headline"], ["num": 42, "title": "No id"]],
             "needs_you_total": 5,
@@ -339,7 +339,7 @@ final class TimelineAPITests: XCTestCase {
 
     func testAProjectPageDecodes() throws {
         let page = try JournalAPI.decodeTimelineProject(pageJSON())
-        XCTAssertEqual(page.project, TimelineProjectRef(id: "pj_a", num: 7, title: "Promo launch"))
+        XCTAssertEqual(page.project, TimelineProjectRef(id: "pj_a", num: 7, title: "Docs site launch"))
         XCTAssertTrue(page.isLive)
         XCTAssertEqual(page.state, "open")
         XCTAssertEqual(page.sentence, "The landing page is up")

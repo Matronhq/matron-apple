@@ -66,10 +66,10 @@ private final class FakeProjectTimeline: TimelineProviding, @unchecked Sendable 
 @MainActor
 final class ProjectSummaryViewModelTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
-    private let promo = TimelineProjectRef(id: "pj_promo", num: 4, title: "Promo launch")
+    private let docs = TimelineProjectRef(id: "pj_docs", num: 4, title: "Docs site launch")
 
     private func page(sentence: String = "The launch page is live.", mergedFrom: String? = nil) -> TimelineProjectPage {
-        TimelineProjectPage(project: promo, isLive: true, sentence: sentence, weeks: 3, missionsOpen: 2,
+        TimelineProjectPage(project: docs, isLive: true, sentence: sentence, weeks: 3, missionsOpen: 2,
                             mergedFromID: mergedFrom)
     }
 
@@ -77,10 +77,10 @@ final class ProjectSummaryViewModelTests: XCTestCase {
         TimelineHistoryWeek(week: key, start: now, end: now, sentence: "Week \(key)")
     }
 
-    private func make(id: String = "pj_promo") -> (ProjectSummaryViewModel, FakeProjectTimeline) {
+    private func make(id: String = "pj_docs") -> (ProjectSummaryViewModel, FakeProjectTimeline) {
         let fake = FakeProjectTimeline()
         fake.page = .success(page())
-        fake.list = .success(TimelineProjectList(total: 1, rows: [TimelineProjectRow(project: promo)]))
+        fake.list = .success(TimelineProjectList(total: 1, rows: [TimelineProjectRow(project: docs)]))
         return (ProjectSummaryViewModel(projectID: id, timeline: fake), fake)
     }
 
@@ -89,7 +89,7 @@ final class ProjectSummaryViewModelTests: XCTestCase {
         XCTAssertNil(vm.page)
         await vm.start()
         XCTAssertEqual(vm.page, page())
-        XCTAssertEqual(fake.pageCalls, ["pj_promo"])
+        XCTAssertEqual(fake.pageCalls, ["pj_docs"])
         XCTAssertFalse(vm.isMissing)
         XCTAssertNil(vm.redirectedTo)
         XCTAssertNil(vm.error)
@@ -110,7 +110,7 @@ final class ProjectSummaryViewModelTests: XCTestCase {
         XCTAssertEqual(vm.history.map(\.week), ["2026-11-02", "2026-10-26", "2026-10-19"])
         XCTAssertFalse(vm.hasMoreHistory)
         await vm.loadMoreHistory()
-        XCTAssertEqual(fake.historyCalls, ["pj_promo:nil", "pj_promo:2026-10-26"], "nothing is read past the last page")
+        XCTAssertEqual(fake.historyCalls, ["pj_docs:nil", "pj_docs:2026-10-26"], "nothing is read past the last page")
     }
 
     func testAFailedHistoryReadSetsErrorAndKeepsWhatLoaded() async {
@@ -140,14 +140,14 @@ final class ProjectSummaryViewModelTests: XCTestCase {
         fake.page = .success(page(mergedFrom: "pj_old"))
         fake.historyPages[nil] = ([week("2026-11-02")], nil)
         await vm.start()
-        XCTAssertEqual(vm.redirectedTo, "pj_promo")
-        XCTAssertEqual(vm.page?.project.id, "pj_promo")
+        XCTAssertEqual(vm.redirectedTo, "pj_docs")
+        XCTAssertEqual(vm.page?.project.id, "pj_docs")
         XCTAssertFalse(vm.isMissing)
         await vm.loadHistory()
         await vm.refresh()
-        XCTAssertEqual(fake.pageCalls, ["pj_old", "pj_promo"], "later reads ask for the project it became")
-        XCTAssertEqual(fake.historyCalls, ["pj_promo:nil", "pj_promo:nil"])
-        XCTAssertEqual(vm.redirectedTo, "pj_promo", "the redirect stays said")
+        XCTAssertEqual(fake.pageCalls, ["pj_old", "pj_docs"], "later reads ask for the project it became")
+        XCTAssertEqual(fake.historyCalls, ["pj_docs:nil", "pj_docs:nil"])
+        XCTAssertEqual(vm.redirectedTo, "pj_docs", "the redirect stays said")
     }
 
     func testAFailedRefreshKeepsThePreviousPageAndSetsError() async {
@@ -232,7 +232,7 @@ final class ProjectSummaryViewModelTests: XCTestCase {
         await vm.refreshPage()
         XCTAssertEqual(vm.page?.sentence, "Tickets are on sale.")
         XCTAssertEqual(vm.history.map(\.week), ["2026-11-02", "2026-10-26"])
-        XCTAssertEqual(fake.historyCalls, ["pj_promo:nil", "pj_promo:2026-11-02"], "no history read")
+        XCTAssertEqual(fake.historyCalls, ["pj_docs:nil", "pj_docs:2026-11-02"], "no history read")
         fake.page = .failure(JournalAPIError.forbidden)
         await vm.refreshPage()
         XCTAssertEqual(vm.error, JournalAPIError.forbidden.localizedDescription)
@@ -250,7 +250,7 @@ final class ProjectSummaryViewModelTests: XCTestCase {
         await vm.loadMoreHistory()
         await vm.loadHistoryIfNeeded()
         XCTAssertEqual(vm.history.map(\.week), ["2026-11-02", "2026-10-26"])
-        XCTAssertEqual(fake.historyCalls, ["pj_promo:nil", "pj_promo:2026-11-02"])
+        XCTAssertEqual(fake.historyCalls, ["pj_docs:nil", "pj_docs:2026-11-02"])
         await vm.refresh()
         XCTAssertEqual(vm.history.map(\.week), ["2026-11-02"], "a pull to refresh starts over")
     }

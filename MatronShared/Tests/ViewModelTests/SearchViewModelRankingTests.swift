@@ -144,27 +144,27 @@ final class SearchViewModelRankingTests: XCTestCase {
     /// by its `<uuid>:sub:<agent>` id.
     func test_hitTitle_namesSubagentChatsByParentAndTask() async {
         let service = ScriptedSearchService()
-        await service.script("refund", .init(groups: [group("main:sub:a1"), group("gone:sub:b2"), group("lost")]))
+        await service.script("export", .init(groups: [group("main:sub:a1"), group("gone:sub:b2"), group("lost")]))
         let lookup: SearchViewModel.ConversationLookup = { id in
             switch id {
-            case "main:sub:a1": return .init(title: "Build partial refund feature", parentID: "main")
-            case "gone:sub:b2": return .init(title: "Review refund PR", parentID: "gone")
+            case "main:sub:a1": return .init(title: "Build the invoice export feature", parentID: "main")
+            case "gone:sub:b2": return .init(title: "Review export PR", parentID: "gone")
             case "gone": return .init(title: "Old parent", parentID: nil)
             default: return nil
             }
         }
-        let vm = SearchViewModel(search: service, allChats: [chat("main", "Refund tool")],
+        let vm = SearchViewModel(search: service, allChats: [chat("main", "Export tool")],
                                  debounce: .zero, lookupConversation: lookup)
-        vm.query = "refund"
+        vm.query = "export"
         await vm.search()
 
         let listedParent = vm.hitTitle(for: "main:sub:a1")
-        XCTAssertEqual(listedParent.title, "Refund tool")
-        XCTAssertEqual(listedParent.subChatTitle, "Build partial refund feature")
+        XCTAssertEqual(listedParent.title, "Export tool")
+        XCTAssertEqual(listedParent.subChatTitle, "Build the invoice export feature")
 
         let unlistedParent = vm.hitTitle(for: "gone:sub:b2")
         XCTAssertEqual(unlistedParent.title, "Old parent")
-        XCTAssertEqual(unlistedParent.subChatTitle, "Review refund PR")
+        XCTAssertEqual(unlistedParent.subChatTitle, "Review export PR")
 
         let unknown = vm.hitTitle(for: "lost")
         XCTAssertEqual(unknown.title, "Unknown conversation")

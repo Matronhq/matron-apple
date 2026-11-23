@@ -57,7 +57,7 @@ final class PersonConsentCardTests: XCTestCase {
             "kind": "mission_share", "direction": direction, "grant_id": "gr_1", "level": "read",
             "owner": ["user_id": 1, "name": "alice"],
             "grantee": ["name": "bob", "address": "bob"],
-            "mission": ["id": "m_1", "num": 4, "title": "Cover editor"],
+            "mission": ["id": "m_1", "num": 4, "title": "Theme editor"],
             "preview": ["milestones": 2, "items": 3, "comments": 0, "attachments": 0],
         ]
     }
@@ -66,7 +66,7 @@ final class PersonConsentCardTests: XCTestCase {
         let card = try XCTUnwrap(PersonConsentCard.parse(payload: share("out")))
         XCTAssertEqual(card.kind, .missionShare)
         XCTAssertEqual(card.personName, "bob")
-        XCTAssertEqual(card.missionTitle, "Cover editor")
+        XCTAssertEqual(card.missionTitle, "Theme editor")
         XCTAssertEqual(card.consentLink, .share(id: "gr_1"))
         XCTAssertEqual(card.consentKind, "share")
         XCTAssertEqual(card.headline, "Your agent asks to share a mission with bob, read-only.")
@@ -100,7 +100,7 @@ final class PersonConsentCardTests: XCTestCase {
         var payload: [String: Any] = [
             "kind": "person_room", "direction": direction, "room_link_id": "pr_1",
             "person": ["name": direction == "out" ? "bob" : "alice"],
-            "session_title": "cover work", "topic": "the cover editor", "justification": "needs a second view",
+            "session_title": "theme work", "topic": "the theme editor", "justification": "needs a second view",
             "mission": NSNull(),
         ]
         if let talk { payload["talk"] = talk }
@@ -113,8 +113,8 @@ final class PersonConsentCardTests: XCTestCase {
         XCTAssertEqual(card.kind, .personRoom)
         XCTAssertFalse(card.talk)
         XCTAssertEqual(card.personName, "bob")
-        XCTAssertEqual(card.topic, "the cover editor")
-        XCTAssertEqual(card.sessionTitle, "cover work")
+        XCTAssertEqual(card.topic, "the theme editor")
+        XCTAssertEqual(card.sessionTitle, "theme work")
         XCTAssertNil(card.missionTitle, "a JSON null mission is no mission")
         XCTAssertEqual(card.consentLink, .room(id: "pr_1"))
         XCTAssertEqual(card.consentKind, "room")
@@ -124,10 +124,10 @@ final class PersonConsentCardTests: XCTestCase {
 
     func testIncomingRoom() throws {
         let card = try XCTUnwrap(PersonConsentCard.parse(payload: room("in", extra: [
-            "mission": ["num": NSNull(), "title": "Cover editor"],
+            "mission": ["num": NSNull(), "title": "Theme editor"],
         ])))
         XCTAssertEqual(card.personName, "alice")
-        XCTAssertEqual(card.missionTitle, "Cover editor")
+        XCTAssertEqual(card.missionTitle, "Theme editor")
         XCTAssertEqual(card.headline, "alice's agent wants to talk with your agent.")
     }
 
@@ -142,7 +142,7 @@ final class PersonConsentCardTests: XCTestCase {
         XCTAssertNil(card.sessionTitle)
         XCTAssertEqual(card.title, "Talk request")
         XCTAssertEqual(card.headline, "alice's agent wants to talk.")
-        XCTAssertEqual(card.topic, "the cover editor")
+        XCTAssertEqual(card.topic, "the theme editor")
     }
 
     func testOutgoingTalkRequest() throws {

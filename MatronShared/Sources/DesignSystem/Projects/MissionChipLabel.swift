@@ -6,7 +6,7 @@ import MatronModels
 /// a Menu (Mac) or a Button opening `ConversationMissionsList` (iOS).
 public struct MissionChipLabel: View {
     let missions: ConversationMissions
-    /// "⚑ #4791 +2": the mission's number without its name — the narrowest
+    /// "⚑ #2171 +2": the mission's number without its name — the narrowest
     /// the chip gets, for a host short of room (the Mac header).
     let numberOnly: Bool
     /// The conversation's displayed title. A mission-named conversation's

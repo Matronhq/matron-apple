@@ -188,11 +188,11 @@ final class VoiceTypesTests: XCTestCase {
         XCTAssertEqual(VoicePhrases.reading(reply, inQueue: false), "The deploy finished.")
         XCTAssertEqual(VoicePhrases.reading(reply, inQueue: true), "Auth refactor. The deploy finished.")
 
-        let item = VoiceEntry.item(VoiceItem(id: "it_1", kind: .decision, convoID: "c1", title: "Ship the promo page",
-                                             labels: ["Go", "Wait"]), convoTitle: "Promo")
-        XCTAssertEqual(VoicePhrases.reading(item, inQueue: true), "A decision: Ship the promo page. Options: Go, Wait.")
+        let item = VoiceEntry.item(VoiceItem(id: "it_1", kind: .decision, convoID: "c1", title: "Ship the docs page",
+                                             labels: ["Go", "Wait"]), convoTitle: "Docs")
+        XCTAssertEqual(VoicePhrases.reading(item, inQueue: true), "A decision: Ship the docs page. Options: Go, Wait.")
         let secret = VoiceEntry.item(VoiceItem(id: "it_2", kind: .question, convoID: "c1", title: "AWS key", needsScreen: true),
-                                     convoTitle: "Promo")
+                                     convoTitle: "Docs")
         XCTAssertEqual(VoicePhrases.reading(secret, inQueue: true), "That one needs the screen. It's in your tracker.")
 
         let ask = VoiceEntry.prompt(VoicePrompt(convoID: "c1", seq: 9, question: "Which database?",

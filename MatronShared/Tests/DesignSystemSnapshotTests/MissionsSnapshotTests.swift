@@ -53,13 +53,13 @@ final class MissionsSnapshotTests: XCTestCase {
         XCTAssertEqual(MissionNotice.text(for: closed), "🏁 Mission #61 · Missions & milestones closed over #64, #70")
         let updated = MissionMarkerEvent(missionID: "ms_1", num: 61, title: "Renamed", action: .updated, by: .agent)
         XCTAssertEqual(MissionNotice.text(for: updated), "🏁 Mission #61 renamed · Renamed")
-        let left = MissionMarkerEvent(missionID: "ms_1", num: 61, title: "Promo", action: .left, by: .agent)
-        XCTAssertEqual(MissionNotice.text(for: left), "🏁 Left mission #61 · Promo")
+        let left = MissionMarkerEvent(missionID: "ms_1", num: 61, title: "Docs", action: .left, by: .agent)
+        XCTAssertEqual(MissionNotice.text(for: left), "🏁 Left mission #61 · Docs")
         let now = MissionMarkerEvent(missionID: "ms_1", num: 61, title: nil, action: .currentChanged, by: .agent)
         XCTAssertEqual(MissionNotice.text(for: now), "🏁 Now on mission #61")
-        let moved = MissionMarkerEvent(missionID: "ms_1", num: 61, title: "Promo", action: .updated, by: .user,
+        let moved = MissionMarkerEvent(missionID: "ms_1", num: 61, title: "Docs", action: .updated, by: .user,
                                        projectChanged: true)
-        XCTAssertEqual(MissionNotice.text(for: moved), "🏁 Mission #61 · Promo changed project")
+        XCTAssertEqual(MissionNotice.text(for: moved), "🏁 Mission #61 · Docs changed project")
     }
 
     /// The close confirmation's title, on the symbol the user actually
@@ -134,35 +134,35 @@ final class MissionsSnapshotTests: XCTestCase {
     func testMissionDetailWithProjectStatusAndConversations() {
         let now = Date(timeIntervalSince1970: 1_700_000_600)
         let withStatus = Mission(
-            id: "ms_1", num: 4907, title: "Launch day: Wed 7 Oct 07:00", originConvoID: "c1",
+            id: "ms_1", num: 2173, title: "Launch day: rehearsal, then the switch-over", originConvoID: "c1",
             createdAt: Date(timeIntervalSince1970: 1_699_000_000), updatedAt: now,
-            needsYou: 1, status: "Branch green; S7 confirmed, robots.txt in the purge.", statusBy: .agent,
+            needsYou: 1, status: "Staging is green; the redirects are checked.", statusBy: .agent,
             statusUpdatedAt: Date(timeIntervalSince1970: 1_700_000_000), projectID: "pj_1")
         let milestones = (0..<8).map { i in
             Milestone(id: "ml_\(i)", missionID: "ms_1", num: 100 + i, kind: .progress, title: "Step \(i)",
                       convoID: "c1", seq: Int64(i), createdAt: Date(timeIntervalSince1970: 1_700_000_000 - Double(i) * 600))
         }
         let model = MissionDetailView.Model(
-            mission: withStatus, project: Project(id: "pj_1", num: 4000, title: "Promo launch"),
+            mission: withStatus, project: Project(id: "pj_1", num: 2100, title: "Docs site launch"),
             milestones: milestones, sessionTags: [:],
             openItems: [TrackerItem(id: "it_1", num: 64, kind: .question, awaiting: .user,
-                                    title: "Cloudflare: page rule for /blog", originConvoID: "c1"),
-                        TrackerItem(id: "it_2", num: 65, kind: .task, awaiting: .agent, title: "Purge list", originConvoID: "c1")],
+                                    title: "Which pages does search leave out?", originConvoID: "c1"),
+                        TrackerItem(id: "it_2", num: 65, kind: .task, awaiting: .agent, title: "Redirect list", originConvoID: "c1")],
             conversations: [
-                MissionConversation(id: "c1", title: "sales-chat launch coordination", box: "slate", state: "waiting",
+                MissionConversation(id: "c1", title: "launch-day coordination", box: "slate", state: "waiting",
                                     isCurrent: true, joinedAt: Date(timeIntervalSince1970: 1_699_500_000), how: "origin",
                                     subchatCount: 6,
-                                    otherMissions: [MissionOtherLink(id: "ms_4791", num: 4791, title: "Promo branch",
+                                    otherMissions: [MissionOtherLink(id: "ms_2171", num: 2171, title: "Docs search",
                                                                      isCurrent: true,
                                                                      joinedAt: Date(timeIntervalSince1970: 1_699_300_000))]),
-                MissionConversation(id: "c2", title: "SEO rows for launch", box: "slate", state: "done",
+                MissionConversation(id: "c2", title: "Analytics for launch", box: "slate", state: "done",
                                     joinedAt: Date(timeIntervalSince1970: 1_699_400_000),
                                     endedAt: Date(timeIntervalSince1970: 1_699_490_000),
-                                    otherMissions: [MissionOtherLink(id: "ms_4905", num: 4905, title: "SEO phase 2",
+                                    otherMissions: [MissionOtherLink(id: "ms_2174", num: 2174, title: "Docs site analytics",
                                                                      isCurrent: true,
                                                                      joinedAt: Date(timeIntervalSince1970: 1_699_490_000))]),
             ],
-            moveTargets: [Project(id: "pj_1", num: 4000, title: "Promo launch")],
+            moveTargets: [Project(id: "pj_1", num: 2100, title: "Docs site launch")],
             showOnlyUserInput: false, closeSummary: "", isBusy: false)
         assertVariants(of: MissionDetailView(model: model, onToggleUserInputOnly: { _ in }, onOpenMilestone: { _ in },
                                              onOpenItem: { _ in }, onOpenConversation: { _ in }, onEditCloseSummary: { _ in },
@@ -178,7 +178,7 @@ final class MissionsSnapshotTests: XCTestCase {
             MissionConversation(id: "c1", title: "merge queue", box: "box-2", state: "running",
                                 isCurrent: true, joinedAt: Date(timeIntervalSince1970: 1_699_500_000), how: "origin"),
         ]
-        let room = MissionRoom(id: "r1", title: "PR 8693 review", sessionState: "waiting",
+        let room = MissionRoom(id: "r1", title: "Search changes review", sessionState: "waiting",
                                lastActivity: Date(timeIntervalSince1970: 1_699_000_000),
                                participantConvoIDs: ["c1", "c9"])
         let groups = MissionConversationGroups(conversations: conversations, missionState: .open, rooms: [room])

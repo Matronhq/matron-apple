@@ -74,7 +74,7 @@ final class LocalMemoriesViewModelTests: XCTestCase {
 
     func test_start_asksOnlyOnlineBoxes_andListsTheRestAsAsleep() async {
         let fake = FakeBoxes()
-        fake.devicesResult = .success([box(1, "alder"), box(2, "pat", connected: false),
+        fake.devicesResult = .success([box(1, "alder"), box(2, "box-a", connected: false),
                                        box(9, "Alice's iPhone", kind: "client")])
         fake.handler = { _, _, _ in
             ok(["home": "/home/alice",
@@ -87,8 +87,8 @@ final class LocalMemoriesViewModelTests: XCTestCase {
 
         XCTAssertEqual(Set(fake.requests.map(\.boxID)), [1], "an asleep box is never asked: asking would wake it")
         XCTAssertEqual(fake.requests.first?.method, "local_memories")
-        XCTAssertEqual(vm.boxes.map(\.name), ["alder", "pat"], "only boxes, sorted by name")
-        XCTAssertEqual(vm.asleepBoxNames, ["pat"])
+        XCTAssertEqual(vm.boxes.map(\.name), ["alder", "box-a"], "only boxes, sorted by name")
+        XCTAssertEqual(vm.asleepBoxNames, ["box-a"])
         XCTAssertFalse(vm.isLoading)
         XCTAssertEqual(vm.groups.map(\.title), ["app", "Global CLAUDE.md"])
         XCTAssertEqual(vm.groups[0].path, "~/app")
@@ -338,11 +338,11 @@ final class MemoryOverlapIndexTests: XCTestCase {
 
     func test_match_namesTheJournalMemorySharingMostWords() {
         let index = MemoryOverlapIndex(memories: [
-            journal("merge-queue-owns-merges", "yearly-app merges run in batches through slate's merge queue"),
-            journal("prod-deploys-only-via-ship-box", "Production deploys only from ship-box, as the batch deploy"),
+            journal("release-notes-in-every-pr", "acme-app pull requests each carry a short release-notes line"),
+            journal("screenshots-light-and-dark", "Screenshots show the app in both the light and the dark theme"),
         ])
-        XCTAssertEqual(index.match("Merge queue: merges run in one batch, one CI run per queue"),
-                       "merge-queue-owns-merges")
+        XCTAssertEqual(index.match("Release notes: one release-notes line in each pull request"),
+                       "release-notes-in-every-pr")
         XCTAssertNil(index.match("Lint dies silently next to the test runner or a bloated web container"))
     }
 
@@ -408,14 +408,14 @@ final class LocalMemoriesSectionTests: XCTestCase {
 
     private func viewModel(memories count: Int) async -> LocalMemoriesViewModel {
         let fake = FakeBoxes()
-        fake.devicesResult = .success([box(1, "alder"), box(2, "aspen"), box(3, "pat", connected: false)])
+        fake.devicesResult = .success([box(1, "alder"), box(2, "aspen"), box(3, "box-a", connected: false)])
         fake.handler = { id, _, _ in
             if id == 2 {
                 return ok(["home": "/home/alice", "claude_md": [],
                            "projects": [projectJSON("-home-alice-app", path: "/home/alice/app", memories: [memoryJSON("z.md")])]])
             }
-            var memories = [memoryJSON("queue.md", title: "Merge queue: single CI run",
-                                       description: "Merges run in one batch through the merge queue")]
+            var memories = [memoryJSON("notes.md", title: "Release notes: one line per PR",
+                                       description: "Each pull request carries one release-notes line")]
             memories += (1..<count).map { memoryJSON("m\($0).md") }
             return ok(["home": "/home/alice",
                        "claude_md": [["path": "/home/alice/.claude/CLAUDE.md", "size": 1203, "mtime": 1],
@@ -430,9 +430,9 @@ final class LocalMemoriesSectionTests: XCTestCase {
 
     func test_section_listsTheSelectedBoxsFirstRows_withChipsOverlapAndFooter() async {
         let vm = await viewModel(memories: 12)
-        let train = journal("merge-queue-owns-merges", "yearly-app merges run in batches through slate's merge queue")
+        let notes = journal("release-notes-in-every-pr", "acme-app pull requests each carry a short release-notes line")
         let selected = LocalMemoryRef(boxID: 1, path: "/home/alice/app/CLAUDE.md")
-        let section = vm.section(journal: [train], selected: selected)
+        let section = vm.section(journal: [notes], selected: selected)
 
         XCTAssertEqual(section.groups.map(\.title), ["app", "Global CLAUDE.md"])
         let app = section.groups[0]
@@ -446,11 +446,11 @@ final class LocalMemoriesSectionTests: XCTestCase {
         XCTAssertEqual(app.rows[0].title, "CLAUDE.md", "the repo's CLAUDE.md leads its memories")
         XCTAssertEqual(app.rows[0].summary, "Repo instructions · 30 KB")
         XCTAssertTrue(app.rows[0].isSelected)
-        XCTAssertEqual(app.rows[1].title, "Merge queue: single CI run")
-        XCTAssertEqual(app.rows[1].overlap, "merge-queue-owns-merges")
+        XCTAssertEqual(app.rows[1].title, "Release notes: one line per PR")
+        XCTAssertEqual(app.rows[1].overlap, "release-notes-in-every-pr")
         XCTAssertNil(app.rows[2].overlap)
         XCTAssertTrue(section.groups[1].rows.isEmpty, "a closed group builds no rows")
-        XCTAssertEqual(section.boxNotes, ["Asleep: pat. Wake a box to read its memories."])
+        XCTAssertEqual(section.boxNotes, ["Asleep: box-a. Wake a box to read its memories."])
 
         vm.showAll(in: app.id)
         XCTAssertEqual(vm.section(journal: nil).groups[0].rows.count, 13)
@@ -467,10 +467,10 @@ final class LocalMemoriesSectionTests: XCTestCase {
 
     func test_overlapForRef_isForMemoriesOnly() async {
         let vm = await viewModel(memories: 1)
-        let train = journal("merge-queue-owns-merges", "yearly-app merges run in batches through slate's merge queue")
-        XCTAssertEqual(vm.overlap(for: LocalMemoryRef(boxID: 1, path: "/home/alice/.claude/projects/-home-alice-app/memory/queue.md"),
-                                  journal: [train]), "merge-queue-owns-merges")
-        XCTAssertNil(vm.overlap(for: LocalMemoryRef(boxID: 1, path: "/home/alice/app/CLAUDE.md"), journal: [train]))
+        let notes = journal("release-notes-in-every-pr", "acme-app pull requests each carry a short release-notes line")
+        XCTAssertEqual(vm.overlap(for: LocalMemoryRef(boxID: 1, path: "/home/alice/.claude/projects/-home-alice-app/memory/notes.md"),
+                                  journal: [notes]), "release-notes-in-every-pr")
+        XCTAssertNil(vm.overlap(for: LocalMemoryRef(boxID: 1, path: "/home/alice/app/CLAUDE.md"), journal: [notes]))
     }
 }
 
@@ -544,15 +544,15 @@ final class LocalMemoriesEmptyNoteTests: XCTestCase {
     /// Online boxes that list nothing, beside asleep ones, are not "none
     /// of your boxes is online" (Bugbot, PR 318).
     func test_boxesThatAnsweredWithNothing_sayJustThat_whateverTheOthersDo() {
-        XCTAssertEqual(section(answered: 2, asleep: ["pat"]).emptyNote, LocalMemoriesSection.noMemoriesText)
+        XCTAssertEqual(section(answered: 2, asleep: ["box-a"]).emptyNote, LocalMemoriesSection.noMemoriesText)
         XCTAssertEqual(section(answered: 1, outdated: ["juno"], failed: ["slate"]).emptyNote,
                        LocalMemoriesSection.noMemoriesText)
     }
 
     func test_noBoxAnswered() {
-        XCTAssertEqual(section(asleep: ["pat", "reef"]).emptyNote, LocalMemoriesSection.noneOnlineText)
+        XCTAssertEqual(section(asleep: ["box-a", "reef"]).emptyNote, LocalMemoriesSection.noneOnlineText)
         XCTAssertEqual(section().emptyNote, LocalMemoriesSection.noBoxesText)
-        XCTAssertNil(section(asleep: ["pat"], failed: ["slate"]).emptyNote, "the box notes already say why")
+        XCTAssertNil(section(asleep: ["box-a"], failed: ["slate"]).emptyNote, "the box notes already say why")
         XCTAssertNil(section(outdated: ["juno"]).emptyNote)
     }
 

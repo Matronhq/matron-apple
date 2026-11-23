@@ -298,7 +298,7 @@ final class VoiceModeRunnerTests: XCTestCase {
     func testAnItemActionGoesThroughTheSenderAndTheRecordingIsDropped() async {
         let runner = makeRunner()
         let item = VoiceEntry.item(VoiceItem(id: "it_1", kind: .decision, convoID: "c2", title: "Ship it", labels: ["Go", "Wait"]),
-                                   convoTitle: "Promo")
+                                   convoTitle: "Docs")
         runner.start(.queue(entries: [item], lastConvoID: "c1", lastTitle: "T", lastBoxName: nil))
         await drain(runner)
         XCTAssertEqual(player.spoken, ["One thing needs you. A decision: Ship it. Options: Go, Wait."])

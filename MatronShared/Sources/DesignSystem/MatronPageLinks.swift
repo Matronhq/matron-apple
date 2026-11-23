@@ -4,7 +4,7 @@ import MatronModels
 // Mission and project links.
 //
 // Agents link a mission or a project the way they link a tracker item —
-// `[#61](matron://mission/61)`, `[Promo](matron://project/12)` — and, like
+// `[#61](matron://mission/61)`, `[Docs](matron://project/12)` — and, like
 // every `matron://` link, a tap resolves in-app: the scheme is registered
 // with nothing (`MatronItemLink`). A renderer routes the tap through the
 // `\.openPageLink` environment action, installed once per window/shell by

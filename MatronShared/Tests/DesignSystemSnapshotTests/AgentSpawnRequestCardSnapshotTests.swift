@@ -15,7 +15,7 @@ final class AgentSpawnRequestCardSnapshotTests: XCTestCase {
         requestID: "spawn-1", fromDeviceID: 4, fromName: "lab-mac",
         fromConvoID: "69abc", fromConvoTitle: "69 text carry and fitting parity",
         targetDeviceID: 9, targetName: "box-2",
-        workdir: "~/yearly-app", task: "Run the failing spec and report back.",
+        workdir: "~/acme-app", task: "Run the failing spec and report back.",
         topic: "ci triage")
 
     private func card(state: AgentSpawnCardState) -> some View {

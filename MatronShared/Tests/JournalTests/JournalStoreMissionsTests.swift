@@ -305,13 +305,13 @@ final class JournalStoreMissionsTests: XCTestCase {
         try store.upsertMissions([
             Mission(id: "ms_1", num: 61, title: "M61", originConvoID: "c1",
                     createdAt: Date(timeIntervalSince1970: 1), updatedAt: Date(timeIntervalSince1970: 2),
-                    name: "Promo"),
+                    name: "Docs"),
             mission("ms_2", num: 62, convo: "c2"),
         ])
-        XCTAssertEqual(try store.mission(id: "ms_1")?.name, "Promo")
+        XCTAssertEqual(try store.mission(id: "ms_1")?.name, "Docs")
         XCTAssertNil(try store.mission(id: "ms_2")?.name)
         try store.replaceMissionConversations(missionID: "ms_1", [
-            MissionConversation(id: "c1", title: "[b5] Promo", box: nil, state: "running", autoTitle: "[b5] Fix URLs"),
+            MissionConversation(id: "c1", title: "[b5] Docs", box: nil, state: "running", autoTitle: "[b5] Fix URLs"),
             MissionConversation(id: "c2", title: "Other", box: nil, state: "idle"),
         ])
         let rows = try store.missionConversations(missionID: "ms_1")

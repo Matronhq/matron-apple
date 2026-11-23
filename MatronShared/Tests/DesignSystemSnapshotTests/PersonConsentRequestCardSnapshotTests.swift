@@ -23,7 +23,7 @@ final class PersonConsentRequestCardSnapshotTests: XCTestCase {
 
     func test_incomingTalk() {
         let talk = PersonConsentCard(kind: .personRoom, direction: .incoming, personName: "alice",
-                                     askID: "pr_1", topic: "the cover editor", talk: true,
+                                     askID: "pr_1", topic: "the theme editor", talk: true,
                                      mirror: .open(itemID: "it_2"))
         assertVariants(of: card(talk), named: "peopleCard_incomingTalk")
     }

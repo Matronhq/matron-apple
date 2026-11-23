@@ -41,7 +41,7 @@ final class ForYouTypingPerfHarness: XCTestCase {
     }
 
     static let words = ["proxy", "timeout", "deploy", "parser", "review", "invoice", "screenshot", "journal",
-                        "keyboard", "search", "release", "summary", "budget", "printer", "cover", "upload"]
+                        "keyboard", "search", "release", "summary", "budget", "theme", "palette", "upload"]
 
     static func items(_ count: Int, prefix: String, state: ItemState) -> [TrackerItem] {
         let t0 = Date(timeIntervalSince1970: 1_790_000_000)

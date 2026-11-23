@@ -4,9 +4,9 @@ import MatronModels
 
 final class ProjectModelTests: XCTestCase {
     static let projectJSON: [String: Any] = [
-        "id": "pj_1", "num": 4000, "state": "open", "title": "Promo launch",
-        "body": "New promo site, blog and pricing page.",
-        "status": "Launch Wed 7 Oct, 07:00.", "status_by": "agent", "status_updated_at": 1_700_000_006_000,
+        "id": "pj_1", "num": 2100, "state": "open", "title": "Docs site launch",
+        "body": "New docs site, search and a getting-started guide.",
+        "status": "Launch on Wednesday morning.", "status_by": "agent", "status_updated_at": 1_700_000_006_000,
         "close_summary": NSNull(), "closed_at": NSNull(), "merged_into": NSNull(),
         "origin_convo_id": "c-coord", "created_by": "agent",
         "created_at": 1_700_000_000_000, "updated_at": 1_700_000_006_000,
@@ -16,16 +16,16 @@ final class ProjectModelTests: XCTestCase {
 
     func testProjectDecodesAListRow() throws {
         let p = try XCTUnwrap(Project(json: Self.projectJSON))
-        XCTAssertEqual(p.id, "pj_1"); XCTAssertEqual(p.num, 4000); XCTAssertEqual(p.state, .open)
-        XCTAssertEqual(p.title, "Promo launch")
-        XCTAssertEqual(p.status, "Launch Wed 7 Oct, 07:00.")
+        XCTAssertEqual(p.id, "pj_1"); XCTAssertEqual(p.num, 2100); XCTAssertEqual(p.state, .open)
+        XCTAssertEqual(p.title, "Docs site launch")
+        XCTAssertEqual(p.status, "Launch on Wednesday morning.")
         XCTAssertEqual(p.statusBy, .agent)
         XCTAssertEqual(p.statusUpdatedAt, Date(timeIntervalSince1970: 1_700_000_006))
         XCTAssertEqual(p.missions, ProjectMissionCounts(running: 2, waiting: 2, idle: 0, quiet: 1, closed: 3))
         XCTAssertEqual(p.missions.open, 5)
         XCTAssertEqual(p.needsYou, 6); XCTAssertEqual(p.openItems, 37)
         XCTAssertEqual(p.lastActivityAt, Date(timeIntervalSince1970: 1_700_000_005))
-        XCTAssertEqual(p.label, "#4000 Promo launch")
+        XCTAssertEqual(p.label, "#2100 Docs site launch")
     }
 
     /// An older or partial row without the rollup keys decodes with zero

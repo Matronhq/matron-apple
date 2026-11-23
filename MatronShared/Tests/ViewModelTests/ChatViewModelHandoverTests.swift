@@ -20,7 +20,7 @@ private func handoverCard(_ direction: PersonConsentCard.Direction,
                           keepLevel: MissionHandoverDetails.KeepLevel = .read) -> PersonConsentCard {
     PersonConsentCard(kind: .missionHandover, direction: direction,
                       personName: direction == .outgoing ? "bob" : "alice", askID: "gr_9", level: "owner",
-                      handover: MissionHandoverDetails(subjectTitle: "Cover editor", brief: "Where it stands.",
+                      handover: MissionHandoverDetails(subjectTitle: "Theme editor", brief: "Where it stands.",
                                                        attachments: [.init(mediaID: "md_1", name: "proof.pdf"),
                                                                      .init(mediaID: "md_2", name: "cover.png")],
                                                        keepLevel: keepLevel),
