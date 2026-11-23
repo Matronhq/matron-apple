@@ -435,9 +435,15 @@ extension AppDependencies {
         let key = TimelineCacheKey(signInKey: session.signInKey, roomID: roomID)
         if let cached = timelineCache[key] { return cached }
         let core = core(for: session)
+        // Read when a history page is about to be indexed, so a page that
+        // arrives after sign-out stays out of the shared search index.
+        let stack = ObjectIdentifier(core)
         let service = JournalTimelineService(
             convoID: roomID, store: core.store, engine: core.engine,
-            api: core.api, session: session, search: search
+            api: core.api, session: session, search: search,
+            isSignInCurrent: { [weak self] in
+                await MainActor.run { self?.isCurrent(stack: stack, session: session) ?? false }
+            }
         )
         if isCurrent(core, session: session) { timelineCache[key] = service }
         return service

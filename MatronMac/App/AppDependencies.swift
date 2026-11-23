@@ -62,6 +62,10 @@ final class AppDependencies {
     func isCurrent(_ core: JournalCore, session: UserSession) -> Bool {
         cores[session.signInKey] === core
     }
+    /// `isCurrent(_:session:)` for a closure that must not hold the stack.
+    func isCurrent(stack: ObjectIdentifier, session: UserSession) -> Bool {
+        cores[session.signInKey].map { ObjectIdentifier($0) } == stack
+    }
     /// Read-state reporter per session (`SeenTracker`), created on first use
     /// and dropped with the cores on sign-out.
     private var seenTrackers: [String: SeenTracker] = [:]

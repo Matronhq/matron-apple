@@ -464,6 +464,28 @@ final class AppDependenciesTests: XCTestCase {
         XCTAssertFalse(deps.timelineCacheContains(session: old, roomID: "!room:s"))
     }
 
+    /// The check a timeline runs before indexing a history page: true for
+    /// the signed-in stack, false once it is signed out, and false for the
+    /// old stack after a new sign-in to the same account.
+    func test_stackCheck_followsSignOut() async throws {
+        deps = AppDependencies()
+        let old = signIn(device: "23", token: "old")
+        let stack = ObjectIdentifier(deps.core(for: old))
+        XCTAssertTrue(deps.isCurrent(stack: stack, session: old))
+
+        deps.signOut()
+        await deps.awaitPendingTeardown()
+        XCTAssertFalse(deps.isCurrent(stack: stack, session: old))
+        _ = deps.core(for: old)
+        XCTAssertFalse(deps.isCurrent(stack: stack, session: old),
+                       "a late call for the old sign-in gets an inert stack, not the old one back")
+
+        await deps.wipeLocalDataForFreshLogin()
+        let new = signIn(device: "26", token: "new")
+        XCTAssertTrue(deps.isCurrent(stack: ObjectIdentifier(deps.core(for: new)), session: new))
+        XCTAssertFalse(deps.isCurrent(stack: stack, session: new))
+    }
+
     /// Each sign-in has its own database file, so a fresh sign-in's wipe
     /// never deletes one a live stack holds open.
     func test_freshLoginWipe_keepsAFileALiveStackHolds() async throws {

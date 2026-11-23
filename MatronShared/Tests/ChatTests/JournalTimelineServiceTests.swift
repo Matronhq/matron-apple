@@ -410,6 +410,38 @@ final class JournalTimelineServiceTests: XCTestCase {
         XCTAssertEqual(indexed.first?.eventID, "8")
     }
 
+    /// A history page that arrives after the timeline's sign-in was signed
+    /// out still lands in the mirror, but never in the shared search index.
+    /// The check runs at write time: the service was built while signed in.
+    func testPaginateBackwardSkipsTheSearchIndexOnceSignedOut() async throws {
+        let store = try makeStore()
+        try store.applyJournal(JournalEvent(
+            seq: 10, convoID: "c1", ts: Date(), sender: "agent:a", type: "text",
+            payloadData: Data(#"{"body":"recent"}"#.utf8)))
+        PaginateStubURLProtocol.responses = [
+            "/convo/c1/messages": (200, """
+                {"events":[{"seq":8,"convo_id":"c1","ts":8000,"sender":"agent:a","type":"text","payload":{"body":"older msg"}}]}
+                """),
+        ]
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [PaginateStubURLProtocol.self]
+        let api = JournalAPI(serverURL: URL(string: "https://x")!, urlSession: URLSession(configuration: config))
+        let engine = makeEngine(store: store, connector: FakeJournalConnector([]), api: api)
+        let search = RecordingSearchService()
+        let signedIn = SignInFlag()
+        let service = JournalTimelineService(convoID: "c1", store: store, engine: engine, api: api,
+                                             session: makeSession(), search: search,
+                                             isSignInCurrent: { await signedIn.value })
+
+        await signedIn.set(false)
+        let hasMore = try await service.paginateBackward(requestSize: 20)
+
+        XCTAssertTrue(hasMore)
+        XCTAssertEqual(try store.events(convoID: "c1").map(\.seq), [8, 10])
+        let indexed = await search.indexed
+        XCTAssertTrue(indexed.isEmpty, "a signed-out sign-in's history must not reach the search index")
+    }
+
     func testPaginateBackwardReturnsFalseOnEmptyPage() async throws {
         let store = try makeStore()
         PaginateStubURLProtocol.responses = ["/convo/c1/messages": (200, #"{"events":[]}"#)]
@@ -1493,6 +1525,12 @@ private final class FakeJournalConnector: WebSocketConnecting, @unchecked Sendab
         guard !queue.isEmpty else { throw JournalConnectionError.socketClosed }
         return queue.removeFirst()
     }
+}
+
+/// A sign-in state the test can flip while a timeline holds it.
+private actor SignInFlag {
+    private(set) var value = true
+    func set(_ newValue: Bool) { value = newValue }
 }
 
 /// Records every `search.index(...)` call so `paginateBackward` tests can
