@@ -92,7 +92,7 @@ final class MemoriesSnapshotTests: XCTestCase {
         func ref(_ path: String) -> LocalMemoryRef { LocalMemoryRef(boxID: 1, path: path) }
         return LocalMemoriesSection(
             groups: [
-                .init(id: "yearly-app", title: "yearly-app", path: "~/yearly-app", countLine: "128 on 3 boxes",
+                .init(id: "acme-app", title: "acme-app", path: "~/acme-app", countLine: "128 on 3 boxes",
                       isExpanded: true,
                       chips: [.init(boxID: 1, name: "alder", count: 46, isSelected: true),
                               .init(boxID: 2, name: "aspen", count: 38, isSelected: false),
@@ -101,8 +101,8 @@ final class MemoriesSnapshotTests: XCTestCase {
                         .init(ref: ref("/c"), title: "CLAUDE.md", summary: "Repo instructions · 30 KB"),
                         .init(ref: ref("/a"), title: "Lint needs the box to itself",
                               summary: "dies silently next to the test runner; rerun alone", isSelected: true),
-                        .init(ref: ref("/b"), title: "Merge queue: single CI run",
-                              summary: "one CI run per batch, not per PR", overlap: "merge-queue-owns-merges"),
+                        .init(ref: ref("/b"), title: "Release notes: one line per PR",
+                              summary: "one release-notes line in every pull request", overlap: "release-notes-in-every-pr"),
                       ],
                       hiddenCount: 43, selectedBoxName: "alder"),
                 .init(id: "matron-bridge", title: "matron-bridge", path: "~/matron-bridge", countLine: "9 on 3 boxes",
@@ -110,7 +110,7 @@ final class MemoriesSnapshotTests: XCTestCase {
                 .init(id: LocalMemoryRepoGroup.globalID, title: "Global CLAUDE.md", path: "~/.claude/CLAUDE.md",
                       countLine: "3 boxes", isExpanded: false, chips: [], rows: []),
             ],
-            hasLoaded: true, isLoading: true, loadingBoxes: ["cove"], asleepBoxes: ["pat", "reef"],
+            hasLoaded: true, isLoading: true, loadingBoxes: ["cove"], asleepBoxes: ["box-a", "reef"],
             outdatedBoxes: ["juno"])
     }
 
@@ -134,18 +134,18 @@ final class MemoriesSnapshotTests: XCTestCase {
 
     func testLocalMemoryDetail() {
         let detail = LocalMemoryDetail(
-            boxName: "alder", title: "Merge queue: single CI run", repoTitle: "yearly-app",
-            shortPath: "~/.claude/projects/-home-alice-yearly-app/memory/merge-queue-single-ci-run.md",
+            boxName: "alder", title: "Release notes: one line per PR", repoTitle: "acme-app",
+            shortPath: "~/.claude/projects/-home-alice-acme-app/memory/release-notes-one-line.md",
             type: "project", modifiedAt: Date(timeIntervalSince1970: 1_790_500_000), isMemory: true,
-            overlap: "merge-queue-owns-merges",
-            text: .loaded("---\nname: merge-queue-single-ci-run\ndescription: one CI run per batch\n---\n\nThe merge queue runs **one** CI run per batch, not one per PR.\n\n**Why:** credits.\n\n**How to apply:** queue the PR and wait for the batch."))
+            overlap: "release-notes-in-every-pr",
+            text: .loaded("---\nname: release-notes-one-line\ndescription: one release-notes line per PR\n---\n\nEvery pull request carries **one** short release-notes line.\n\n**Why:** the changelog is built from them.\n\n**How to apply:** add the line to the PR description."))
         assertVariants(of: LocalMemoryDetailView(model: detail, onRetry: {}, onOpenJournalMemory: { _ in })
             .frame(width: 460, height: 520), named: "local-memory-detail")
     }
 
     func testLocalMemoryDetailFailed() {
-        let detail = LocalMemoryDetail(boxName: "alder", title: "CLAUDE.md", repoTitle: "yearly-app",
-                                       shortPath: "~/yearly-app/CLAUDE.md", isMemory: false,
+        let detail = LocalMemoryDetail(boxName: "alder", title: "CLAUDE.md", repoTitle: "acme-app",
+                                       shortPath: "~/acme-app/CLAUDE.md", isMemory: false,
                                        text: .failed("The box is asleep or offline."))
         assertVariants(of: LocalMemoryDetailView(model: detail, onRetry: {})
             .frame(width: 460, height: 300), named: "local-memory-detail-failed")

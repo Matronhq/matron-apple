@@ -58,11 +58,11 @@ final class NeedsYouQueueTests: XCTestCase {
     func testTitlesAndConversationNames() {
         let entries = NeedsYouQueue.build(
             prompts: [Self.permission(1), Self.permission(2, tool: "Edit"), Self.ask(3)],
-            items: [Self.item("it_a", num: 1, rank: 1, title: "Pricing page copy")],
-            conversations: [Self.convo("c1", unread: 0), Self.convo("c5", title: "[zz] Promo launch")],
+            items: [Self.item("it_a", num: 1, rank: 1, title: "Getting-started copy")],
+            conversations: [Self.convo("c1", unread: 0), Self.convo("c5", title: "[zz] Docs site launch")],
             now: Self.now)
         XCTAssertEqual(entries.map(\.title), [
-            "aspen wants to run a command", "aspen wants to use Edit", "Which database?", "Pricing page copy", "Promo launch",
+            "aspen wants to run a command", "aspen wants to use Edit", "Which database?", "Getting-started copy", "Docs site launch",
         ])
         XCTAssertEqual(entries[0].convoTitle, "Auth refactor", "the session short is not said")
         XCTAssertEqual(entries[3].convoTitle, "Chat c1", "an item names its origin conversation")
@@ -129,7 +129,7 @@ final class NeedsYouQueueTests: XCTestCase {
             event(1, convo: "c1", type: "convo_meta", payload: ["title": "[ab] Auth refactor"]),
             event(2, convo: "c1", type: "text", payload: ["body": "Done."]),
             event(3, convo: "c1", type: "session_status", payload: ["state": "waiting"]),
-            event(4, convo: "c2", type: "convo_meta", payload: ["title": "[cd] Promo"]),
+            event(4, convo: "c2", type: "convo_meta", payload: ["title": "[cd] Docs"]),
             event(5, convo: "c2", type: "prompt", payload: ["question": "Ship it?", "options": ["Yes", "No"]]),
         ])
         try store.upsertItems([Self.item("it_a", num: 7, rank: 1, convo: "c1", title: "Pick a colour")])

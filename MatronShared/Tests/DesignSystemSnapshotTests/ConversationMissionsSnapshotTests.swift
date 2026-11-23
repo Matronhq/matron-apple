@@ -7,11 +7,11 @@ final class ConversationMissionsSnapshotTests: XCTestCase {
     static let d26 = Date(timeIntervalSince1970: 1_758_844_800) // 26 Sep 2025 UTC
 
     static var missions: ConversationMissions {
-        let current = Mission(id: "ms_4791", num: 4791, title: "Promo branch: /proto design at the base URLs",
+        let current = Mission(id: "ms_2171", num: 2171, title: "Search on the docs site: the index and the results page",
                               originConvoID: "c1", projectID: "pj_1")
-        let also = Mission(id: "ms_4907", num: 4907, title: "Launch day: Wed 7 Oct 07:00", originConvoID: "c9",
+        let also = Mission(id: "ms_2173", num: 2173, title: "Launch day: rehearsal, then the switch-over", originConvoID: "c9",
                            projectID: "pj_1")
-        let earlier = Mission(id: "ms_4083", num: 4083, title: "Combined promo branch: gather and report",
+        let earlier = Mission(id: "ms_2172", num: 2172, title: "Move the old pages across: list and report",
                               originConvoID: "c1")
         return ConversationMissions(links: [
             ConversationMissionLink(mission: current, isCurrent: true, joinedAt: d26),
@@ -22,10 +22,10 @@ final class ConversationMissionsSnapshotTests: XCTestCase {
     }
 
     func testChipText() {
-        XCTAssertEqual(MissionChipLabel.text(Self.missions), "#4791 Promo branch: /proto design at the base URLs +2")
+        XCTAssertEqual(MissionChipLabel.text(Self.missions), "#2171 Search on the docs site: the index and the results page +2")
         XCTAssertNil(MissionChipLabel.text(ConversationMissions()))
         let one = ConversationMissions(links: [Self.missions.links[0]], snapshotCount: nil)
-        XCTAssertEqual(MissionChipLabel.text(one), "#4791 Promo branch: /proto design at the base URLs")
+        XCTAssertEqual(MissionChipLabel.text(one), "#2171 Search on the docs site: the index and the results page")
     }
 
     /// A mission-named conversation's title already says the mission
@@ -33,29 +33,29 @@ final class ConversationMissionsSnapshotTests: XCTestCase {
     /// `title`, past the `[xx]` short and marker, and past the journal's
     /// cut to 40 characters.
     func testChipDropsTheNameTheTitleAlreadySays() {
-        let promo = Self.missions.links[0].mission
+        let docsSite = Self.missions.links[0].mission
         func repeats(_ title: String?, _ mission: Mission? = nil) -> Bool {
-            MissionChipLabel.repeatsTitle(mission ?? promo, conversationTitle: title)
+            MissionChipLabel.repeatsTitle(mission ?? docsSite, conversationTitle: title)
         }
-        XCTAssertTrue(repeats("Promo branch: /proto design at the base URLs"))
-        XCTAssertTrue(repeats("[b5] Promo branch: /proto design at the base URLs"), "the raw title, short and all")
-        XCTAssertTrue(repeats("🐣 [b5] Promo branch: /proto design at the base URLs"), "a spawned session's marker")
-        XCTAssertTrue(repeats("Promo branch: /proto design at the base…"), "the journal's 40-character cut")
-        XCTAssertTrue(repeats("Promo branch:  /proto design at the base URLs "), "whitespace collapsed")
+        XCTAssertTrue(repeats("Search on the docs site: the index and the results page"))
+        XCTAssertTrue(repeats("[b5] Search on the docs site: the index and the results page"), "the raw title, short and all")
+        XCTAssertTrue(repeats("🐣 [b5] Search on the docs site: the index and the results page"), "a spawned session's marker")
+        XCTAssertTrue(repeats("Search on the docs site: the index and…"), "the journal's 40-character cut")
+        XCTAssertTrue(repeats("Search on the docs site:  the index and the results page "), "whitespace collapsed")
         XCTAssertFalse(repeats(nil))
         XCTAssertFalse(repeats(""))
         XCTAssertFalse(repeats("…"))
-        XCTAssertFalse(repeats("Promo branch"), "a different, shorter title")
-        XCTAssertFalse(repeats("Launch day: Wed 7 Oct…"), "a cut of some other title")
+        XCTAssertFalse(repeats("Docs search"), "a different, shorter title")
+        XCTAssertFalse(repeats("Launch day: rehearsal…"), "a cut of some other title")
         let named = Mission(id: "ms_9", num: 9, title: "A long mission title nobody reads", originConvoID: "c1",
-                            name: "Promo")
-        XCTAssertTrue(repeats("[b5] Promo", named), "matched on the mission's name")
-        XCTAssertFalse(repeats("[b5] Promo launch", named))
+                            name: "Docs")
+        XCTAssertTrue(repeats("[b5] Docs", named), "matched on the mission's name")
+        XCTAssertFalse(repeats("[b5] Docs site launch", named))
 
-        XCTAssertEqual(MissionChipLabel.text(Self.missions, conversationTitle: "[b5] Promo branch: /proto design at the base…"),
-                       "#4791 +2")
+        XCTAssertEqual(MissionChipLabel.text(Self.missions, conversationTitle: "[b5] Search on the docs site: the index and…"),
+                       "#2171 +2")
         XCTAssertEqual(MissionChipLabel.text(Self.missions, conversationTitle: "Something else"),
-                       "#4791 Promo branch: /proto design at the base URLs +2")
+                       "#2171 Search on the docs site: the index and the results page +2")
     }
 
     func testChip() {
@@ -63,7 +63,7 @@ final class ConversationMissionsSnapshotTests: XCTestCase {
     }
 
     func testMissionsList() {
-        let list = ConversationMissionsList(missions: Self.missions, projectTitles: ["pj_1": "Promo launch"],
+        let list = ConversationMissionsList(missions: Self.missions, projectTitles: ["pj_1": "Docs site launch"],
                                             onOpenMission: { _ in }, onOpenProject: { _ in })
             .environment(\.timeZone, TimeZone(identifier: "UTC")!)
         assertVariants(of: list.frame(width: 390, height: 620), named: "conversation-missions-list")
@@ -75,7 +75,7 @@ final class ConversationMissionsSnapshotTests: XCTestCase {
     /// Button sits behind `ProjectChip`'s opaque body), the chip present,
     /// and the row's open-mission tap on a gesture.
     func testTheRowIsNotAButtonSoTheChipGetsItsOwnTap() {
-        let row = ConversationMissionRow(link: Self.missions.links[0], projectTitles: ["pj_1": "Promo launch"],
+        let row = ConversationMissionRow(link: Self.missions.links[0], projectTitles: ["pj_1": "Docs site launch"],
                                          timeZone: TimeZone(identifier: "UTC")!,
                                          onOpenMission: { _ in }, onOpenProject: { _ in })
         let shape = String(reflecting: type(of: row.body))
@@ -86,7 +86,7 @@ final class ConversationMissionsSnapshotTests: XCTestCase {
 
     // MARK: iOS header subtitle (the workdir line stays)
 
-    static let longWorkdir = "pat · ~/Dev/yearly-app/worktrees/promo-integration-owner-2026-10-07"
+    static let longWorkdir = "box-a · ~/dev/acme-app/worktrees/docs-search-results-page-owner"
 
     private func subtitle(_ context: String?, _ missions: ConversationMissions, width: CGFloat) -> some View {
         ChatHeaderSubtitle(context: context, missions: missions, onTapChip: {})
@@ -95,9 +95,9 @@ final class ConversationMissionsSnapshotTests: XCTestCase {
 
     func testSubtitleFlags() {
         XCTAssertEqual(ChatHeaderSubtitle.contextMinWidth, 96)
-        XCTAssertEqual(ChatHeaderSubtitle.layout(context: "pat · ~/x", missions: Self.missions), .contextAndChip)
+        XCTAssertEqual(ChatHeaderSubtitle.layout(context: "box-a · ~/x", missions: Self.missions), .contextAndChip)
         XCTAssertEqual(ChatHeaderSubtitle.layout(context: nil, missions: Self.missions), .chipOnly)
-        XCTAssertEqual(ChatHeaderSubtitle.layout(context: "pat · ~/x", missions: ConversationMissions()), .contextOnly)
+        XCTAssertEqual(ChatHeaderSubtitle.layout(context: "box-a · ~/x", missions: ConversationMissions()), .contextOnly)
         XCTAssertEqual(ChatHeaderSubtitle.layout(context: nil, missions: ConversationMissions()), .none)
     }
 

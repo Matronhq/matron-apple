@@ -54,9 +54,9 @@ final class LookupAPITests: XCTestCase {
         XCTAssertEqual(milestone.mission, NumberLookup.MissionRef(id: "ms_1", num: 7))
 
         let merged = try JournalAPI.decodeLookup([
-            "kind": "project", "id": "pj_2", "num": 12, "title": "Promo", "merged_from": "pj_1",
+            "kind": "project", "id": "pj_2", "num": 12, "title": "Docs", "merged_from": "pj_1",
         ])
-        XCTAssertEqual(merged, NumberLookup(kind: .project, id: "pj_2", num: 12, title: "Promo", mergedFrom: "pj_1"))
+        XCTAssertEqual(merged, NumberLookup(kind: .project, id: "pj_2", num: 12, title: "Docs", mergedFrom: "pj_1"))
     }
 
     /// Another person's number names its owner.

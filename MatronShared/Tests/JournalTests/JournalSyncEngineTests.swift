@@ -851,7 +851,7 @@ class JournalSyncEngineTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(50))
 
         socket.serve(journalLine(2, convo: "cTop", type: "session_status")) // first frame, title unknown
-        let topMeta = #"{"kind":"journal","seq":3,"convo_id":"cTop","ts":3000,"sender":"agent:a","type":"convo_meta","payload":{"title":"yearly-app","parent_convo_id":null,"agent_device_id":8}}"#
+        let topMeta = #"{"kind":"journal","seq":3,"convo_id":"cTop","ts":3000,"sender":"agent:a","type":"convo_meta","payload":{"title":"acme-app","parent_convo_id":null,"agent_device_id":8}}"#
         socket.serve(topMeta)                                                // plain title → emit now
 
         let emitted = await iterator.next()

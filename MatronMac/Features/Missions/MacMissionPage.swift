@@ -238,7 +238,7 @@ struct MacMissionPageTopBar: View {
         if let store { _mode = AppStorage(wrappedValue: .overview, MacMissionPage.modeKey, store: store) }
     }
 
-    /// Projects › Promo launch › #4907 (spec §2 "Mission page").
+    /// Projects › Docs site launch › #2173 (spec §2 "Mission page").
     static func crumbs(mission: Mission?, project: Project?) -> [String] {
         ["Projects"] + [project?.title].compactMap { $0 } + [mission.map { "#\($0.num)" }].compactMap { $0 }
     }

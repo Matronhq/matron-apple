@@ -505,13 +505,13 @@ final class MarkdownCopyTests: XCTestCase {
     }
 
     func test_copy_boldNumber_copiesBareNumber() {
-        let view = makeCopyView("Order **16343** is ready.\n\nNext paragraph.")
+        let view = makeCopyView("Order **12345** is ready.\n\nNext paragraph.")
         let full = view.textStorage!.string as NSString
-        view.setSelectedRange(full.range(of: "16343"))
+        view.setSelectedRange(full.range(of: "12345"))
 
         view.copy(nil)
 
-        XCTAssertEqual(view.pasteboard.string(forType: .string), "16343")
+        XCTAssertEqual(view.pasteboard.string(forType: .string), "12345")
     }
 
     func test_copy_inlineCodeAndLink_copyWithoutDelimiters() {
@@ -546,13 +546,13 @@ final class MarkdownCopyTests: XCTestCase {
     }
 
     func test_copyAsMarkdown_shortSelection_keepsDelimiters() {
-        let view = makeCopyView("Order **16343** is ready.")
+        let view = makeCopyView("Order **12345** is ready.")
         let full = view.textStorage!.string as NSString
-        view.setSelectedRange(full.range(of: "16343"))
+        view.setSelectedRange(full.range(of: "12345"))
 
         view.copyAsMarkdown(nil)
 
-        XCTAssertEqual(view.pasteboard.string(forType: .string), "**16343**")
+        XCTAssertEqual(view.pasteboard.string(forType: .string), "**12345**")
     }
 
     func test_copyAsMarkdown_wholeMessage_copiesSourceVerbatim() {

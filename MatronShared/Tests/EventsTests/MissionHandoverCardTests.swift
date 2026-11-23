@@ -12,7 +12,7 @@ final class MissionHandoverCardTests: XCTestCase {
             "kind": "mission_handover", "direction": "out", "grant_id": "gr_9", "level": "owner",
             "owner": ["user_id": 1, "name": "alice"],
             "grantee": ["name": "bob", "address": "bob"],
-            "subject": ["kind": "mission", "id": "ms_1", "num": 42, "title": "Cover editor"],
+            "subject": ["kind": "mission", "id": "ms_1", "num": 42, "title": "Theme editor"],
             "brief": "  Where it stands: the editor ships.\nNext: the print proofs.  ",
             "preview": [
                 "missions": 1, "milestones": 4, "items": 6, "comments": 12,
@@ -31,7 +31,7 @@ final class MissionHandoverCardTests: XCTestCase {
             "kind": "mission_handover", "direction": "in", "grant_id": "gr_9", "level": "owner",
             "owner": ["user_id": 1, "name": "alice"],
             "grantee": ["name": "bob", "address": "bob"],
-            "subject": ["kind": "mission", "title": "Cover editor"],
+            "subject": ["kind": "mission", "title": "Theme editor"],
             "brief": "Where it stands.",
             "preview": ["missions": 1, "milestones": 4, "items": 6, "comments": 12, "attachments": 2],
         ]
@@ -48,7 +48,7 @@ final class MissionHandoverCardTests: XCTestCase {
         XCTAssertEqual(card.consentLink?.url, "matron://consent/handover/gr_9")
         XCTAssertEqual(card.title, "Mission hand-over")
         XCTAssertEqual(card.headline, "Your agent asks to hand this mission over to bob.")
-        XCTAssertEqual(card.missionTitle, "Cover editor")
+        XCTAssertEqual(card.missionTitle, "Theme editor")
 
         let handover = try XCTUnwrap(card.handover)
         XCTAssertEqual(handover.subjectKind, .mission)
@@ -170,7 +170,7 @@ final class MissionHandoverCardTests: XCTestCase {
         var payload: [String: Any] = [
             "kind": "mission_share", "direction": direction, "grant_id": "gr_1",
             "owner": ["user_id": 1, "name": "alice"], "grantee": ["name": "bob", "address": "bob"],
-            "mission": ["id": "m_1", "num": 4, "title": "Cover editor"],
+            "mission": ["id": "m_1", "num": 4, "title": "Theme editor"],
         ]
         if let level { payload["level"] = level }
         return payload

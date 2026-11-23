@@ -11,7 +11,7 @@ final class ProjectsSnapshotTests: XCTestCase {
     static func row(_ num: Int, _ title: String, activity: MissionActivity, status: String?, needsYou: Int = 0,
                     age: TimeInterval) -> MissionRowModel {
         MissionRowModel(mission: Mission(id: "ms_\(num)", num: num, title: title, originConvoID: "c1",
-                                         lastMilestone: MissionLastMilestone(num: num + 1, title: "PR 8601 merged",
+                                         lastMilestone: MissionLastMilestone(num: num + 1, title: "Search page merged",
                                                                              kind: .progress, createdAt: ago(86_400)),
                                          status: status),
                         activity: activity, needsYouCount: needsYou, lastActivity: ago(age))
@@ -43,11 +43,11 @@ final class ProjectsSnapshotTests: XCTestCase {
     func testNoStatusAndMissionLines() {
         XCTAssertEqual(ProjectsFormat.noStatusLine(latest: nil, now: Self.now), "No written status yet")
         XCTAssertEqual(ProjectsFormat.noStatusLine(
-            latest: MissionLastMilestone(num: 1, title: "PR 8270 final", kind: .progress, createdAt: Self.ago(3 * 3_600)),
-            now: Self.now), "No written status yet — latest: “PR 8270 final” (3h ago)")
-        let noStatus = Self.row(4083, "Combined promo branch", activity: .idle, status: nil, age: 86_400).mission
+            latest: MissionLastMilestone(num: 1, title: "Guide draft final", kind: .progress, createdAt: Self.ago(3 * 3_600)),
+            now: Self.now), "No written status yet — latest: “Guide draft final” (3h ago)")
+        let noStatus = Self.row(2172, "Move the old pages", activity: .idle, status: nil, age: 86_400).mission
         XCTAssertEqual(ProjectsFormat.missionLine(noStatus, now: Self.now),
-                       "No status · last milestone 1d ago: “PR 8601 merged”")
+                       "No status · last milestone 1d ago: “Search page merged”")
         let multi = Self.row(1, "T", activity: .idle, status: "Line one.\nLine two.", age: 60).mission
         XCTAssertEqual(ProjectsFormat.missionLine(multi, now: Self.now), "Line one. Line two.")
     }
@@ -71,8 +71,8 @@ final class ProjectsSnapshotTests: XCTestCase {
     }
 
     func testSessionsByBoxAndConversationSummary() {
-        XCTAssertEqual(ProjectsFormat.boxCounts(ProjectPageSections.boxCounts([], fallback: ["pat": 1, "slate": 2, "aspen": 1])),
-                       "slate 2 · aspen 1 · pat 1")
+        XCTAssertEqual(ProjectsFormat.boxCounts(ProjectPageSections.boxCounts([], fallback: ["box-a": 1, "slate": 2, "aspen": 1])),
+                       "slate 2 · aspen 1 · box-a 1")
         let groups = MissionConversationGroups(conversations: [
             MissionConversation(id: "c1", title: "a", box: nil, state: "running", subchatCount: 6),
             MissionConversation(id: "c2", title: "b", box: nil, state: "done", endedAt: Self.ago(60)),
@@ -106,36 +106,36 @@ final class ProjectsSnapshotTests: XCTestCase {
 
     func testLinkedMissionChipOpensItsMission() {
         var opened: String?
-        let chip = LinkedMissionChip(linked: .movedTo(MissionOtherLink(id: "ms_4905", num: 4905, title: "SEO phase 2"))) {
-            opened = "ms_4905"
+        let chip = LinkedMissionChip(linked: .movedTo(MissionOtherLink(id: "ms_2174", num: 2174, title: "Docs site analytics"))) {
+            opened = "ms_2174"
         }
         chip.action()
-        XCTAssertEqual(opened, "ms_4905")
-        XCTAssertEqual(LinkedMissionChip.accessibilityText(.alsoOn(MissionOtherLink(id: "ms_1", num: 47, title: "Promo"))),
-                       "also on mission 47, Promo")
+        XCTAssertEqual(opened, "ms_2174")
+        XCTAssertEqual(LinkedMissionChip.accessibilityText(.alsoOn(MissionOtherLink(id: "ms_1", num: 47, title: "Docs"))),
+                       "also on mission 47, Docs")
     }
 
     // MARK: Snapshots
 
     func testLinkedMissionChips() {
         let chips = VStack(alignment: .leading, spacing: 8) {
-            LinkedMissionChip(linked: .alsoOn(MissionOtherLink(id: "ms_4791", num: 4791, title: "Promo branch")), action: {})
-            LinkedMissionChip(linked: .movedTo(MissionOtherLink(id: "ms_4905", num: 4905, title: "SEO phase 2")), action: {})
+            LinkedMissionChip(linked: .alsoOn(MissionOtherLink(id: "ms_2171", num: 2171, title: "Docs search")), action: {})
+            LinkedMissionChip(linked: .movedTo(MissionOtherLink(id: "ms_2174", num: 2174, title: "Docs site analytics")), action: {})
         }
         assertVariants(of: chips.padding(), named: "linked-mission-chips")
     }
 
     func testMissionRows() {
         let rows = VStack(spacing: 0) {
-            MissionRowView(row: Self.row(5148, "Convert to editor v2: conversion status + email + Slack", activity: .running,
-                                         status: "PR 8686 open; waiting on CI and review, then the merge queue.", age: 240),
+            MissionRowView(row: Self.row(2190, "Translate the docs: status page + email + chat alerts", activity: .running,
+                                         status: "The change is open; waiting on tests and review, then the merge.", age: 240),
                            now: Self.now)
             Divider()
-            MissionRowView(row: Self.row(3170, "Design review feedback for Bob", activity: .waiting,
-                                         status: "Screens 4–41 done; waiting on you to dictate the rest.", needsYou: 1, age: 300),
+            MissionRowView(row: Self.row(2191, "Design review feedback for Bob", activity: .waiting,
+                                         status: "Pages 4–41 done; waiting on you to dictate the rest.", needsYou: 1, age: 300),
                            now: Self.now)
             Divider()
-            MissionRowView(row: Self.row(4083, "Combined promo branch: gather and report", activity: .idle,
+            MissionRowView(row: Self.row(2172, "Move the old pages across: list and report", activity: .idle,
                                          status: nil, age: 86_400), now: Self.now)
         }
         assertVariants(of: rows.frame(width: 720).padding(), named: "mission-rows")

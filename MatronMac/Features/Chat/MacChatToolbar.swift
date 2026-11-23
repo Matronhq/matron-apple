@@ -230,12 +230,12 @@ struct MacChatToolbar {
         return id
     }
 
-    /// "⚑ #4791 Promo branch +2 ▾" and its Current / Also on / Earlier menu
+    /// "⚑ #2171 Docs search +2 ▾" and its Current / Also on / Earlier menu
     /// (mockup 03 right). Its own glass capsule, like the other clusters.
     @ViewBuilder var missionChipItem: some View {
         if MissionChipLabel.text(missions) != nil {
             // The chat title comes first: the header gives
-            // the chip what the title leaves, down to "#4791 +2" and up to
+            // the chip what the title leaves, down to "#2171 +2" and up to
             // the cap (PR4 review I2: an uncapped 100-character mission
             // title ran over the left cluster). A plain button-style menu
             // draws the label as built: `.borderlessButton` flattened it to
@@ -647,7 +647,7 @@ struct MacChatToolbarPreference: PreferenceKey {
 
 /// The mission chip's label, as wide as it is proposed between two
 /// presentations: the full label — name truncating with "…" — up to
-/// `maxWidth`, and number-only ("#4791 +2") as its floor. Its subviews are
+/// `maxWidth`, and number-only ("#2171 +2") as its floor. Its subviews are
 /// those two, full first; it draws one and collapses the other to zero
 /// width, so each must be `MacCollapsible`.
 ///
@@ -658,7 +658,7 @@ struct MacChatToolbarPreference: PreferenceKey {
 struct MacMissionChipWidth: Layout {
     let maxWidth: CGFloat
     /// The least of the name worth drawing: narrower than number-only plus
-    /// this, the full label reads "#4791 P…" or "#47…", so the chip stays
+    /// this, the full label reads "#2171 D…" or "#21…", so the chip stays
     /// number-only.
     var minimumNameWidth: CGFloat = 40
 

@@ -21,7 +21,7 @@ final class StatusTextLinkTests: XCTestCase {
     func test_statusText_keepsTheLinksTheAppCanOpen() {
         let text = MissionsDashboardFormat.statusText(
             "Waiting on [#5](matron://item/5), see [the session](matron://convo/c-1), "
-                + "[#61](matron://mission/61), [Promo](matron://project/12) and [docs](https://example.com/x).")
+                + "[#61](matron://mission/61), [Docs](matron://project/12) and [docs](https://example.com/x).")
         XCTAssertEqual(links(text), ["matron://item/5", "matron://convo/c-1", "matron://mission/61",
                                      "matron://project/12", "https://example.com/x"])
     }

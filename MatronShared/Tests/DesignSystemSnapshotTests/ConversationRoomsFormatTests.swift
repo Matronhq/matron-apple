@@ -20,7 +20,7 @@ final class ConversationRoomsFormatTests: XCTestCase {
 
     /// No mission: the workdir and the rooms chip share the line.
     func testSubtitleWithRoomsOnly() {
-        assertVariants(of: subtitle("pat · ~/Dev/matron-apple", ConversationMissions(), rooms: 2),
+        assertVariants(of: subtitle("box-a · ~/Dev/matron-apple", ConversationMissions(), rooms: 2),
                        named: "chat-subtitle-rooms-only")
     }
 
@@ -57,9 +57,9 @@ final class ConversationRoomsFormatTests: XCTestCase {
     /// or without a mission chip beside it.
     func testSubtitleLayoutCountsTheRoomsChip() {
         let none = ConversationMissions()
-        XCTAssertEqual(ChatHeaderSubtitle.layout(context: "pat · ~/x", missions: none, roomCount: 2), .contextAndChip)
+        XCTAssertEqual(ChatHeaderSubtitle.layout(context: "box-a · ~/x", missions: none, roomCount: 2), .contextAndChip)
         XCTAssertEqual(ChatHeaderSubtitle.layout(context: nil, missions: none, roomCount: 1), .chipOnly)
-        XCTAssertEqual(ChatHeaderSubtitle.layout(context: "pat · ~/x", missions: none, roomCount: 0), .contextOnly)
+        XCTAssertEqual(ChatHeaderSubtitle.layout(context: "box-a · ~/x", missions: none, roomCount: 0), .contextOnly)
         XCTAssertEqual(ChatHeaderSubtitle.layout(context: nil, missions: none, roomCount: 0), .none)
         XCTAssertEqual(ChatHeaderSubtitle.layout(context: nil, missions: ConversationMissionsSnapshotTests.missions,
                                                  roomCount: 2), .chipOnly)

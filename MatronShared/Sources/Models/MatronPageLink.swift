@@ -1,7 +1,7 @@
 import Foundation
 
 /// A mission or project page named by its human-facing number — what a
-/// `[#61](matron://mission/61)` or `[Promo](matron://project/12)` link in a
+/// `[#61](matron://mission/61)` or `[Docs](matron://project/12)` link in a
 /// status or a message body points at. The number is resolved to a local id
 /// before anything navigates (`PageLinkResolver`).
 public enum MatronPageLink: Hashable, Sendable {

@@ -31,7 +31,7 @@ public struct ProjectItemGroup: Identifiable, Equatable, Sendable {
         self.missionID = missionID; self.mission = mission; self.items = items
     }
 
-    /// "#4791 Promo branch…", or "#4791" when only the number is known.
+    /// "#2171 Docs search…", or "#2171" when only the number is known.
     public var title: String {
         if let mission { return mission.label }
         return items.first?.missionNum.map { "#\($0)" } ?? "No mission"

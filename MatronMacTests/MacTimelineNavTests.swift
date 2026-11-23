@@ -299,7 +299,7 @@ final class MacTimelineNavTests: XCTestCase {
     }
 
     func testRename_saveIsOffWhileTheNameIsEmpty() {
-        XCTAssertTrue(MacProjectRenameSheet.canSave("Promo launch"))
+        XCTAssertTrue(MacProjectRenameSheet.canSave("Docs site launch"))
         XCTAssertFalse(MacProjectRenameSheet.canSave(""))
         XCTAssertFalse(MacProjectRenameSheet.canSave("  \n"))
     }

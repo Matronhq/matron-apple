@@ -16,16 +16,16 @@ final class ItemDetailContextTests: XCTestCase {
                     missionID: missionID, missionNum: missionNum, originConvoTitle: originTitle)
     }
 
-    private static let mission = Mission(id: "m1", num: 61, title: "Launch the promo site", originConvoID: "c-origin")
+    private static let mission = Mission(id: "m1", num: 61, title: "Launch the docs site", originConvoID: "c-origin")
 
     func testTheMissionRowNamesTheMissionByNameThenTitle() {
         let byTitle = ItemContext.make(item: Self.item(), currentConvoID: nil, mission: Self.mission,
                                        ownerLabel: nil, ownerIsOpenable: true)
-        XCTAssertEqual(byTitle.mission, .init(num: 61, label: "#61 Launch the promo site"))
-        let named = Mission(id: "m1", num: 61, title: "Launch the promo site", originConvoID: "c-origin", name: "Promo")
+        XCTAssertEqual(byTitle.mission, .init(num: 61, label: "#61 Launch the docs site"))
+        let named = Mission(id: "m1", num: 61, title: "Launch the docs site", originConvoID: "c-origin", name: "Docs")
         let byName = ItemContext.make(item: Self.item(), currentConvoID: nil, mission: named,
                                       ownerLabel: nil, ownerIsOpenable: true)
-        XCTAssertEqual(byName.mission?.label, "#61 Promo")
+        XCTAssertEqual(byName.mission?.label, "#61 Docs")
     }
 
     func testAMissionThisDeviceDoesNotHaveIsNamedByNumber() {
@@ -115,7 +115,7 @@ final class ItemDetailContextTests: XCTestCase {
         XCTAssertEqual(fetched.all, ["m1"], "one detail fetch for a mission this device lacks")
 
         contextStore.missionCont?.yield(Self.mission)
-        try await waitUntil { vm.context(currentConvoID: nil).mission?.label == "#61 Launch the promo site" }
+        try await waitUntil { vm.context(currentConvoID: nil).mission?.label == "#61 Launch the docs site" }
 
         // An item update that keeps the mission costs no second fetch, even
         // if the mission row goes missing again.
@@ -135,7 +135,7 @@ final class ItemDetailContextTests: XCTestCase {
         vm.start()
         try await waitUntil { store.itemCont != nil }
         store.itemCont?.yield(Self.item())
-        try await waitUntil { vm.context(currentConvoID: nil).mission?.label == "#61 Launch the promo site" }
+        try await waitUntil { vm.context(currentConvoID: nil).mission?.label == "#61 Launch the docs site" }
         // The fetch decision is made in the same stream step that sets the
         // mission, and the stream never yielded `nil`, so no fetch exists.
         XCTAssertEqual(fetched.all, [])

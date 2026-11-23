@@ -24,7 +24,7 @@ final class MacChatRoomsSnapshotTests: XCTestCase {
 
     private func header(rooms: [ConversationRoom], open: String? = nil, width: CGFloat) -> some View {
         let mission = ConversationMissionLink(
-            mission: Mission(id: "ms_4706", num: 4706, title: "Unify web and Mac design", originConvoID: "c1"),
+            mission: Mission(id: "ms_2175", num: 2175, title: "Shared look for web and Mac", originConvoID: "c1"),
             isCurrent: true)
         let model = MacChatHeaderModel()
         model.props = MacChatToolbarProps(

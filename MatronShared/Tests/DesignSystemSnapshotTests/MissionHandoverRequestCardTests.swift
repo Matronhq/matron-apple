@@ -12,9 +12,9 @@ final class MissionHandoverRequestCardTests: XCTestCase {
         PersonConsentCard(
             kind: .missionHandover, direction: direction,
             personName: direction == .outgoing ? "bob" : "alice", askID: "gr_9",
-            missionTitle: "Cover editor", level: "owner",
+            missionTitle: "Theme editor", level: "owner",
             handover: MissionHandoverDetails(
-                subjectKind: kind, subjectTitle: "Cover editor", brief: brief, milestones: 4, items: 6,
+                subjectKind: kind, subjectTitle: "Theme editor", brief: brief, milestones: 4, items: 6,
                 comments: 12,
                 attachments: [.init(mediaID: "md_1", name: "proof.pdf", size: 240_000, itemNum: 12)],
                 keepLevel: keepLevel))
@@ -72,30 +72,30 @@ final class MissionHandoverRequestCardTests: XCTestCase {
 
     func testAProjectHandOverSummaryNamesAProject() {
         XCTAssertTrue(PersonConsentRequestCard.accessibilitySummary(for: card(.incoming, kind: .project))
-            .contains("Project: Cover editor."))
+            .contains("Project: Theme editor."))
         XCTAssertFalse(PersonConsentRequestCard.accessibilitySummary(for: card(.incoming, kind: .project))
-            .contains("Mission: Cover editor."))
+            .contains("Mission: Theme editor."))
     }
 
     func testTheSummaryCarriesTheCountsAndBrief() {
         XCTAssertEqual(PersonConsentRequestCard.accessibilitySummary(for: card(.incoming)),
-                       "Mission hand-over. alice wants to hand a mission over to you. Mission: Cover editor. "
+                       "Mission hand-over. alice wants to hand a mission over to you. Mission: Theme editor. "
                        + "4 milestones · 6 items · 12 comments · 1 file. alice keeps read access. "
                        + "Brief: Where it stands.")
     }
 
     func testAShareSummarySaysItsLevel() {
         let share = PersonConsentCard(kind: .missionShare, direction: .incoming, personName: "alice", askID: "gr_1",
-                                      missionTitle: "Cover editor", level: "contribute")
+                                      missionTitle: "Theme editor", level: "contribute")
         XCTAssertEqual(PersonConsentRequestCard.accessibilitySummary(for: share),
                        "Mission share. alice wants to share a mission with you. You can contribute. "
-                       + "Mission: Cover editor. Can contribute.")
+                       + "Mission: Theme editor. Can contribute.")
     }
 
     func testAHandedOverMissionSaysToWhom() {
-        XCTAssertEqual(MissionNotice.text(for: MissionMarkerEvent(missionID: "ms_1", num: 3, title: "Cover editor",
+        XCTAssertEqual(MissionNotice.text(for: MissionMarkerEvent(missionID: "ms_1", num: 3, title: "Theme editor",
                                                                   action: .closed, handedOverTo: "bob")),
-                       "🏁 Mission #3 handed to bob · Cover editor")
+                       "🏁 Mission #3 handed to bob · Theme editor")
         XCTAssertEqual(MissionNotice.text(for: MissionMarkerEvent(missionID: "ms_1", num: 3, action: .left,
                                                                   handedOverTo: "bob")),
                        "🏁 Left mission #3 · handed to bob")
@@ -105,8 +105,8 @@ final class MissionHandoverRequestCardTests: XCTestCase {
 
     func testAContributorsMilestoneSaysBy() {
         let marker = MilestoneMarkerEvent(milestoneID: "ml_1", num: 7, kind: .progress, title: "Proofs in",
-                                          missionID: "ms_1", missionNum: 3, missionTitle: "Cover editor",
+                                          missionID: "ms_1", missionNum: 3, missionTitle: "Theme editor",
                                           person: Contributor(name: "bob", via: .agent))
-        XCTAssertEqual(MilestoneCard.subtitle(for: marker), "Progress · Cover editor · by bob's agent")
+        XCTAssertEqual(MilestoneCard.subtitle(for: marker), "Progress · Theme editor · by bob's agent")
     }
 }

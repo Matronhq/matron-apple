@@ -52,14 +52,14 @@ final class ProjectsAPITests: XCTestCase {
             "project": ProjectModelTests.projectJSON,
             "missions": [MissionModelTests.missionJSON],
             "recent_milestones": [MissionModelTests.milestoneJSON],
-            "sessions_by_box": ["slate": 2, "pat": 1],
+            "sessions_by_box": ["slate": 2, "box-a": 1],
         ])
-        let detail = try await api.project(id: "#4000")
+        let detail = try await api.project(id: "#2100")
         XCTAssertEqual(detail.project.id, "pj_1")
         XCTAssertEqual(detail.missions.map(\.id), ["ms_a1"])
         XCTAssertEqual(detail.recentMilestones.map(\.id), ["ml_b2"])
-        XCTAssertEqual(detail.sessionsByBox, ["slate": 2, "pat": 1])
-        XCTAssertTrue(recorder.lastRequest?.url?.absoluteString.hasSuffix("/projects/%234000") == true)
+        XCTAssertEqual(detail.sessionsByBox, ["slate": 2, "box-a": 1])
+        XCTAssertTrue(recorder.lastRequest?.url?.absoluteString.hasSuffix("/projects/%232100") == true)
     }
 
     func testListRowsCarryTheCardFields() async throws {
@@ -105,12 +105,12 @@ final class ProjectsAPITests: XCTestCase {
         let (api, recorder) = makeStubbedAPI(status: 200, body: [
             "kind": "files", "total": 5, "rows": [ProjectModelTests.chatFileJSON], "next_before": "1:e:000000000001",
         ])
-        let slice = try await api.projectFeed(id: "#4000", kind: .files, before: "1700000002500:e:000000004211", limit: 10)
+        let slice = try await api.projectFeed(id: "#2100", kind: .files, before: "1700000002500:e:000000004211", limit: 10)
         guard case .files(let page) = slice else { return XCTFail("got \(slice)") }
         XCTAssertEqual(page.rows.map(\.blobID), ["b_2"]); XCTAssertEqual(page.total, 5)
         XCTAssertEqual(slice.nextBefore, "1:e:000000000001")
         let url = try XCTUnwrap(recorder.lastRequest?.url)
-        XCTAssertTrue(url.absoluteString.contains("/projects/%234000/feed?"))
+        XCTAssertTrue(url.absoluteString.contains("/projects/%232100/feed?"))
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         XCTAssertEqual(items.first { $0.name == "kind" }?.value, "files")
         XCTAssertEqual(items.first { $0.name == "before" }?.value, "1700000002500:e:000000004211")

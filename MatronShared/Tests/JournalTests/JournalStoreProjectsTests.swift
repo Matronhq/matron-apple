@@ -139,7 +139,7 @@ final class JournalStoreProjectsTests: XCTestCase {
                 try db.execute(sql: """
                     INSERT INTO project(id, num, state, title, created_by, created_at, updated_at, needs_you,
                                         sessions_by_box_json)
-                    VALUES('pj_1', 4000, 'open', 'Promo', 'agent', 1000, 2000, 3, '{"slate":2}');
+                    VALUES('pj_1', 4000, 'open', 'Docs', 'agent', 1000, 2000, 3, '{"slate":2}');
                     """)
             }
         }
@@ -153,7 +153,7 @@ final class JournalStoreProjectsTests: XCTestCase {
         XCTAssertTrue(cols.contains("card_json"))
         XCTAssertTrue(cols.contains("feed_json"))
         let project = try XCTUnwrap(store.project(id: "pj_1"))
-        XCTAssertEqual(project.title, "Promo"); XCTAssertEqual(project.needsYou, 3)
+        XCTAssertEqual(project.title, "Docs"); XCTAssertEqual(project.needsYou, 3)
         XCTAssertNil(project.card); XCTAssertEqual(project.sessionsNow, 0)
         let feed = try await firstValue(store.projectFeedStream(id: "pj_1"))
         XCTAssertNil(feed)
@@ -270,7 +270,7 @@ final class JournalStoreProjectsTests: XCTestCase {
 
     func testProjectRecordRoundTrips() throws {
         let store = try makeStore()
-        let p = Self.withCard(Self.project("pj_1", num: 4000, needsYou: 6, mergedInto: "pj_2"), Self.card)
+        let p = Self.withCard(Self.project("pj_1", num: 2100, needsYou: 6, mergedInto: "pj_2"), Self.card)
         try store.db.write { db in try ProjectRecord(p).insert(db) }
         let back = try store.db.read { db in try ProjectRecord.fetchOne(db, key: "pj_1")?.project }
         XCTAssertEqual(back, p)
@@ -353,13 +353,13 @@ final class JournalStoreProjectsTests: XCTestCase {
     func testReplaceProjectsIsAuthoritativeButKeepsProtectedAndSessions() async throws {
         let store = try makeStore()
         try store.replaceProjects([Self.project("pj_1", num: 1), Self.project("pj_2", num: 2)])
-        try store.setProjectSessionsByBox(id: "pj_1", ["slate": 2, "pat": 1])
+        try store.setProjectSessionsByBox(id: "pj_1", ["slate": 2, "box-a": 1])
         try store.upsertProjects([Self.project("pj_3", num: 3)])
         try store.replaceProjects([Self.project("pj_1", num: 1, title: "Renamed")], keeping: ["pj_3"])
         XCTAssertEqual(try store.projects().map(\.id).sorted(), ["pj_1", "pj_3"])
         XCTAssertEqual(try store.project(id: "pj_1")?.title, "Renamed")
         let sessions = try await firstValue(store.projectSessionsByBoxStream(id: "pj_1"))
-        XCTAssertEqual(sessions, ["slate": 2, "pat": 1], "a list refresh must not wipe the detail's sessions")
+        XCTAssertEqual(sessions, ["slate": 2, "box-a": 1], "a list refresh must not wipe the detail's sessions")
     }
 
     func testProjectsStreamPutsOpenFirstThenNewestActivity() async throws {

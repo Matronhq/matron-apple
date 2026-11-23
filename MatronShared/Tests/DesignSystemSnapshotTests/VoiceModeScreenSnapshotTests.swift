@@ -54,8 +54,8 @@ final class VoiceModeScreenSnapshotTests: XCTestCase {
     }
 
     func testAnItemWithTwoLabels() {
-        assertVariants(of: screen(.init(title: "Promo", boxName: "pat", phase: .listening,
-                                        caption: "A decision: Ship the promo page. Options: Go, Wait.",
+        assertVariants(of: screen(.init(title: "Docs", boxName: "box-a", phase: .listening,
+                                        caption: "A decision: Ship the docs page. Options: Go, Wait.",
                                         labels: ["Go", "Wait"])),
                        named: "voice-item-two-labels")
     }
@@ -80,7 +80,7 @@ final class VoiceModeScreenSnapshotTests: XCTestCase {
     }
 
     func testConfirming() {
-        assertVariants(of: screen(.init(title: "Promo", boxName: "pat", phase: .confirming, caption: "Sending: Go.",
+        assertVariants(of: screen(.init(title: "Docs", boxName: "box-a", phase: .confirming, caption: "Sending: Go.",
                                         labels: ["Go", "Wait"])),
                        named: "voice-confirming")
     }
