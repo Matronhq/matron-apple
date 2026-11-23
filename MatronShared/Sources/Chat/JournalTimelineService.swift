@@ -40,6 +40,10 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
     private let api: JournalAPI
     private let ownSender: String
     private let search: (any SearchService)?
+    /// Whether this timeline's sign-in is still the signed-in one. Checked
+    /// right before a history page goes into the shared search index, so a
+    /// page that arrives after sign-out never lands there.
+    private let isSignInCurrent: @Sendable () async -> Bool
     private let overlay: OverlayState
     private let sweepInterval: Duration
     /// How many tail events the store's tail stream holds. Sized to comfortably out-cover the view models'
@@ -67,6 +71,7 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
     public init(
         convoID: String, store: JournalStore, engine: JournalSyncEngine,
         api: JournalAPI, session: UserSession, search: (any SearchService)? = nil,
+        isSignInCurrent: @escaping @Sendable () async -> Bool = { true },
         overlayStaleness: Duration = .seconds(30), sweepInterval: Duration = .seconds(10),
         toolStreamStaleness: Duration = .seconds(600), fetchWindow: Int = 500
     ) {
@@ -76,6 +81,7 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         self.api = api
         self.ownSender = "user:\(session.userID)"
         self.search = search
+        self.isSignInCurrent = isSignInCurrent
         self.overlay = OverlayState(staleness: overlayStaleness.timeInterval,
                                     toolStaleness: toolStreamStaleness.timeInterval)
         self.sweepInterval = sweepInterval
@@ -918,7 +924,9 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         // deliver them — feed the overlay directly.
         await overlay.prependOlder(newOnes)
         itemsSignal.withLock { $0 }?.signal()
-        if let search {
+        // Checked here, not when the service was built: a timeline made while
+        // signed in can still be paging when the user signs out.
+        if let search, await isSignInCurrent() {
             let indexedAt = Date()
             let entries = newOnes.compactMap { $0.searchIndexEntry(now: indexedAt) }
             if !entries.isEmpty { try? await search.indexBatch(entries) }
