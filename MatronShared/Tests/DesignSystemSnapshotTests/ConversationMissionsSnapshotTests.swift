@@ -40,7 +40,7 @@ final class ConversationMissionsSnapshotTests: XCTestCase {
         XCTAssertTrue(repeats("Search on the docs site: the index and the results page"))
         XCTAssertTrue(repeats("[b5] Search on the docs site: the index and the results page"), "the raw title, short and all")
         XCTAssertTrue(repeats("🐣 [b5] Search on the docs site: the index and the results page"), "a spawned session's marker")
-        XCTAssertTrue(repeats("Search on the docs site: the index and t…"), "the journal's 40-character cut")
+        XCTAssertTrue(repeats("Search on the docs site: the index and…"), "the journal's 40-character cut")
         XCTAssertTrue(repeats("Search on the docs site:  the index and the results page "), "whitespace collapsed")
         XCTAssertFalse(repeats(nil))
         XCTAssertFalse(repeats(""))
@@ -52,7 +52,7 @@ final class ConversationMissionsSnapshotTests: XCTestCase {
         XCTAssertTrue(repeats("[b5] Docs", named), "matched on the mission's name")
         XCTAssertFalse(repeats("[b5] Docs site launch", named))
 
-        XCTAssertEqual(MissionChipLabel.text(Self.missions, conversationTitle: "[b5] Search on the docs site: the index and t…"),
+        XCTAssertEqual(MissionChipLabel.text(Self.missions, conversationTitle: "[b5] Search on the docs site: the index and…"),
                        "#2171 +2")
         XCTAssertEqual(MissionChipLabel.text(Self.missions, conversationTitle: "Something else"),
                        "#2171 Search on the docs site: the index and the results page +2")
