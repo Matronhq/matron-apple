@@ -39,13 +39,13 @@ describe('smoke', () => {
     await expect(screen.getByTestId('signin.username')).toHaveCount(0);
     await expect(screen.getByTestId('signin.password')).toHaveCount(0);
 
-    // A full link supplies its own server. Invalid input stays on this
-    // screen with a recoverable error; it does not need a live journal.
-    await screen.getByTestId('signin.linkcode').fill('matron://invalid');
-    await expect(screen.getByTestId('signin.server')).toHaveCount(0);
+    // Exercise typed code entry without calling a live journal. A full
+    // sign-in link is pasted in one edit, not typed through code formatting.
+    await screen.getByTestId('signin.server').fill('https://invalid host');
+    await screen.getByTestId('signin.linkcode').fill('ABCD-EFGH');
     await screen.getByTestId('signin.linkcode').press('Enter');
     await screen.getByTestId('signin.linkSubmit').tap();
-    await expect(screen.getByText("That doesn't look like a Matron sign-in link.")).toBeVisible();
+    await expect(screen.getByText("That doesn't look like a valid server URL.")).toBeVisible();
     injectSession();
     await app.restart();
   });
