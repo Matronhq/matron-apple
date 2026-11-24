@@ -110,7 +110,7 @@ struct DeviceLinkView: View {
                         .frame(width: 220, height: 220)
                 }
                 // The camera-less fallback: the code as selectable text,
-                // typed into "Have a link code?" on the new device.
+                // typed into the sign-in code field on the new device.
                 Text(code)
                     .font(.system(.title2, design: .monospaced).weight(.semibold))
                     .textSelection(.enabled)
@@ -118,7 +118,7 @@ struct DeviceLinkView: View {
             .frame(maxWidth: .infinity)
             .padding(.vertical, 8)
         } footer: {
-            Text("On your new device, open Matron and choose “Scan QR code” — or type the code under “Have a link code?”. Codes refresh automatically.")
+            Text("On iPhone or iPad, open Matron, choose “Sign in from another device”, then Scan or Code. On Mac, choose “Have a link code?” on the sign-in screen. Codes refresh automatically.")
         }
     }
 
