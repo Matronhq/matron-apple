@@ -23,11 +23,12 @@ extension AppDependencies {
             },
             readResult: { id in
                 var query = ItemsListQuery()
-                query.convoID = id; query.kind = .notice; query.label = "first-project-result"
+                query.convoID = id; query.kind = .notice
                 query.sort = .updated
                 let notices = try await core.api.listItems(query)
                 guard let notice = notices.items.first(where: {
-                    $0.kind == .notice && $0.originConvoID == id && $0.labels.contains("first-project-result")
+                    $0.kind == .notice && $0.originConvoID == id
+                    && ($0.title == FirstProjectResult.noticeTitle || $0.labels.contains("first-project-result"))
                     && $0.createdBy == .agent && (!$0.links.isEmpty || !$0.attachments.isEmpty)
                 }) else { return nil }
                 let missions = try? await core.api.conversationMissions(convoID: id)

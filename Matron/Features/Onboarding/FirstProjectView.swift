@@ -79,10 +79,15 @@ struct FirstProjectView: View {
                 if model.boxes.count > 1 {
                     Picker("Server", selection: Binding(get: { model.progress.boxID ?? 0 },
                         set: { id in Task { await model.selectBox(id) } })) {
-                        ForEach(model.boxes) { box in Text(box.name).tag(box.id) }
+                        ForEach(model.boxes) { box in
+                            Text(box.connected ? box.name : "\(box.name) (offline)").tag(box.id)
+                        }
                     }.disabled(model.busy)
                 }
-                if model.connection == "unsupported" {
+                if model.connection == "offline" {
+                    Text("\(model.selectedBox?.name ?? "Your box") is offline. Start it, then check again.")
+                        .accessibilityIdentifier("firstProject.offline")
+                } else if model.connection == "unsupported" {
                     Text("This server needs a newer Matron bridge to guide Claude sign-in. Update it, then try again.")
                 } else if model.connection == "locked" {
                     Text("Your box is locked. Unlock it from Boxes, then return here.")
@@ -116,7 +121,7 @@ struct FirstProjectView: View {
                         }.disabled(code.isEmpty || model.busy)
                     }
                 }
-                if ["unsupported", "locked", "unavailable", "busy", "waiting", "invalid_code"].contains(model.connection) {
+                if ["offline", "unsupported", "locked", "unavailable", "busy", "waiting", "invalid_code"].contains(model.connection) {
                     Button("Check again") { Task { await model.refresh() } }.disabled(model.busy)
                 }
                 if ["starting", "waiting", "checking", "invalid_code"].contains(model.connection) {

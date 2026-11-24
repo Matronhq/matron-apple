@@ -364,7 +364,7 @@ struct ChatListView: View {
             ContentUnavailableView {
                 Label("No chats yet", systemImage: "bubble.left.and.bubble.right")
             } description: {
-                Text("Provision a bot via dev-boxer to get started.")
+                Text("Open Settings → Get started to connect Claude and make your first project.")
             } actions: {
                 // Everything may be archived: Archived stays reachable.
                 if isInSplitShell {

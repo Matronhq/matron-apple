@@ -48,6 +48,7 @@ public struct FirstProjectProgress: Codable, Equatable {
 }
 
 public struct FirstProjectResult {
+    public static let noticeTitle = "Your first project is ready"
     public let noticeID: String
     public let title: String
     public let projectID: String?
@@ -85,7 +86,8 @@ public final class FirstProjectViewModel {
         progress.conversationID != nil && result == nil || ["starting", "waiting", "checking"].contains(connection)
     }
     public var canStart: Bool {
-        connection == "connected" && progress.conversationID == nil && !progress.startUnconfirmed
+        connection == "connected" && selectedBox?.connected == true
+        && progress.conversationID == nil && !progress.startUnconfirmed
         && !progress.brief.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !busy
     }
 
@@ -104,8 +106,7 @@ public final class FirstProjectViewModel {
         defer { busy = false }
         errorMessage = nil
         do {
-            boxes = try await api.devices().filter { $0.kind == "agent" }
-                .sorted { $0.connected != $1.connected ? $0.connected : $0.name < $1.name }
+            try await loadBoxes()
             if selectedBox == nil {
                 progress.boxID = boxes.first?.id
                 progress.flowID = nil
@@ -128,6 +129,7 @@ public final class FirstProjectViewModel {
         guard !busy, progress.conversationID == nil, !progress.startUnconfirmed else { return }
         busy = true
         defer { busy = false }
+        errorMessage = nil
         // Cancel only this device's own pending login before switching.
         if let old = progress.boxID, let flow = progress.flowID {
             _ = try? await rpc(old, "claude_setup", ["action": "cancel", "flow_id": flow])
@@ -171,7 +173,10 @@ public final class FirstProjectViewModel {
         defer { busy = false }
         do {
             if progress.conversationID != nil { try await refreshResult() }
-            else { try await updateConnection(action: "status") }
+            else {
+                try await loadBoxes()
+                try await updateConnection(action: "status")
+            }
         } catch { errorMessage = "Couldn't check progress. You can try again or return later." }
     }
 
@@ -227,11 +232,9 @@ public final class FirstProjectViewModel {
     private func queueBriefIfNeeded() async throws {
         guard let id = progress.conversationID, !progress.promptQueued else { return }
         let prompt = """
-        Help me complete my first Matron project: \(progress.kind.title).
-        My brief: \(progress.brief)
+        \(progress.brief)
 
-        Create a project and a mission for this work and work on it here. Produce a useful result I can open on my phone. For a page or app, make a self-contained HTML preview; for research or a report, include sources where relevant and share the finished report. Use synthetic data unless I supply my own. Ask me only when you need information or approval to proceed.
-        When the result is ready, file a notice with label first-project-result, and include the actual preview link or report attachment. Do not use that label for errors or progress updates. Keep the result accessible from the project.
+        Make this a project and do the work. Use example data unless I provide my own, and include sources for research. When the finished result is ready, send me a notice called “\(FirstProjectResult.noticeTitle)” with a link or attachment I can open on my phone. Ask me if you need anything to proceed.
         """
         try await send(id, prompt, progress.messageID)
         progress.promptQueued = true; persist()
@@ -243,8 +246,17 @@ public final class FirstProjectViewModel {
         errorMessage = nil
     }
 
+    private func loadBoxes() async throws {
+        boxes = try await api.devices().filter { $0.kind == "agent" }
+            .sorted { $0.connected != $1.connected ? $0.connected : $0.name < $1.name }
+    }
+
     private func updateConnection(action: String) async throws {
         guard let box = progress.boxID else { return }
+        guard selectedBox?.connected == true else {
+            adopt(["state": "offline"])
+            return
+        }
         var params: [String: Any] = ["action": action]
         if let flow = progress.flowID { params["flow_id"] = flow }
         adopt(try await rpc(box, "claude_setup", params))
@@ -259,6 +271,7 @@ public final class FirstProjectViewModel {
             // state UI explain the remedy instead of showing a network error.
             if code == "unknown_method" { return ["state": "unsupported"] }
             if code == "box_locked" { return ["state": "locked"] }
+            if code == "agent_unreachable" { return ["state": "offline"] }
             throw SetupFailure(code: code)
         }
     }

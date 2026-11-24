@@ -4,13 +4,15 @@ import MatronJournal
 import MatronModels
 
 private actor FirstProjectRPC: AgentRPCProviding {
-    let box = DeviceDTO(id: 1, kind: "agent", name: "box-a", createdAt: 0,
-        cursor: 0, lag: 0, lastSeenAt: nil, isSelf: false, connected: true)
+    var roster = [DeviceDTO(id: 1, kind: "agent", name: "box-a", createdAt: 0,
+        cursor: 0, lag: 0, lastSeenAt: nil, isSelf: false, connected: true)]
     var setup = RPCReply.ok(resultData: Data("{\"state\":\"connected\"}".utf8))
     var start = RPCReply.ok(resultData: Data("{\"convo_id\":\"first-chat\"}".utf8))
     var timesStarted = 0
+    var setupBoxes: [Int64] = []
     var timeout = false
-    func devices() async throws -> [DeviceDTO] { [box] }
+    func devices() async throws -> [DeviceDTO] { roster }
+    func setDevices(_ devices: [DeviceDTO]) { roster = devices }
     func setSetup(_ reply: RPCReply) { setup = reply }
     func setTimeout() { timeout = true }
     func agentRequest(agentDeviceID: Int64, method: String, paramsData: Data) async throws -> RPCReply {
@@ -19,6 +21,7 @@ private actor FirstProjectRPC: AgentRPCProviding {
             if timeout { throw RPCRequestError.timeout }
             return start
         }
+        setupBoxes.append(agentDeviceID)
         return setup
     }
     nonisolated func boxStatusUpdates() -> AsyncStream<(deviceID: Int64, status: BoxStatus)> { AsyncStream { $0.finish() } }
@@ -27,6 +30,67 @@ private actor FirstProjectRPC: AgentRPCProviding {
 
 @MainActor
 final class FirstProjectViewModelTests: XCTestCase {
+    private func box(_ id: Int64, name: String = "box-a", connected: Bool) -> DeviceDTO {
+        DeviceDTO(id: id, kind: "agent", name: name, createdAt: 0,
+            cursor: 0, lag: 0, lastSeenAt: nil, isSelf: false, connected: connected)
+    }
+
+    func testOfflineBoxSkipsLoginRPCAndCanRecoverWhenCheckedAgain() async {
+        let rpc = FirstProjectRPC()
+        await rpc.setDevices([box(1, connected: false)])
+        let model = FirstProjectViewModel(api: rpc, save: { _ in }, send: { _, _, _ in XCTFail() }, readResult: { _ in nil })
+        await model.load()
+        await model.connect()
+        XCTAssertEqual(model.connection, "offline")
+        XCTAssertFalse(model.canStart)
+        XCTAssertNil(model.errorMessage)
+        let offlineRequests = await rpc.setupBoxes
+        XCTAssertTrue(offlineRequests.isEmpty)
+        await rpc.setDevices([box(1, connected: true)])
+        await model.refresh()
+        XCTAssertEqual(model.connection, "connected")
+        XCTAssertTrue(model.canStart)
+        let requests = await rpc.setupBoxes
+        XCTAssertEqual(requests, [1])
+    }
+
+    func testFirstChoicePrefersConnectedBoxOverAlphabeticalOrder() async {
+        let rpc = FirstProjectRPC()
+        await rpc.setDevices([box(1, connected: false), box(2, name: "box-b", connected: true)])
+        let model = FirstProjectViewModel(api: rpc, save: { _ in }, send: { _, _, _ in }, readResult: { _ in nil })
+        await model.load()
+        XCTAssertEqual(model.selectedBox?.id, 2)
+        let requests = await rpc.setupBoxes
+        XCTAssertEqual(requests, [2])
+    }
+
+    func testPendingLoginStaysWithItsBoxWhenItGoesOffline() async {
+        let rpc = FirstProjectRPC()
+        await rpc.setSetup(.ok(resultData: Data("{\"state\":\"waiting\",\"flow_id\":\"fixture-flow\",\"authorization_url\":\"https://claude.com/cai/oauth/authorize?state=fixture\"}".utf8)))
+        let model = FirstProjectViewModel(api: rpc, save: { _ in }, send: { _, _, _ in }, readResult: { _ in nil })
+        await model.load()
+        XCTAssertNotNil(model.authorizationURL)
+        await rpc.setDevices([box(1, connected: false), box(2, name: "box-b", connected: true)])
+        await model.refresh()
+        XCTAssertEqual(model.connection, "offline")
+        XCTAssertEqual(model.progress.boxID, 1)
+        XCTAssertEqual(model.progress.flowID, "fixture-flow")
+        XCTAssertNil(model.authorizationURL)
+        XCTAssertNil(model.errorMessage)
+        let requests = await rpc.setupBoxes
+        XCTAssertEqual(requests, [1])
+    }
+
+    func testUnreachableReplyNamesOfflineBoxWithoutServerError() async {
+        let rpc = FirstProjectRPC()
+        await rpc.setSetup(.failure(code: "agent_unreachable", detail: nil))
+        let model = FirstProjectViewModel(api: rpc, save: { _ in }, send: { _, _, _ in }, readResult: { _ in nil })
+        await model.load()
+        XCTAssertEqual(model.connection, "offline")
+        XCTAssertNil(model.errorMessage)
+        XCTAssertFalse(model.canStart)
+    }
+
     func testConfirmedConnectionSkipsToProjectWithoutStartingWork() async {
         let rpc = FirstProjectRPC()
         let model = FirstProjectViewModel(api: rpc, save: { _ in }, send: { _, _, _ in XCTFail() }, readResult: { _ in nil })
@@ -128,7 +192,9 @@ final class FirstProjectViewModelTests: XCTestCase {
         XCTAssertTrue(saved.promptQueued)
         XCTAssertEqual(sent.count, 1)
         XCTAssertEqual(sent.first?.2, saved.messageID)
-        XCTAssertTrue(sent.first?.1.contains("first-project-result") == true)
+        XCTAssertTrue(sent.first?.1.hasPrefix(FirstProjectKind.report.example) == true)
+        XCTAssertTrue(sent.first?.1.contains(FirstProjectResult.noticeTitle) == true)
+        XCTAssertFalse(sent.first?.1.contains("first-project-result") == true)
         XCTAssertEqual(model.step, 3)
         XCTAssertNil(model.result)
     }
