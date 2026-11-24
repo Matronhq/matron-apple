@@ -28,65 +28,43 @@ public enum KeyboardDismiss {
         translation.height >= minimumDrop && translation.height > abs(translation.width)
     }
 
-    /// How far past a text field's edges a drag still counts as starting
-    /// on the text. A selection handle's knob hangs below the last
-    /// selected line, and a finger grabbing it lands a little outside the
-    /// field's frame.
-    static let textHandleMargin: CGFloat = 12
-
-    /// The composer row's pull-down, given where the drag started and the
-    /// frames of the row's text fields (all in the row's coordinate
-    /// space). A drag that starts on the text belongs to the text: it
-    /// may be a selection handle or the caret being moved, which is
-    /// often downward, so it never hides the keyboard. Elsewhere on the
-    /// row the usual `shouldDismiss` rule applies.
-    static func shouldDismiss(translation: CGSize, startLocation: CGPoint, textFrames: [CGRect]) -> Bool {
-        let startsOnText = textFrames.contains {
-            $0.insetBy(dx: -textHandleMargin, dy: -textHandleMargin).contains(startLocation)
-        }
-        return !startsOnText && shouldDismiss(translation: translation)
+    /// What another gesture recognizer on the same touch is doing, as far
+    /// as the composer's pull-down cares.
+    struct OtherGesture: Equatable {
+        /// It belongs to a text view (the field, or a selection handle
+        /// or loupe drawn inside it).
+        var isOnText: Bool
+        /// It is a scroll view's own pan: a tall draft scrolling, which
+        /// is not editing.
+        var isScrollPan: Bool
+        /// It has recognized (began or changed).
+        var isActive: Bool
     }
 
-    /// The coordinate space the composer row's drag and its text fields'
-    /// frames are measured in.
-    static let rowSpace = "KeyboardDismiss.row"
-}
-
-/// The frames of the text fields inside a pull-down composer row.
-struct KeyboardDismissTextFramesKey: PreferenceKey {
-    static let defaultValue: [CGRect] = []
-    static func reduce(value: inout [CGRect], nextValue: () -> [CGRect]) {
-        value.append(contentsOf: nextValue())
+    /// Whether the text has taken the touch for itself: one of the text
+    /// view's own gestures, other than plain scrolling, is running. That
+    /// is a selection handle being dragged, the caret being moved with
+    /// the loupe, or a long-press selection being extended. A plain swipe
+    /// down on the text starts none of those, so it still hides the
+    /// keyboard, as in Messages.
+    static func textIsEditing(_ others: [OtherGesture]) -> Bool {
+        others.contains { $0.isOnText && $0.isActive && !$0.isScrollPan }
     }
 }
 
 public extension View {
     /// Dragging this view downward hides the keyboard (iOS only; the
-    /// modifier is inert on the Mac). Attached as a *simultaneous*
-    /// gesture so the field's own touches — caret placement, selection,
-    /// scrolling a tall draft — keep working; the dismissal fires
-    /// alongside them once the drag reads as a deliberate pull-down.
-    /// Drags that start on a field marked `keepsDragsForText()` are left
-    /// to the text: dragging a selection handle or the caret downward
-    /// must not take the keyboard away.
+    /// modifier is inert on the Mac), wherever the drag starts on it,
+    /// the text field included. A drag the text takes for itself
+    /// (dragging a selection handle, moving the caret, extending a
+    /// selection) never does: once the text's own gesture starts, the
+    /// pull-down stands aside until the finger lifts. The recognizer
+    /// watches alongside the field's own touches and never cancels or
+    /// delays them.
     func dragDownDismissesKeyboard() -> some View {
         #if canImport(UIKit) && !os(macOS)
-        return modifier(DragDownDismissesKeyboard())
-        #else
-        return self
-        #endif
-    }
-
-    /// Marks this view as a text field inside a `dragDownDismissesKeyboard()`
-    /// row: a drag that starts on it, or just off its edge where a
-    /// selection handle hangs, never hides the keyboard. Inert on the Mac.
-    func keepsDragsForText() -> some View {
-        #if canImport(UIKit) && !os(macOS)
         return background {
-            GeometryReader { proxy in
-                Color.clear.preference(key: KeyboardDismissTextFramesKey.self,
-                                       value: [proxy.frame(in: .named(KeyboardDismiss.rowSpace))])
-            }
+            RowSwipeDownDismisser().accessibilityHidden(true)
         }
         #else
         return self
@@ -95,27 +73,104 @@ public extension View {
 }
 
 #if canImport(UIKit) && !os(macOS)
-private struct DragDownDismissesKeyboard: ViewModifier {
-    @State private var textFrames: [CGRect] = []
+/// A zero-content view the size of the composer row. It puts a pan
+/// recognizer on the window (touches on the text field never reach a
+/// view behind it) and only takes touches that land inside its own
+/// frame.
+private struct RowSwipeDownDismisser: UIViewRepresentable {
+    func makeUIView(context: Context) -> Probe { Probe() }
+    func updateUIView(_ uiView: Probe, context: Context) {}
+    static func dismantleUIView(_ uiView: Probe, coordinator: ()) { uiView.detach() }
 
-    func body(content: Content) -> some View {
-        content
-            .onPreferenceChange(KeyboardDismissTextFramesKey.self) { textFrames = $0 }
-            // The whole row, margins included, takes the pull-down: with
-            // drags on the text left to the text, the margins around the
-            // field are where it starts.
-            .contentShape(Rectangle())
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 12, coordinateSpace: .named(KeyboardDismiss.rowSpace))
-                    .onChanged { value in
-                        if KeyboardDismiss.shouldDismiss(translation: value.translation,
-                                                         startLocation: value.startLocation,
-                                                         textFrames: textFrames) {
-                            KeyboardDismiss.resign()
-                        }
-                    }
-            )
-            .coordinateSpace(.named(KeyboardDismiss.rowSpace))
+    final class Probe: UIView, UIGestureRecognizerDelegate {
+        private lazy var pan: UIPanGestureRecognizer = {
+            let pan = UIPanGestureRecognizer(target: self, action: #selector(panned(_:)))
+            pan.cancelsTouchesInView = false
+            pan.delaysTouchesBegan = false
+            pan.delaysTouchesEnded = false
+            pan.maximumNumberOfTouches = 1
+            pan.delegate = self
+            return pan
+        }()
+        private weak var host: UIWindow?
+        /// The finger this pan is following.
+        private weak var touch: UITouch?
+        /// Set once the text takes the touch; holds until the finger lifts.
+        private var standingAside = false
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            isUserInteractionEnabled = false
+            backgroundColor = .clear
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            guard window !== host else { return }
+            detach()
+            if let window {
+                window.addGestureRecognizer(pan)
+                host = window
+            }
+        }
+
+        func detach() {
+            host?.removeGestureRecognizer(pan)
+            host = nil
+        }
+
+        /// A drag on a selection handle never gets here: the handle's own
+        /// recognizer holds this pan off for the whole drag. Moving the
+        /// caret with the loupe does, and stands aside below.
+        @objc private func panned(_ pan: UIPanGestureRecognizer) {
+            switch pan.state {
+            case .began, .changed:
+                if !standingAside, let touch, KeyboardDismiss.textIsEditing(others(on: touch)) {
+                    standingAside = true
+                }
+                guard !standingAside, pan.state == .changed else { return }
+                let t = pan.translation(in: pan.view)
+                if KeyboardDismiss.shouldDismiss(translation: CGSize(width: t.x, height: t.y)) {
+                    KeyboardDismiss.resign()
+                }
+            default:
+                standingAside = false
+            }
+        }
+
+        private func others(on touch: UITouch) -> [KeyboardDismiss.OtherGesture] {
+            (touch.gestureRecognizers ?? []).compactMap { other in
+                guard other !== pan else { return nil }
+                return KeyboardDismiss.OtherGesture(
+                    isOnText: Self.isOnText(other.view),
+                    isScrollPan: (other.view as? UIScrollView)?.panGestureRecognizer === other,
+                    isActive: other.state == .began || other.state == .changed)
+            }
+        }
+
+        /// A view inside a text view or field: the text itself, or the
+        /// selection handles and loupe it draws.
+        private static func isOnText(_ view: UIView?) -> Bool {
+            var view = view
+            while let current = view {
+                if current is UITextInput { return true }
+                view = current.superview
+            }
+            return false
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            guard window != nil, bounds.contains(touch.location(in: self)) else { return false }
+            self.touch = touch
+            standingAside = false
+            return true
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
     }
 }
 #endif
@@ -179,6 +234,9 @@ private struct WindowSwipeDownDismisser: UIViewRepresentable {
             host = nil
         }
 
+        /// A drag on a selection handle never gets here: the handle's own
+        /// recognizer holds this pan off for the whole drag. Moving the
+        /// caret with the loupe does, and stands aside below.
         @objc private func panned(_ pan: UIPanGestureRecognizer) {
             guard pan.state == .changed else { return }
             let t = pan.translation(in: pan.view)

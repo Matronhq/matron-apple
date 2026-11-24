@@ -1,10 +1,10 @@
 import XCTest
 
-/// The chat composer's pull-down hides the keyboard, but drags that start
-/// on the text (moving the caret, dragging a selection handle) are the
-/// text's and keep it up. Runs against the local rig's "Selection rig"
-/// conversation (rig/README.md "Timeline rig"); skips when the rig isn't
-/// running.
+/// The chat composer's pull-down hides the keyboard, from the row's
+/// margins and from the text itself, but drags the text takes for itself
+/// (moving the caret, dragging a selection handle) keep it up. Runs
+/// against the local rig's "Selection rig" conversation (rig/README.md
+/// "Timeline rig"); skips when the rig isn't running.
 final class ComposerKeyboardUITests: XCTestCase {
     private var app: XCUIApplication!
 
@@ -90,6 +90,18 @@ final class ComposerKeyboardUITests: XCTestCase {
             .withOffset(CGVector(dx: 4, dy: field.frame.midY))
         start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: 80)),
                     withVelocity: .slow, thenHoldForDuration: 0.6)
+        let gone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: keyboard)
+        wait(for: [gone], timeout: 5)
+        assertKeyboardStaysHidden()
+    }
+
+    /// A swipe down that starts on the text itself hides the keyboard,
+    /// as in Messages: only drags the text takes for itself keep it up.
+    func test_swipingDownOnTheFieldHidesTheKeyboard() {
+        let field = composerWithDraft()
+        let start = field.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: 120)),
+                    withVelocity: .default, thenHoldForDuration: 0.3)
         let gone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: keyboard)
         wait(for: [gone], timeout: 5)
         assertKeyboardStaysHidden()

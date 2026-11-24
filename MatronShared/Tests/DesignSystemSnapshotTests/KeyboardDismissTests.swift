@@ -24,42 +24,38 @@ final class KeyboardDismissTests: XCTestCase {
     }
 }
 
-final class KeyboardDismissTextDragTests: XCTestCase {
-    private let field = CGRect(x: 40, y: 16, width: 240, height: 120)
-    private let pullDown = CGSize(width: 2, height: 80)
+final class KeyboardDismissTextEditingTests: XCTestCase {
+    private typealias Other = KeyboardDismiss.OtherGesture
 
-    func testDraggingASelectionHandleDownNeverDismisses() {
-        // A drag that starts on the text: a selection handle inside the
-        // field, the caret being moved.
-        XCTAssertFalse(KeyboardDismiss.shouldDismiss(translation: pullDown,
-                                                     startLocation: CGPoint(x: 160, y: 100),
-                                                     textFrames: [field]))
+    func testAPlainSwipeOnTheTextIsNotEditing() {
+        // A swipe down on the field: the text's tap and loupe gestures
+        // have failed or are still waiting, so the pull-down may run.
+        XCTAssertFalse(KeyboardDismiss.textIsEditing([
+            Other(isOnText: true, isScrollPan: false, isActive: false),
+            Other(isOnText: true, isScrollPan: false, isActive: false),
+        ]))
     }
 
-    func testAHandleHangingJustBelowTheFieldNeverDismisses() {
-        // The knob of the end handle sits under the last line, a little
-        // outside the field's frame.
-        XCTAssertFalse(KeyboardDismiss.shouldDismiss(translation: pullDown,
-                                                     startLocation: CGPoint(x: 200, y: field.maxY + 10),
-                                                     textFrames: [field]))
+    func testMovingTheCaretOrASelectionIsEditing() {
+        // The loupe (long press, then drag) or a handle drag has begun.
+        XCTAssertTrue(KeyboardDismiss.textIsEditing([
+            Other(isOnText: true, isScrollPan: false, isActive: false),
+            Other(isOnText: true, isScrollPan: false, isActive: true),
+        ]))
     }
 
-    func testPullingDownElsewhereOnTheRowStillDismisses() {
-        XCTAssertTrue(KeyboardDismiss.shouldDismiss(translation: pullDown,
-                                                    startLocation: CGPoint(x: 10, y: 120),
-                                                    textFrames: [field]))
-        XCTAssertTrue(KeyboardDismiss.shouldDismiss(translation: pullDown,
-                                                    startLocation: CGPoint(x: 160, y: field.maxY + 30),
-                                                    textFrames: [field]))
+    func testScrollingATallDraftIsNotEditing() {
+        XCTAssertFalse(KeyboardDismiss.textIsEditing([
+            Other(isOnText: true, isScrollPan: true, isActive: true),
+        ]))
     }
 
-    func testARowWithNoMarkedFieldBehavesAsBefore() {
-        XCTAssertTrue(KeyboardDismiss.shouldDismiss(translation: pullDown,
-                                                    startLocation: CGPoint(x: 160, y: 100),
-                                                    textFrames: []))
-        XCTAssertFalse(KeyboardDismiss.shouldDismiss(translation: CGSize(width: 0, height: -60),
-                                                     startLocation: CGPoint(x: 10, y: 120),
-                                                     textFrames: [field]))
+    func testGesturesOffTheTextDoNotCount() {
+        // The timeline's scroll, the navigation back-swipe.
+        XCTAssertFalse(KeyboardDismiss.textIsEditing([
+            Other(isOnText: false, isScrollPan: true, isActive: true),
+            Other(isOnText: false, isScrollPan: false, isActive: true),
+        ]))
+        XCTAssertFalse(KeyboardDismiss.textIsEditing([]))
     }
 }
-
