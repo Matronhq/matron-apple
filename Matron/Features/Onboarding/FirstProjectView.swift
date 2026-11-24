@@ -95,7 +95,7 @@ struct FirstProjectView: View {
                         Link("Open Claude sign-in", destination: url)
                             .accessibilityIdentifier("firstProject.authorize")
                         Text("After signing in, return here. If Claude gives you a code, paste it below.")
-                    } else {
+                    } else if model.connection != "invalid_code" {
                         if ["expired", "failed", "cancelled"].contains(model.connection) {
                             Text("That sign-in did not finish. Start again for a fresh link.")
                         }
@@ -115,6 +115,9 @@ struct FirstProjectView: View {
                 }
                 if ["unsupported", "locked", "unavailable", "busy"].contains(model.connection) {
                     Button("Check again") { Task { await model.refresh() } }.disabled(model.busy)
+                }
+                if ["starting", "waiting", "checking", "invalid_code"].contains(model.connection) {
+                    Button("Cancel sign-in", role: .cancel) { Task { await model.cancelLogin() } }.disabled(model.busy)
                 }
             }
         }

@@ -152,6 +152,15 @@ public final class FirstProjectViewModel {
         catch { errorMessage = "Couldn't send the sign-in code. Check the connection before trying again." }
     }
 
+    public func cancelLogin() async {
+        guard !busy else { return }
+        busy = true
+        defer { busy = false }
+        errorMessage = nil
+        do { try await updateConnection(action: "cancel") }
+        catch { errorMessage = "Couldn't cancel this sign-in. It will expire automatically." }
+    }
+
     public func refresh() async {
         guard !busy else { return }
         busy = true
