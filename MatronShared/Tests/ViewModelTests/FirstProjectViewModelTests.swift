@@ -68,6 +68,50 @@ final class FirstProjectViewModelTests: XCTestCase {
         await model.load()
         XCTAssertEqual(model.connection, "unsupported")
         XCTAssertFalse(model.canStart)
+        XCTAssertNil(model.errorMessage)
+        await model.refresh()
+        XCTAssertEqual(model.connection, "unsupported")
+        XCTAssertNil(model.errorMessage)
+    }
+
+    func testLockedBoxClearsAuthorizationWithoutReportingNetworkFailure() async {
+        let rpc = FirstProjectRPC()
+        await rpc.setSetup(.ok(resultData: Data("{\"state\":\"waiting\",\"flow_id\":\"fixture-flow\",\"authorization_url\":\"https://claude.com/cai/oauth/authorize?state=fixture\"}".utf8)))
+        let model = FirstProjectViewModel(api: rpc, save: { _ in }, send: { _, _, _ in }, readResult: { _ in nil })
+        await model.load()
+        XCTAssertNotNil(model.authorizationURL)
+        await rpc.setSetup(.failure(code: "box_locked", detail: nil))
+        await model.refresh()
+        XCTAssertEqual(model.connection, "locked")
+        XCTAssertNil(model.authorizationURL)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertFalse(model.canStart)
+    }
+
+    func testBriefSendFailureRetriesExistingChatWithSameMessageID() async {
+        let rpc = FirstProjectRPC()
+        var failSend = true
+        var messageIDs: [String] = []
+        let model = FirstProjectViewModel(api: rpc, save: { _ in }, send: { _, _, id in
+            messageIDs.append(id)
+            if failSend { throw RPCRequestError.timeout }
+        }, readResult: { _ in nil })
+        await model.load()
+        await model.startProject()
+        XCTAssertEqual(model.progress.conversationID, "first-chat")
+        XCTAssertFalse(model.progress.promptQueued)
+        XCTAssertFalse(model.progress.startUnconfirmed)
+        XCTAssertTrue(model.errorMessage?.contains("brief could not be sent") == true)
+        await model.load()
+        XCTAssertTrue(model.errorMessage?.contains("brief could not be sent") == true)
+        failSend = false
+        await model.load()
+        XCTAssertTrue(model.progress.promptQueued)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(messageIDs.count, 3)
+        XCTAssertEqual(Set(messageIDs), [model.progress.messageID])
+        let starts = await rpc.timesStarted
+        XCTAssertEqual(starts, 1)
     }
 
     func testBriefStartsOnceAndUsesDurableMessageIdentity() async {

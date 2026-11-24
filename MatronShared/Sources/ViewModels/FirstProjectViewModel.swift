@@ -117,7 +117,11 @@ public final class FirstProjectViewModel {
             } else if progress.boxID != nil {
                 try await updateConnection(action: "status")
             }
-        } catch { errorMessage = "Couldn't reach your server. Check your connection and try again." }
+        } catch {
+            errorMessage = progress.conversationID != nil && !progress.promptQueued
+                ? briefSendFailure
+                : "Couldn't reach your server. Check your connection and try again."
+        }
     }
 
     public func selectBox(_ id: Int64) async {
@@ -203,10 +207,18 @@ public final class FirstProjectViewModel {
                 try await queueBriefIfNeeded()
             }
         } catch {
-            errorMessage = progress.startUnconfirmed
-                ? "The server did not confirm the new chat. Check Conversations before starting again."
-                : "Couldn't start your project. Check your server and try again."
+            if progress.conversationID != nil {
+                errorMessage = briefSendFailure
+            } else {
+                errorMessage = progress.startUnconfirmed
+                    ? "The server did not confirm the new chat. Check Conversations before starting again."
+                    : "Couldn't start your project. Check your server and try again."
+            }
         }
+    }
+
+    private var briefSendFailure: String {
+        "Your chat is ready, but the brief could not be sent. Check your connection, then tap Send my brief."
     }
 
     /// Called only after the user confirms they checked Conversations.
@@ -243,8 +255,10 @@ public final class FirstProjectViewModel {
             guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw SetupFailure(code: "bad_response") }
             return object
         case .failure(let code, _):
-            if code == "unknown_method" { connection = "unsupported" }
-            if code == "box_locked" { connection = "locked" }
+            // These replies prove the server is reachable. Let the normal
+            // state UI explain the remedy instead of showing a network error.
+            if code == "unknown_method" { return ["state": "unsupported"] }
+            if code == "box_locked" { return ["state": "locked"] }
             throw SetupFailure(code: code)
         }
     }

@@ -15,7 +15,7 @@ struct FirstProjectSheet: View {
 
     var body: some View {
         FirstProjectView(model: model,
-            openConversation: { nav.openConversationLink($0) },
+            openConversation: { nav.openChat($0) },
             openResult: { nav.openItem($0) },
             openProject: { nav.openPageLink(.project(id: $0)) },
             showConversations: { nav.tab = .conversations })

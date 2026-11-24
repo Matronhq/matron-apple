@@ -52,8 +52,8 @@ struct FirstProjectView: View {
             .task(id: scenePhase) {
                 guard scenePhase == .active else { return }
                 while !Task.isCancelled {
-                    do { try await Task.sleep(for: .seconds(3)) } catch { return }
                     if model.needsRefresh { await model.refresh() }
+                    do { try await Task.sleep(for: .seconds(3)) } catch { return }
                 }
             }
             .onDisappear { code = "" }
@@ -113,7 +113,7 @@ struct FirstProjectView: View {
                         }.disabled(code.isEmpty || model.busy)
                     }
                 }
-                if ["unsupported", "locked", "unavailable", "busy"].contains(model.connection) {
+                if ["unsupported", "locked", "unavailable", "busy", "waiting", "invalid_code"].contains(model.connection) {
                     Button("Check again") { Task { await model.refresh() } }.disabled(model.busy)
                 }
                 if ["starting", "waiting", "checking", "invalid_code"].contains(model.connection) {
