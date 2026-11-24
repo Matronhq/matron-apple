@@ -20,6 +20,15 @@ struct SignInView: View {
 
     private var showingRendezvous: Bool { !finishingSignIn && path.last == .device && qrTab == .show }
     private var rendezvousTaskID: Int? { showingRendezvous ? rendezvousAttempt : nil }
+    private var passwordMustStayVisible: Bool { viewModel.state == .busy || viewModel.step != .password }
+    private var methodPath: Binding<[Method]> {
+        Binding(get: { path }, set: { next in
+            // Guard navigation itself as well as hiding Back. Recovery codes
+            // must stay visible until the user acknowledges saving them.
+            if path.last == .login, next.last != .login, passwordMustStayVisible { return }
+            path = next
+        })
+    }
     private var linkMethodSelection: Binding<QRTab> {
         Binding(get: { qrTab }, set: { next in
             guard next != qrTab else { return }
@@ -35,7 +44,7 @@ struct SignInView: View {
             if finishingSignIn {
                 SignInProgressView()
             } else {
-                NavigationStack(path: $path) {
+                NavigationStack(path: methodPath) {
                     methodPicker
                         .navigationTitle("Sign in to Matron")
                         .navigationDestination(for: Method.self) { method in
@@ -179,7 +188,7 @@ struct SignInView: View {
         .navigationBarTitleDisplayMode(.inline)
         // Keep an in-flight password response on its own screen. Two-factor
         // screens already provide their own safe return to the password step.
-        .navigationBarBackButtonHidden(viewModel.state == .busy || viewModel.step != .password)
+        .navigationBarBackButtonHidden(passwordMustStayVisible)
         .scrollDismissesKeyboard(.interactively)
         .task(id: viewModel.serverURL) {
             guard (try? await Task.sleep(for: .milliseconds(600))) != nil else { return }
