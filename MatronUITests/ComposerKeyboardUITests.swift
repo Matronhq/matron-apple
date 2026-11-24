@@ -107,6 +107,49 @@ final class ComposerKeyboardUITests: XCTestCase {
         assertKeyboardStaysHidden()
     }
 
+    /// Opens the rig's seeded item (rig/README.md "Item thread rig") and
+    /// types a draft into its reply field.
+    private func itemReplyWithDraft() throws -> XCUIElement {
+        let tab = app.tabBars.buttons["For you"]
+        XCTAssertTrue(tab.waitForExistence(timeout: 15))
+        tab.tap()
+        let title = "Pick a replacement for the upload retry queue"
+        let row = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", title)).firstMatch
+        guard row.waitForExistence(timeout: 10) else { throw XCTSkip("item thread rig not seeded") }
+        row.tap()
+        XCTAssertTrue(app.collectionViews["item.thread"].waitForExistence(timeout: 10))
+        let field = app.textFields["item.reply.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5), "no reply field")
+        field.tap()
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 5))
+        field.typeText("Hi there")
+        Thread.sleep(forTimeInterval: 1)
+        if !keyboard.exists { field.tap() }
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 5))
+        Thread.sleep(forTimeInterval: 0.5)
+        return field
+    }
+
+    /// The item reply field: a swipe down on the text hides the keyboard.
+    func test_itemReply_swipingDownOnTheFieldHidesTheKeyboard() throws {
+        let field = try itemReplyWithDraft()
+        let start = field.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: 120)),
+                    withVelocity: .default, thenHoldForDuration: 0.3)
+        let gone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: keyboard)
+        wait(for: [gone], timeout: 5)
+        assertKeyboardStaysHidden()
+    }
+
+    /// The item reply field: moving the caret down keeps the keyboard.
+    func test_itemReply_movingTheCaretDownKeepsTheKeyboard() throws {
+        let field = try itemReplyWithDraft()
+        let start = field.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.5))
+        start.press(forDuration: 0.8, thenDragTo: start.withOffset(CGVector(dx: 0, dy: 200)))
+        attach("after item caret drag")
+        assertKeyboardStays("moving the caret down in an item reply")
+    }
+
     private func assertKeyboardStaysHidden(file: StaticString = #filePath, line: UInt = #line) {
         Thread.sleep(forTimeInterval: 1.5)
         XCTAssertFalse(keyboard.exists, "the keyboard came back", file: file, line: line)

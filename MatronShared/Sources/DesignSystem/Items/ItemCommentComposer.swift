@@ -157,6 +157,7 @@ public struct ItemCommentComposer: View {
                 .accessibilityLabel("Attach")
 
             field
+                .accessibilityIdentifier("item.reply.field")
 
             // The mic stays beside a draft, as in chat: a
             // voice note takes the typed text and the tray with it, as one
