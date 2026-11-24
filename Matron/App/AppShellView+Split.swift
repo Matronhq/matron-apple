@@ -144,7 +144,7 @@ extension AppShellView {
         // holds anything, and what they push opens in the detail column.
         NavigationStack(path: Binding(get: { [] }, set: { openFromSidebar($0) })) {
             ChatListView(viewModel: chatListVM, ownsViewModel: false, vmCache: vmCache,
-                         onSignOut: onSignOut, onOpenChat: { openFromSidebar([$0]) })
+                         onOpenChat: { openFromSidebar([$0]) })
         }
         // What the list appends itself (Archived, a pinned desk) lands in
         // the detail's Conversations stack.

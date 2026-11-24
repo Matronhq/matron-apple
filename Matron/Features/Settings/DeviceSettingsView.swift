@@ -62,6 +62,10 @@ struct DeviceSettingsView: View {
                     "Server",
                     value: session.homeserverURL.host ?? session.homeserverURL.absoluteString
                 )
+                if let onSignOut {
+                    Button("Sign Out", role: .destructive, action: onSignOut)
+                        .accessibilityIdentifier("settings.signOut")
+                }
             }
             if let security {
                 TwoFactorSettingsSection(security: security)
