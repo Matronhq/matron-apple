@@ -15,8 +15,10 @@ extension AppDependencies {
             save: { progress in
                 if let data = try? JSONEncoder().encode(progress) { UserDefaults.standard.set(data, forKey: key) }
             },
-            send: { id, prompt, localID in
+            send: { [weak self] id, prompt, localID in
+                guard let self, self.isCurrent(stack: ObjectIdentifier(core), session: session) else { throw CancellationError() }
                 await core.engine.ensurePlaceholderConversation(id: id, title: "My first project")
+                guard self.isCurrent(stack: ObjectIdentifier(core), session: session) else { throw CancellationError() }
                 try await core.engine.sendMessage(convoID: id, body: prompt, localID: localID)
             },
             readResult: { id in
@@ -25,7 +27,8 @@ extension AppDependencies {
                 query.sort = .updated
                 let notices = try await core.api.listItems(query)
                 guard let notice = notices.items.first(where: {
-                    $0.createdBy == .agent && (!$0.links.isEmpty || !$0.attachments.isEmpty)
+                    $0.kind == .notice && $0.originConvoID == id && $0.labels.contains("first-project-result")
+                    && $0.createdBy == .agent && (!$0.links.isEmpty || !$0.attachments.isEmpty)
                 }) else { return nil }
                 let missions = try? await core.api.conversationMissions(convoID: id)
                 let projectID = missions?.first(where: { $0.isCurrent })?.mission.projectID

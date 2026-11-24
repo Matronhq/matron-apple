@@ -249,6 +249,7 @@ public final class FirstProjectViewModel {
         }
     }
     private func adopt(_ object: [String: Any]) {
+        errorMessage = nil
         connection = object["state"] as? String ?? "unavailable"
         authorizationURL = nil
         if let string = object["authorization_url"] as? String, let url = URL(string: string),
