@@ -5,9 +5,9 @@ import MatronViewModels
 import MatronJournal
 import MatronVoice
 
-/// Settings → Device surface: a read-only account summary (userID,
-/// deviceID, and server host). The Devices row pushes the roster +
-/// pairing screen; `devicesAPI`, `linkAPI`, and `onSignOut` are all optional
+/// Settings account summary (userID, deviceID, and server host).
+/// Account and Devices both offer the same pairing screen;
+/// `devicesAPI`, `linkAPI`, and `onSignOut` are all optional
 /// so previews / tests keep rendering the summary without a live API or
 /// sign-out wiring.
 struct DeviceSettingsView: View {
@@ -62,6 +62,10 @@ struct DeviceSettingsView: View {
                     "Server",
                     value: session.homeserverURL.host ?? session.homeserverURL.absoluteString
                 )
+                if let linkAPI {
+                    linkDeviceRow(api: linkAPI)
+                        .accessibilityIdentifier("settings.account.linkDevice")
+                }
                 if let onSignOut {
                     Button("Sign Out", role: .destructive, action: onSignOut)
                         .accessibilityIdentifier("settings.signOut")
@@ -92,11 +96,8 @@ struct DeviceSettingsView: View {
                         }
                     }
                     if let linkAPI {
-                        NavigationLink {
-                            DeviceLinkView(api: linkAPI, serverURL: session.homeserverURL, relay: RelayClient())
-                        } label: {
-                            Label("Link a Device", systemImage: "qrcode")
-                        }
+                        linkDeviceRow(api: linkAPI)
+                            .accessibilityIdentifier("settings.devices.linkDevice")
                     }
                     if let agentChatAPI {
                         NavigationLink {
@@ -206,6 +207,14 @@ struct DeviceSettingsView: View {
                 launchText: LaunchTimeline.summary(LaunchTimeline.currentLaunch()),
                 maintenanceText: StoreDiagnostics.lastMaintenanceText(
                     sizes.lastMaintenance, now: Date()))
+        }
+    }
+
+    private func linkDeviceRow(api: any DeviceLinking) -> some View {
+        NavigationLink {
+            DeviceLinkView(api: api, serverURL: session.homeserverURL, relay: RelayClient())
+        } label: {
+            Label("Link a Device", systemImage: "qrcode")
         }
     }
 }
