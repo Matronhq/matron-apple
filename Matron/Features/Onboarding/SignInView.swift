@@ -16,8 +16,9 @@ struct SignInView: View {
     @State private var showingScanner = false
     @State private var qrTab: QRTab = .scan
     @State private var rendezvousAttempt = 0
+    @State private var finishingSignIn = false
 
-    private var showingRendezvous: Bool { path.last == .device && qrTab == .show }
+    private var showingRendezvous: Bool { !finishingSignIn && path.last == .device && qrTab == .show }
     private var rendezvousTaskID: Int? { showingRendezvous ? rendezvousAttempt : nil }
     private var linkMethodSelection: Binding<QRTab> {
         Binding(get: { qrTab }, set: { next in
@@ -30,25 +31,31 @@ struct SignInView: View {
     }
 
     var body: some View {
-        NavigationStack(path: $path) {
-            methodPicker
-                .navigationTitle("Sign in to Matron")
-                .navigationDestination(for: Method.self) { method in
-                    switch method {
-                    case .login: passwordSignIn
-                    case .device: deviceSignIn
-                    }
+        Group {
+            if finishingSignIn {
+                SignInProgressView()
+            } else {
+                NavigationStack(path: $path) {
+                    methodPicker
+                        .navigationTitle("Sign in to Matron")
+                        .navigationDestination(for: Method.self) { method in
+                            switch method {
+                            case .login: passwordSignIn
+                            case .device: deviceSignIn
+                            }
+                        }
                 }
+            }
         }
         .sheet(isPresented: $viewModel.isShowingForgotPassword,
                onDismiss: { viewModel.closeForgotPassword() }) {
             ForgotPasswordSheet(viewModel: viewModel)
         }
         .onChange(of: viewModel.state) { _, new in
-            if case .signedIn(let session) = new { onSignedIn(session) }
+            if case .signedIn(let session) = new { finishSignIn(session) }
         }
         .onChange(of: linkViewModel.phase) { _, new in
-            if case .signedIn(let session) = new { onSignedIn(session) }
+            if case .signedIn(let session) = new { finishSignIn(session) }
         }
         .onChange(of: path) { old, new in
             if old.last == .device, new.last != .device {
@@ -70,6 +77,17 @@ struct SignInView: View {
                 Task { await linkViewModel.handleScanned(payload) }
             }
         }
+    }
+
+    private func finishSignIn(_ session: UserSession) {
+        guard !finishingSignIn else { return }
+        // The host waits for the old account's teardown and prepares the
+        // local store before replacing this screen. Keep that wait visible,
+        // and prevent a second sign-in while it finishes.
+        finishingSignIn = true
+        showingScanner = false
+        rendezvousViewModel.stop()
+        onSignedIn(session)
     }
 
     private var methodPicker: some View {
@@ -333,5 +351,20 @@ struct SignInView: View {
         } footer: {
             Text("Approve the request on your signed-in device to finish.")
         }
+    }
+}
+
+/// Shown after authentication succeeds, until the host opens the chats.
+struct SignInProgressView: View {
+    var body: some View {
+        VStack(spacing: 16) {
+            ProgressView("Signing in…")
+                .accessibilityIdentifier("signin.finishing")
+            Text("Getting your chats ready.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(uiColor: .systemGroupedBackground))
     }
 }
