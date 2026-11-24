@@ -15,8 +15,10 @@ struct SignInView: View {
     @State private var path: [Method] = []
     @State private var showingScanner = false
     @State private var qrTab: QRTab = .scan
+    @State private var rendezvousAttempt = 0
 
     private var showingRendezvous: Bool { path.last == .device && qrTab == .show }
+    private var rendezvousTaskID: Int? { showingRendezvous ? rendezvousAttempt : nil }
     private var linkMethodSelection: Binding<QRTab> {
         Binding(get: { qrTab }, set: { next in
             guard next != qrTab else { return }
@@ -55,7 +57,7 @@ struct SignInView: View {
                 qrTab = .scan
             }
         }
-        .task(id: showingRendezvous) {
+        .task(id: rendezvousTaskID) {
             guard showingRendezvous, !Task.isCancelled else { return }
             await rendezvousViewModel.start()
         }
@@ -239,7 +241,7 @@ struct SignInView: View {
                     if qrTab == .show {
                         Button("Show a new code") {
                             linkViewModel.cancel()
-                            Task { await rendezvousViewModel.start() }
+                            rendezvousAttempt += 1
                         }
                     }
                 }
@@ -285,7 +287,7 @@ struct SignInView: View {
             case .error(let message):
                 VStack(spacing: 8) {
                     Text(message).font(.footnote).foregroundStyle(.secondary)
-                    Button("Retry") { Task { await rendezvousViewModel.start() } }
+                    Button("Retry") { rendezvousAttempt += 1 }
                 }
             }
         }
@@ -325,7 +327,7 @@ struct SignInView: View {
                 // tab, so a Scan-tab cancel never spuriously starts polling.
                 if case .connecting = rendezvousViewModel.phase {
                     rendezvousViewModel.stop()
-                    if qrTab == .show { Task { await rendezvousViewModel.start() } }
+                    if qrTab == .show { rendezvousAttempt += 1 }
                 }
             }
         } footer: {
