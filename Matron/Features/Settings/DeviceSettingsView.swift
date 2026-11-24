@@ -18,6 +18,7 @@ struct DeviceSettingsView: View {
     /// tests render the summary without a live API.
     let agentChatAPI: (any AgentChatProviding)?
     let onSignOut: (() -> Void)?
+    let onGetStarted: (() -> Void)?
     /// App shell (spec §5b): the Coordinator row needs the chat service
     /// (chooser) and the store (title). Optional so previews/tests render
     /// without it.
@@ -37,12 +38,13 @@ struct DeviceSettingsView: View {
 
     init(session: UserSession, devicesAPI: (any DevicesProviding)? = nil, linkAPI: (any DeviceLinking)? = nil,
          agentChatAPI: (any AgentChatProviding)? = nil, onSignOut: (() -> Void)? = nil,
-         deps: AppDependencies? = nil) {
+         deps: AppDependencies? = nil, onGetStarted: (() -> Void)? = nil) {
         self.session = session
         self.devicesAPI = devicesAPI
         self.linkAPI = linkAPI
         self.agentChatAPI = agentChatAPI
         self.onSignOut = onSignOut
+        self.onGetStarted = onGetStarted
         self.deps = deps
         _security = State(initialValue: deps.map {
             SecuritySettingsModel(twoFactorAPI: $0.twoFactorSettingsService(for: session),
@@ -55,6 +57,13 @@ struct DeviceSettingsView: View {
     var body: some View {
         Form {
             MatronGroupedRows {
+            if let onGetStarted {
+                Section {
+                    Button(action: onGetStarted) {
+                        Label("Get started", systemImage: "sparkles")
+                    }.accessibilityIdentifier("settings.getStarted")
+                }
+            }
             Section("Account") {
                 LabeledContent("User ID", value: session.userID)
                 LabeledContent("Device ID", value: session.deviceID)

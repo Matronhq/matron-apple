@@ -337,7 +337,7 @@ extension AppShellView {
                                linkAPI: deps.deviceLinkService(for: session),
                                agentChatAPI: deps.agentChatService(for: session),
                                onSignOut: onSignOut,
-                               deps: deps)
+                               deps: deps, onGetStarted: { showingFirstProject = true })
         }
     }
 }

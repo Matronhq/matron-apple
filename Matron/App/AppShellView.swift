@@ -20,6 +20,7 @@ struct AppShellView: View {
     let onSignOut: () -> Void
 
     @State var nav: AppShellNavigation
+    @State var showingFirstProject = false
     /// The list rows whose swipe-to-archive owns a leftward drag, for
     /// `rootSwipe`.
     @State private var rowSwipeZones = RowSwipeZones()
@@ -124,6 +125,14 @@ struct AppShellView: View {
         .environment(\.goToNumber, GoToNumberActions(open: { await openNumber($0) }))
         .fullScreenCover(item: $nav.voiceMode, content: voiceModeCover)
         .modifier(CarPlayMicrophoneRule(voiceNotes: voiceNotes, nav: nav))
+        .sheet(isPresented: $showingFirstProject) {
+            FirstProjectSheet(deps: deps, session: session, nav: nav)
+        }
+        .task(id: session.userID) {
+            if await deps.shouldOfferFirstProject(for: session), nav.isAtRoot, !Task.isCancelled {
+                showingFirstProject = true
+            }
+        }
     }
 
     /// The iPad's split view at regular width (`SplitShellRule`), else the
@@ -533,7 +542,7 @@ struct AppShellView: View {
                                linkAPI: deps.deviceLinkService(for: session),
                                agentChatAPI: deps.agentChatService(for: session),
                                onSignOut: onSignOut,
-                               deps: deps)
+                               deps: deps, onGetStarted: { showingFirstProject = true })
                 .modifier(rootSwipe)
                 .toolbar { backToMore }
         }
