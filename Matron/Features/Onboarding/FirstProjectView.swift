@@ -48,12 +48,15 @@ struct FirstProjectView: View {
                     .font(.footnote).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity).padding().background(.bar)
             }
-            .task { await model.load() }
             .task(id: scenePhase) {
                 guard scenePhase == .active else { return }
+                // Restore the selected box and any unsent brief before
+                // polling can take the model's busy guard. This also checks
+                // the connection immediately when returning from the browser.
+                await model.load()
                 while !Task.isCancelled {
-                    if model.needsRefresh { await model.refresh() }
                     do { try await Task.sleep(for: .seconds(3)) } catch { return }
+                    if model.needsRefresh { await model.refresh() }
                 }
             }
             .onDisappear { code = "" }
