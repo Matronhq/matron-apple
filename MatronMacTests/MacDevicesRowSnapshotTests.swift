@@ -28,6 +28,10 @@ final class MacDevicesRowSnapshotTests: XCTestCase {
                               tagChar: "B", status: status)
         let mac = DeviceDTO(id: 3, kind: "client", name: "alice-mac", createdAt: 0, cursor: 0,
                             lag: 0, lastSeenAt: nil, isSelf: true, connected: true)
+        // A long caption: the details take more of the row and the buttons
+        // still get the rest.
+        let expired = DeviceDTO(id: 4, kind: "client", name: "old-phone", createdAt: 0, cursor: 0,
+                                lag: 120, lastSeenAt: nil, isSelf: false, idleExpired: true)
         return List {
             DeviceRow(device: protected, newSessions: "Box default", onEditDefaults: {}, onRevoke: {},
                       onRename: {}, onSetLetter: {}, onToggleProtected: {})
@@ -35,12 +39,14 @@ final class MacDevicesRowSnapshotTests: XCTestCase {
                       onRename: {}, onSetLetter: {}, onToggleProtected: {})
             DeviceRow(device: mac, newSessions: nil, onEditDefaults: {}, onRevoke: {},
                       onRename: {}, onSetLetter: {}, onToggleProtected: {})
+            DeviceRow(device: expired, newSessions: nil, onEditDefaults: {}, onRevoke: {},
+                      onRename: {}, onSetLetter: {}, onToggleProtected: {})
         }
     }
 
     @MainActor
     func testRowsAtPaneWidth() {
-        assertVariants(of: rows().frame(width: MacSettingsLayout.paneWidth, height: 600),
+        assertVariants(of: rows().frame(width: MacSettingsLayout.paneWidth, height: 440),
                        named: "MacDevicesRows_pane")
     }
 

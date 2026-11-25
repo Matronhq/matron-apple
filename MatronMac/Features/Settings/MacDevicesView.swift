@@ -184,38 +184,17 @@ struct DeviceRow: View {
                 .font(.title3)
                 .foregroundStyle(.secondary)
                 .frame(width: 24)
-            // Wide enough: the details, then the buttons stacked in a
-            // column of their own on the right. Too narrow for that: the
-            // buttons go under the details and wrap. Either way the name,
-            // badges and usage lines keep a usable width; five buttons on
-            // one line beside them used to crush them into a column a word
-            // wide.
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .top, spacing: 12) {
-                    // A fixed ideal width, not the text's own, so every row
-                    // switches at the same width whatever its caption says.
-                    details
-                        .frame(minWidth: Self.detailsMinWidth, idealWidth: Self.detailsMinWidth,
-                               maxWidth: .infinity, alignment: .leading)
-                    VStack(alignment: .leading, spacing: 6) {
-                        buttons(fill: true)
-                    }
-                    .fixedSize()
-                }
-                VStack(alignment: .leading, spacing: 6) {
-                    details
-                    PillFlowLayout(spacing: 6) {
-                        buttons(fill: false)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+            DeviceRowLayout(detailsMinWidth: Self.detailsMinWidth) {
+                details
+                buttons
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.vertical, 4)
     }
 
-    /// The narrowest the details may get before the buttons leave their
-    /// column and wrap under them instead.
+    /// The narrowest the details may get before the buttons leave the
+    /// right-hand side and wrap under them instead.
     static let detailsMinWidth: CGFloat = 240
 
     private var details: some View {
@@ -254,27 +233,119 @@ struct DeviceRow: View {
         }
     }
 
-    /// `fill` stretches each button to the column's width, so a column of
-    /// them lines up; in the wrapping layout each keeps its own width.
-    @ViewBuilder private func buttons(fill: Bool) -> some View {
+    @ViewBuilder private var buttons: some View {
         if newSessions != nil {
-            button("New Sessions…", fill: fill, action: onEditDefaults)
+            Button("New Sessions…", action: onEditDefaults)
+                .controlSize(.small)
                 .help("Choose the agent, model and effort new sessions on this box start with")
         }
         if device.kind == "agent" {
-            button("Tag…", fill: fill, action: onSetLetter)
+            Button("Tag…", action: onSetLetter)
+                .controlSize(.small)
                 .help("Choose the character shown before this machine's chat titles")
-            button(device.isProtected ? "Unprotect…" : "Protect…", fill: fill, action: onToggleProtected)
+            Button(device.isProtected ? "Unprotect…" : "Protect…", action: onToggleProtected)
+                .controlSize(.small)
                 .help("A protected box only takes work you approve yourself, signed with an approval key")
         }
-        button("Rename…", fill: fill, action: onRename)
-        button(device.isSelf ? "Sign Out…" : "Revoke…", fill: fill, action: onRevoke)
+        Button("Rename…", action: onRename)
+            .controlSize(.small)
+        Button(device.isSelf ? "Sign Out…" : "Revoke…", action: onRevoke)
+            .controlSize(.small)
+    }
+}
+
+/// A device row's body: its details first, then its buttons.
+///
+/// When there's room, the details take the width their text needs and the
+/// buttons fill the rest of the row on the right, as many to a line as fit,
+/// each line ending at the row's trailing edge. When the details would get
+/// narrower than `detailsMinWidth` that way, the buttons go under the
+/// details instead and wrap across the full width. Five buttons on one line
+/// beside the details used to crush them into a column a word wide.
+struct DeviceRowLayout: Layout {
+    let detailsMinWidth: CGFloat
+    var columnGap: CGFloat = 16
+    var buttonSpacing: CGFloat = 6
+    /// Between the details and the buttons when they are stacked.
+    var stackedGap: CGFloat = 8
+
+    struct Arrangement {
+        var details: CGRect
+        var buttons: [CGRect]
+        var size: CGSize
+        var sideBySide: Bool
     }
 
-    private func button(_ title: String, fill: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title).frame(maxWidth: fill ? .infinity : nil)
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        arrange(width: proposal.width, subviews: subviews).size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let arrangement = arrange(width: bounds.width, subviews: subviews)
+        for (index, frame) in zip(subviews.indices, [arrangement.details] + arrangement.buttons) {
+            subviews[index].place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
+                                  anchor: .topLeading, proposal: ProposedViewSize(frame.size))
         }
-        .controlSize(.small)
+    }
+
+    func arrange(width: CGFloat?, subviews: Subviews) -> Arrangement {
+        guard let detailsView = subviews.first else {
+            return Arrangement(details: .zero, buttons: [], size: .zero, sideBySide: false)
+        }
+        let buttonSizes = subviews.dropFirst().map { $0.sizeThatFits(.unspecified) }
+        let widestButton = buttonSizes.map(\.width).max() ?? 0
+        let detailsIdeal = detailsView.sizeThatFits(.unspecified).width
+        let available = width ?? (detailsIdeal + columnGap + buttonSizes.map(\.width).reduce(0, +)
+                                  + buttonSpacing * CGFloat(max(buttonSizes.count - 1, 0)))
+
+        // Side by side: the details get what their text needs, but always
+        // leave room for the widest button.
+        let detailsWidth = min(detailsIdeal, available - columnGap - widestButton)
+        if buttonSizes.isEmpty || detailsWidth >= min(detailsIdeal, detailsMinWidth) {
+            let detailsSize = buttonSizes.isEmpty
+                ? detailsView.sizeThatFits(ProposedViewSize(width: available, height: nil))
+                : detailsView.sizeThatFits(ProposedViewSize(width: detailsWidth, height: nil))
+            let columnWidth = available - detailsWidth - columnGap
+            let (frames, height) = flow(buttonSizes, width: columnWidth, trailingEdge: available, top: 0)
+            return Arrangement(details: CGRect(origin: .zero, size: detailsSize), buttons: frames,
+                               size: CGSize(width: available, height: max(detailsSize.height, height)),
+                               sideBySide: true)
+        }
+        let detailsSize = detailsView.sizeThatFits(ProposedViewSize(width: available, height: nil))
+        let top = detailsSize.height + stackedGap
+        let (frames, height) = flow(buttonSizes, width: available, trailingEdge: nil, top: top)
+        return Arrangement(details: CGRect(origin: .zero, size: detailsSize), buttons: frames,
+                           size: CGSize(width: available, height: top + height), sideBySide: false)
+    }
+
+    /// Lays the buttons out in lines no wider than `width`. With a
+    /// `trailingEdge`, each line ends there; without one, lines start at 0.
+    private func flow(_ sizes: [CGSize], width: CGFloat, trailingEdge: CGFloat?,
+                      top: CGFloat) -> (frames: [CGRect], height: CGFloat) {
+        var lines: [[Int]] = []
+        var lineWidth: CGFloat = 0
+        for (index, size) in sizes.enumerated() {
+            if let last = lines.indices.last, !lines[last].isEmpty,
+               lineWidth + buttonSpacing + size.width <= width {
+                lines[last].append(index)
+                lineWidth += buttonSpacing + size.width
+            } else {
+                lines.append([index])
+                lineWidth = size.width
+            }
+        }
+        var frames = [CGRect](repeating: .zero, count: sizes.count)
+        var y = top
+        for line in lines {
+            let lineHeight = line.map { sizes[$0].height }.max() ?? 0
+            let total = line.map { sizes[$0].width }.reduce(0, +) + buttonSpacing * CGFloat(line.count - 1)
+            var x = trailingEdge.map { $0 - total } ?? 0
+            for index in line {
+                frames[index] = CGRect(x: x, y: y, width: sizes[index].width, height: sizes[index].height)
+                x += sizes[index].width + buttonSpacing
+            }
+            y += lineHeight + buttonSpacing
+        }
+        return (frames, lines.isEmpty ? 0 : y - buttonSpacing - top)
     }
 }
