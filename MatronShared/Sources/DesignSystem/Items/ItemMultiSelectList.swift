@@ -8,7 +8,9 @@ import MatronModels
 /// answer. Once answered, the answer's labels show ticked and a line says
 /// so; changing the ticks and sending again replaces it, as re-tapping a
 /// one-tap button does. Every row and Send are disabled while the item
-/// has a write in flight (`isEnabled` false).
+/// has a write in flight (`isEnabled` false). Beside Send, one toggle
+/// ticks every label ("Select all") or, once all are ticked, none
+/// ("Unselect all"); like a tick, it sends nothing.
 ///
 /// Plain SwiftUI controls, like `ItemActionButtons`: they sit outside the
 /// thread's selectable text.
@@ -20,6 +22,9 @@ struct ItemMultiSelectList: View {
     var identifierPrefix = "item-multi"
     let onToggle: (String) -> Void
     let onSend: () -> Void
+    /// Ticks every label (`true`) or none (`false`); `nil` draws no
+    /// Select all toggle.
+    var onSetAll: ((Bool) -> Void)? = nil
 
     /// What one row renders as — the row logic, pinned without a view
     /// inspector.
@@ -30,6 +35,11 @@ struct ItemMultiSelectList: View {
 
     static func rows(_ state: ItemMultiSelectState) -> [RowState] {
         state.labels.map { RowState(label: $0, isTicked: state.ticked.contains($0)) }
+    }
+
+    /// The Select all toggle's title: what tapping it will do.
+    static func selectAllTitle(_ state: ItemMultiSelectState) -> String {
+        state.allTicked ? "Unselect all" : "Select all"
     }
 
     /// Whether the "Answered" line shows: answered, and the ticks are the
@@ -67,6 +77,15 @@ struct ItemMultiSelectList: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(!isEnabled || !state.canSend)
                 .accessibilityIdentifier("\(identifierPrefix)-send")
+                if let onSetAll {
+                    let allTicked = state.allTicked
+                    Button { onSetAll(!allTicked) } label: {
+                        Text(Self.selectAllTitle(state))
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(!isEnabled)
+                    .accessibilityIdentifier("\(identifierPrefix)-select-all")
+                }
                 if Self.showsAnswered(state) {
                     Label("Answered", systemImage: "checkmark")
                         .font(ItemTypography.captionDetailFont)
