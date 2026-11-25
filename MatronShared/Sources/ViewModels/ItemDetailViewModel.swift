@@ -115,6 +115,10 @@ public final class ItemDetailViewModel {
     /// follow-up questions). Set by the app; without it such a tap is
     /// refused with a sentence rather than sent unsigned.
     public var approvalSigner: ApprovalSigner?
+    /// The chat asks still waiting on the user, where Approve on a chat
+    /// ask aimed at a protected box finds the message it signs over. Set
+    /// by the app; without it such an Approve sends the user to the card.
+    public var chatAsks: (any AgentChatPendingReading)?
     /// The origin conversation's consent rows — the card's own payload and
     /// its outcome. Optional so existing call sites construct unchanged; a
     /// view model without it draws no card and so never answers.
@@ -1598,7 +1602,7 @@ public final class ItemDetailViewModel {
         // A spawn ask's task, as its card carries it: the only text a
         // consent approval for it may be signed over.
         let task = comment == nil ? spawnConsent?.request?.task : nil
-        switch await StepUpTap.send(item: item, comment: comment, label: label, verifiedText: task, api: api, sync: sync,
+        switch await StepUpTap.send(item: item, comment: comment, label: label, verifiedText: task, chatAsks: chatAsks, api: api, sync: sync,
                                     signer: approvalSigner) {
         case .unsigned: return nil
         case .sent: return true

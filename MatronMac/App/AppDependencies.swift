@@ -371,6 +371,7 @@ final class AppDependencies {
         let c = core(for: session)
         let vm = ItemsPanelViewModel(convoID: convoID, store: c.store, api: c.api, sync: c.items, gate: .shared)
         vm.approvalSigner = approvalSigner(for: session)
+        vm.chatAsks = c.api
         return vm
     }
 
@@ -447,6 +448,7 @@ final class AppDependencies {
                                    // The reply box, kept on disk until sent.
                                    unsentReplies: unsentReplies, isStandIn: isStandIn)
         vm.approvalSigner = approvalSigner(for: session)
+        vm.chatAsks = c.api
         return vm
     }
 
