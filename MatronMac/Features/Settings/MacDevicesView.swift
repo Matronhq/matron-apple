@@ -153,7 +153,7 @@ struct MacDevicesView: View {
     }
 }
 
-private struct DeviceRow: View {
+struct DeviceRow: View {
     let device: DeviceDTO
     /// The box's defaults for new sessions in one line, or nil when it has
     /// none to edit (a client, or a journal predating them).
@@ -179,59 +179,80 @@ private struct DeviceRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(alignment: .top, spacing: 10) {
             Image(systemName: device.symbolName)
                 .font(.title3)
                 .foregroundStyle(.secondary)
                 .frame(width: 24)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(device.name.isEmpty ? "Unnamed device" : device.name)
-                        .fontWeight(.medium)
-                    if device.isSelf {
-                        Text("This device")
-                            .font(.caption2.weight(.semibold))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 1)
-                            .background(Color.accentColor.opacity(0.15), in: Capsule())
-                            .foregroundStyle(Color.accentColor)
-                    }
-                    if device.isProtected { ProtectedBoxBadge() }
+            // The buttons sit under the details, not beside them: five of
+            // them on one line took most of the row and crushed the name,
+            // badges and usage lines into a column a word wide. Here the
+            // details get the full width and the buttons wrap when the
+            // row is too narrow for one line of them.
+            VStack(alignment: .leading, spacing: 6) {
+                details
+                PillFlowLayout(spacing: 6) {
+                    buttons
                 }
-                Text(caption)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var details: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            // Wraps as a line of chips, so a long name pushes the badges
+            // to the next line instead of squeezing them.
+            PillFlowLayout(spacing: 6) {
+                Text(device.name.isEmpty ? "Unnamed device" : device.name)
+                    .fontWeight(.medium)
+                if device.isSelf {
+                    Text("This device")
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(Color.accentColor.opacity(0.15), in: Capsule())
+                        .foregroundStyle(Color.accentColor)
+                }
+                if device.isProtected { ProtectedBoxBadge() }
+            }
+            Text(caption)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let newSessions {
+                Text("New sessions: \(newSessions)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                if let newSessions {
-                    Text("New sessions: \(newSessions)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                // The box's limits with when each resets (session and week),
-                // from its last report to the journal.
-                if device.kind == "agent", let status = device.status {
-                    AgentCapacityRowContent(capacity: status.capacity, pending: false,
-                                            freshness: .report(status, connected: device.connected))
-                }
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer()
-            if newSessions != nil {
-                Button("New Sessions…", action: onEditDefaults)
-                    .controlSize(.small)
-                    .help("Choose the agent, model and effort new sessions on this box start with")
+            // The box's limits with when each resets (session and week),
+            // from its last report to the journal.
+            if device.kind == "agent", let status = device.status {
+                AgentCapacityRowContent(capacity: status.capacity, pending: false,
+                                        freshness: .report(status, connected: device.connected))
             }
-            if device.kind == "agent" {
-                Button("Tag…", action: onSetLetter)
-                    .controlSize(.small)
-                    .help("Choose the character shown before this machine's chat titles")
-                Button(device.isProtected ? "Unprotect…" : "Protect…", action: onToggleProtected)
-                    .controlSize(.small)
-                    .help("A protected box only takes work you approve yourself, signed with an approval key")
-            }
-            Button("Rename…", action: onRename)
-                .controlSize(.small)
-            Button(device.isSelf ? "Sign Out…" : "Revoke…", action: onRevoke)
-                .controlSize(.small)
         }
-        .padding(.vertical, 3)
+    }
+
+    @ViewBuilder private var buttons: some View {
+        if newSessions != nil {
+            Button("New Sessions…", action: onEditDefaults)
+                .controlSize(.small)
+                .help("Choose the agent, model and effort new sessions on this box start with")
+        }
+        if device.kind == "agent" {
+            Button("Tag…", action: onSetLetter)
+                .controlSize(.small)
+                .help("Choose the character shown before this machine's chat titles")
+            Button(device.isProtected ? "Unprotect…" : "Protect…", action: onToggleProtected)
+                .controlSize(.small)
+                .help("A protected box only takes work you approve yourself, signed with an approval key")
+        }
+        Button("Rename…", action: onRename)
+            .controlSize(.small)
+        Button(device.isSelf ? "Sign Out…" : "Revoke…", action: onRevoke)
+            .controlSize(.small)
     }
 }
