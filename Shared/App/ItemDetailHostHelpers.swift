@@ -22,7 +22,8 @@ enum ItemDetailHostHelpers {
     /// Ticks and Send on multi-select questions, wired to `vm`.
     static func multiSelectActions(_ vm: ItemDetailViewModel) -> ItemDetailView.MultiSelectActions {
         .init(toggle: { commentID, label in vm.toggleTick(label, commentID: commentID) },
-              send: { commentID in Task { await vm.sendSelection(commentID: commentID) } })
+              send: { commentID in Task { await vm.sendSelection(commentID: commentID) } },
+              setAll: { commentID, all in vm.setAllTicked(all, commentID: commentID) })
     }
 
     /// Replies still settling (`sendingReplies`) as "Sending…" rows —

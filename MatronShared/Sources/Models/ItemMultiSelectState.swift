@@ -24,4 +24,8 @@ public struct ItemMultiSelectState: Equatable, Hashable, Sendable {
 
     /// Whether the question has been answered at least once.
     public var isAnswered: Bool { !answered.isEmpty }
+
+    /// Whether every label is ticked: the Select all toggle then reads
+    /// "Unselect all".
+    public var allTicked: Bool { !labels.isEmpty && labels.allSatisfy(ticked.contains) }
 }

@@ -104,6 +104,32 @@ final class ItemMultiSelectTests: XCTestCase {
         XCTAssertEqual(vm.itemMultiSelect?.ticked, [])
     }
 
+    func testSelectAllTicksEveryLabelAndUnselectAllClearsThem() async throws {
+        let (vm, _, sync) = try await start(question())
+        vm.toggleTick(Self.labels[1], commentID: nil)
+        XCTAssertEqual(vm.itemMultiSelect?.allTicked, false)
+
+        vm.setAllTicked(true, commentID: nil)
+        XCTAssertEqual(vm.itemMultiSelect?.ticked, Set(Self.labels))
+        XCTAssertEqual(vm.itemMultiSelect?.allTicked, true)
+        XCTAssertEqual(vm.itemMultiSelect?.canSend, true)
+        XCTAssertEqual(sync.answers, [], "selecting all sends nothing")
+
+        vm.setAllTicked(false, commentID: nil)
+        XCTAssertEqual(vm.itemMultiSelect?.ticked, [])
+        XCTAssertEqual(vm.itemMultiSelect?.canSend, false)
+    }
+
+    func testSelectAllBackToTheAnswerDropsTheEdit() async throws {
+        let (vm, _, _) = try await start(question(chosen: Self.labels))
+        vm.setAllTicked(false, commentID: nil)
+        XCTAssertEqual(vm.itemMultiSelect?.canSend, false, "nothing ticked: Send stays off")
+        vm.setAllTicked(true, commentID: nil)
+        let state = try XCTUnwrap(vm.itemMultiSelect)
+        XCTAssertEqual(state.ticked, state.answered)
+        XCTAssertFalse(state.canSend, "back on the latest answer: nothing to send")
+    }
+
     func testSendQueuesTheTickedLabelsInOfferedOrderAndShowsThemChosen() async throws {
         let (vm, store, sync) = try await start(question())
         sync.onEnqueue = { id, selected, replyTo in store.storedOutbox = [self.row(id, selected: selected, replyTo: replyTo)] }

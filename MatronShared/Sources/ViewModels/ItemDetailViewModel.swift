@@ -1722,6 +1722,15 @@ public final class ItemDetailViewModel {
         tickDrafts[Self.selectionKey(commentID)] = ticked == state.answered ? nil : ticked
     }
 
+    /// Ticks every label of a multi-select question (`all` true), or
+    /// unticks them all. Like `toggleTick`, nothing is sent, and landing on
+    /// the latest answer drops the edit.
+    public func setAllTicked(_ all: Bool, commentID: String?) {
+        guard let state = multiSelectState(commentID: commentID) else { return }
+        let ticked: Set<String> = all ? Set(state.labels) : []
+        tickDrafts[Self.selectionKey(commentID)] = ticked == state.answered ? nil : ticked
+    }
+
     /// Sends the ticked labels as the answer to a multi-select question —
     /// `selected`, with `reply_to` for a follow-up comment's — through the
     /// same offline-safe outbox as a tap. The labels go in offered order

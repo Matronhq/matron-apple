@@ -22,4 +22,12 @@ final class ItemMultiSelectListTests: XCTestCase {
         XCTAssertFalse(ItemMultiSelectList.showsAnswered(.init(labels: labels, ticked: [labels[1]], answered: answer, canSend: true)),
                        "an unsent change is not the answer")
     }
+
+    func testTheToggleSaysSelectAllUntilEveryLabelIsTicked() {
+        XCTAssertEqual(ItemMultiSelectList.selectAllTitle(.init(labels: labels, ticked: [], answered: [], canSend: false)), "Select all")
+        XCTAssertEqual(ItemMultiSelectList.selectAllTitle(.init(labels: labels, ticked: [labels[0], labels[1]], answered: [], canSend: true)),
+                       "Select all")
+        XCTAssertEqual(ItemMultiSelectList.selectAllTitle(.init(labels: labels, ticked: Set(labels), answered: [], canSend: true)),
+                       "Unselect all")
+    }
 }

@@ -177,8 +177,12 @@ public struct ItemDetailView: View {
         public var toggle: ((String?, String) -> Void)?
         /// Sends the ticked labels — `sendSelection`.
         public var send: ((String?) -> Void)?
-        public init(toggle: ((String?, String) -> Void)? = nil, send: ((String?) -> Void)? = nil) {
-            self.toggle = toggle; self.send = send
+        /// Ticks every label (`true`) or none (`false`) — `setAllTicked`.
+        /// `nil` draws no Select all toggle.
+        public var setAll: ((String?, Bool) -> Void)?
+        public init(toggle: ((String?, String) -> Void)? = nil, send: ((String?) -> Void)? = nil,
+                    setAll: ((String?, Bool) -> Void)? = nil) {
+            self.toggle = toggle; self.send = send; self.setAll = setAll
         }
     }
 
@@ -660,7 +664,8 @@ public struct ItemDetailView: View {
             if let state = model.multiSelect {
                 if let toggle = multiSelectActions.toggle, let send = multiSelectActions.send {
                     ItemMultiSelectList(state: state, isEnabled: !model.isBusy,
-                                        onToggle: { toggle(nil, $0) }, onSend: { send(nil) })
+                                        onToggle: { toggle(nil, $0) }, onSend: { send(nil) },
+                                        onSetAll: multiSelectActions.setAll.map { setAll in { setAll(nil, $0) } })
                 }
             } else if let onAction {
                 ItemActionButtons(actions: model.actions, selected: model.selectedAction, isEnabled: !model.isBusy, onChoose: onAction)
@@ -1287,7 +1292,8 @@ public struct ItemDetailView: View {
             if let state = model.commentMultiSelects[c.id], !offered.isEmpty,
                let toggle = multiSelectActions.toggle, let send = multiSelectActions.send {
                 ItemMultiSelectList(state: state, isEnabled: !model.isBusy, identifierPrefix: "comment-multi-\(c.id)",
-                                    onToggle: { toggle(c.id, $0) }, onSend: { send(c.id) })
+                                    onToggle: { toggle(c.id, $0) }, onSend: { send(c.id) },
+                                    onSetAll: multiSelectActions.setAll.map { setAll in { setAll(c.id, $0) } })
             }
         } else if let onCommentAction, !offered.isEmpty {
             ItemActionButtons(actions: offered, selected: model.selectedCommentActions[c.id], isEnabled: !model.isBusy,
