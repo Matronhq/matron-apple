@@ -8,10 +8,14 @@ import XCTest
 final class ComposerKeyboardUITests: XCTestCase {
     private var app: XCUIApplication!
 
+    /// The rig journal; `RIG_PORT` (as `TEST_RUNNER_RIG_PORT`) moves it off
+    /// the default port, for a second rig beside one already running.
+    private let rigBase = "http://127.0.0.1:\(ProcessInfo.processInfo.environment["RIG_PORT"] ?? "9810")"
+
     override func setUpWithError() throws {
         continueAfterFailure = false
-        guard let url = URL(string: "http://127.0.0.1:9810/snapshot"), (try? Data(contentsOf: url)) != nil else {
-            throw XCTSkip("timeline rig not running (127.0.0.1:9810)")
+        guard let url = URL(string: rigBase + "/snapshot"), (try? Data(contentsOf: url)) != nil else {
+            throw XCTSkip("timeline rig not running (\(rigBase))")
         }
         app = XCUIApplication()
         app.launch()
@@ -148,6 +152,63 @@ final class ComposerKeyboardUITests: XCTestCase {
         start.press(forDuration: 0.8, thenDragTo: start.withOffset(CGVector(dx: 0, dy: 200)))
         attach("after item caret drag")
         assertKeyboardStays("moving the caret down in an item reply")
+    }
+
+    /// The item reply field stays just above the keyboard when a new
+    /// comment lands on the item while you are about to type. It used to
+    /// drop behind the keyboard, which stayed up.
+    func test_itemReply_staysAboveTheKeyboardWhenACommentArrives() throws {
+        guard let token = ProcessInfo.processInfo.environment["RIG_AGENT_TOKEN"], !token.isEmpty else {
+            throw XCTSkip("RIG_AGENT_TOKEN not set")
+        }
+        let field = try itemReplyWithDraft()
+        assertJustAboveTheKeyboard(field, "before the comment")
+        for n in 1...2 {
+            try postAgentComment("A new comment, number \(n), while you type.", token: token)
+            // Let the comment reach the app and the thread take it in.
+            Thread.sleep(forTimeInterval: 2.5)
+            attach("after comment \(n)")
+            XCTAssertTrue(keyboard.exists, "the keyboard went away")
+            assertJustAboveTheKeyboard(field, "after comment \(n)")
+        }
+    }
+
+    private func assertJustAboveTheKeyboard(_ field: XCUIElement, _ step: String,
+                                            file: StaticString = #filePath, line: UInt = #line) {
+        let fieldBottom = field.frame.maxY, keyboardTop = keyboard.frame.minY
+        XCTAssertTrue(fieldBottom <= keyboardTop && fieldBottom > keyboardTop - 120,
+                      "\(step): field bottom y=\(fieldBottom), keyboard top y=\(keyboardTop)",
+                      file: file, line: line)
+    }
+
+    /// Posts a comment on the rig's seeded item as the rig's agent.
+    private func postAgentComment(_ body: String, token: String) throws {
+        func call(_ method: String, _ path: String, _ json: [String: Any]? = nil) throws -> Any {
+            var request = URLRequest(url: URL(string: rigBase + path)!)
+            request.httpMethod = method
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "authorization")
+            if let json {
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+                request.setValue(UUID().uuidString, forHTTPHeaderField: "idempotency-key")
+                request.httpBody = try JSONSerialization.data(withJSONObject: json)
+            }
+            var result: Result<Data, Error> = .failure(URLError(.timedOut))
+            let done = expectation(description: "\(method) \(path)")
+            URLSession.shared.dataTask(with: request) { data, response, error in
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                if let data, (200..<300).contains(status) { result = .success(data) }
+                else { result = .failure(error ?? URLError(.badServerResponse)) }
+                done.fulfill()
+            }.resume()
+            wait(for: [done], timeout: 10)
+            return try JSONSerialization.jsonObject(with: result.get())
+        }
+        let list = try call("GET", "/items") as? [String: Any]
+        let items = list?["items"] as? [[String: Any]] ?? []
+        let item = try XCTUnwrap(items.first { ($0["title"] as? String) == "Pick a replacement for the upload retry queue" },
+                                 "no seeded item")
+        let id = try XCTUnwrap(item["id"] as? String)
+        _ = try call("POST", "/items/\(id)/comments", ["convo_id": item["convo_id"] ?? "", "body": body])
     }
 
     private func assertKeyboardStaysHidden(file: StaticString = #filePath, line: UInt = #line) {

@@ -35,6 +35,15 @@ import UIKit
 /// decide how far the keyboard reaches, and the guide is only used, capped
 /// by them, to follow an interactive dismissal that has no notifications
 /// of its own.
+///
+/// And the guide is only believed while a finger drags a scroll view that
+/// dismisses the keyboard interactively, the one case it is needed for.
+/// Measured on the iPhone 17 simulator, 2026-11-25: with an item's reply
+/// field focused, a new comment landing on the item moves the item page's
+/// `keyboardLayoutGuide` from the keyboard's top (y=430 in the page) to
+/// the bottom edge in a single layout pass, outside any animation and with
+/// no keyboard notification, while the keyboard stays up. Read as an
+/// interactive dismissal, that dropped the reply field behind the keyboard.
 enum ChatKeyboardAvoidance {
     /// How far the keyboard reaches up into a view `viewHeight` tall whose
     /// keyboard guide's top edge is at `keyboardTop` (the view's own
@@ -73,16 +82,20 @@ enum ChatKeyboardAvoidance {
     /// whether it changed since the last pass. Inside a UIKit animation
     /// (`animating`) the keyboard's own show/hide or a rotation is running,
     /// and the notification has the answer. Outside one, a guide that moves
-    /// is following an interactive dismissal, and it is believed up to the
-    /// notified overlap. A guide that has stopped tracking never moves, so
-    /// it never overrides the notification. Around a trip to the
-    /// background (`trustsGuide` false: the app is not active, or became
-    /// active moments ago) the guide is where it goes wrong, and it can
-    /// jump once on its way to being stuck, so it is not believed at all.
+    /// while a finger drags a scroll view that dismisses the keyboard
+    /// interactively (`dragging`) is following that dismissal, and it is
+    /// believed up to the notified overlap. A guide that moves with no such
+    /// drag is wrong (a layout pass for new content can drop it to the
+    /// bottom edge under a keyboard that stays up), and a guide that has
+    /// stopped tracking never moves, so neither overrides the notification.
+    /// Around a trip to the background (`trustsGuide` false: the app is not
+    /// active, or became active moments ago) the guide is where it goes
+    /// wrong, and it can jump once on its way to being stuck, so it is not
+    /// believed at all.
     static func layoutOverlap(guide: CGFloat, guideMoved: Bool, notified: CGFloat?,
-                              animating: Bool, trustsGuide: Bool = true) -> CGFloat {
+                              animating: Bool, dragging: Bool, trustsGuide: Bool = true) -> CGFloat {
         guard let notified else { return guide }
-        if guideMoved, !animating, trustsGuide { return min(guide, notified) }
+        if guideMoved, !animating, dragging, trustsGuide { return min(guide, notified) }
         return notified
     }
 }
@@ -254,19 +267,89 @@ private final class KeyboardGuideView: UIView {
         let guide = ChatKeyboardAvoidance.overlap(viewHeight: bounds.height,
                                                   keyboardTop: keyboardLayoutGuide.layoutFrame.minY)
         let inherited = UIView.inheritedAnimationDuration
+        let notified = notifiedOverlap
+        let guideMoved = guide != lastGuideOverlap
+        // Only looked for when it can matter: a guide that moved outside
+        // an animation.
+        let dragging = guideMoved && inherited == 0 && isDraggingToDismiss
         let overlap = ChatKeyboardAvoidance.layoutOverlap(guide: guide,
-                                                          guideMoved: guide != lastGuideOverlap,
-                                                          notified: notifiedOverlap,
+                                                          guideMoved: guideMoved,
+                                                          notified: notified,
                                                           animating: inherited > 0,
+                                                          dragging: dragging,
                                                           trustsGuide: trustsGuide)
         lastGuideOverlap = guide
         report(overlap, ChatKeyboardAvoidance.animation(forInheritedDuration: inherited))
+        if let notified, overlap < notified { settleAfterDrag() }
     }
 
+    /// The scroll views last found to dismiss the keyboard interactively,
+    /// so a drag's later frames don't search the window again.
+    private var dismissingScrollViews: [WeakScrollView] = []
+
+    /// Whether a finger is dragging a scroll view in this window that
+    /// dismisses the keyboard interactively: the only time the guide moves
+    /// for a real reason without the keyboard's notifications.
+    private var isDraggingToDismiss: Bool {
+        func tracking(_ views: [WeakScrollView]) -> Bool {
+            views.contains { $0.view.map { $0.isTracking && $0.window === window } ?? false }
+        }
+        if tracking(dismissingScrollViews) { return true }
+        guard let window else { return false }
+        dismissingScrollViews = Self.scrollViewsDismissingInteractively(in: window).map(WeakScrollView.init)
+        return tracking(dismissingScrollViews)
+    }
+
+    private static func scrollViewsDismissingInteractively(in view: UIView) -> [UIScrollView] {
+        var found: [UIScrollView] = []
+        if let scroll = view as? UIScrollView,
+           scroll.keyboardDismissMode == .interactive || scroll.keyboardDismissMode == .interactiveWithAccessory {
+            found.append(scroll)
+        }
+        for subview in view.subviews { found += scrollViewsDismissingInteractively(in: subview) }
+        return found
+    }
+
+    private var settleCheckPending = false
+
+    /// The composer is following the guide below where the notifications
+    /// put the keyboard: once the drag lets go, go back to the
+    /// notifications. A drag that dismisses the keyboard posts a hide (so
+    /// the notified overlap is zero by then), and one that lets it spring
+    /// back leaves the notified overlap where it was, which a guide stuck
+    /// below the keyboard would otherwise keep the composer under. Checked
+    /// a tick after the finger lifts (`released`), so the hide has arrived
+    /// and the composer doesn't start up before going down.
+    private func settleAfterDrag(released: Bool = false) {
+        guard !settleCheckPending else { return }
+        settleCheckPending = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            guard let self else { return }
+            settleCheckPending = false
+            guard window != nil else { return }
+            if isDraggingToDismiss {
+                settleAfterDrag()
+            } else if !released {
+                settleAfterDrag(released: true)
+            } else if let notified = notifiedOverlap, notified != lastReported {
+                report(notified, ChatKeyboardAvoidance.animation(forInheritedDuration: 0.25))
+            }
+        }
+    }
+
+    /// The overlap last handed to `onChange`.
+    private var lastReported: CGFloat?
+
     private func report(_ overlap: CGFloat, _ animation: Animation?) {
+        lastReported = overlap
         // Out of UIKit's layout pass before SwiftUI state changes.
         DispatchQueue.main.async { [weak self] in self?.onChange?(overlap, animation) }
     }
+}
+
+private struct WeakScrollView {
+    weak var view: UIScrollView?
+    init(_ view: UIScrollView) { self.view = view }
 }
 
 extension View {

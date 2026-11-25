@@ -58,9 +58,9 @@ final class ChatKeyboardAvoidanceTests: XCTestCase {
     /// back from the background. Stuck at "no keyboard" with one showing,
     /// or stuck raised with none, it never moves, so the notification wins.
     func test_layoutOverlap_aStuckGuideNeverOverridesTheNotification() {
-        XCTAssertEqual(ChatKeyboardAvoidance.layoutOverlap(guide: 0, guideMoved: false, notified: 294, animating: false), 294)
-        XCTAssertEqual(ChatKeyboardAvoidance.layoutOverlap(guide: 294, guideMoved: false, notified: 0, animating: false), 0)
-        XCTAssertEqual(ChatKeyboardAvoidance.layoutOverlap(guide: 294, guideMoved: true, notified: 0, animating: false), 0,
+        XCTAssertEqual(ChatKeyboardAvoidance.layoutOverlap(guide: 0, guideMoved: false, notified: 294, animating: false, dragging: true), 294)
+        XCTAssertEqual(ChatKeyboardAvoidance.layoutOverlap(guide: 294, guideMoved: false, notified: 0, animating: false, dragging: true), 0)
+        XCTAssertEqual(ChatKeyboardAvoidance.layoutOverlap(guide: 294, guideMoved: true, notified: 0, animating: false, dragging: true), 0,
                        "a raised guide never lifts the composer above a hidden keyboard")
     }
 
@@ -68,25 +68,33 @@ final class ChatKeyboardAvoidanceTests: XCTestCase {
     /// to being stuck: with the guide not trusted, that jump is ignored.
     func test_layoutOverlap_ignoresAGuideJumpAroundTheBackground() {
         XCTAssertEqual(ChatKeyboardAvoidance.layoutOverlap(guide: 0, guideMoved: true, notified: 294,
-                                                           animating: false, trustsGuide: false), 294)
+                                                           animating: false, dragging: true, trustsGuide: false), 294)
     }
 
     /// An interactive dismissal moves the guide frame by frame with no
     /// notifications: follow it down.
     func test_layoutOverlap_followsAMovingGuideDuringAnInteractiveDismissal() {
-        XCTAssertEqual(ChatKeyboardAvoidance.layoutOverlap(guide: 180, guideMoved: true, notified: 294, animating: false), 180)
+        XCTAssertEqual(ChatKeyboardAvoidance.layoutOverlap(guide: 180, guideMoved: true, notified: 294, animating: false, dragging: true), 180)
+    }
+
+    /// A new comment on an item moves the guide to the bottom edge in one
+    /// layout pass, with no animation and no drag, while the keyboard
+    /// stays up: the notification wins, so the reply field stays above it.
+    func test_layoutOverlap_ignoresAGuideThatMovesWithoutADrag() {
+        XCTAssertEqual(ChatKeyboardAvoidance.layoutOverlap(guide: 0, guideMoved: true, notified: 294,
+                                                           animating: false, dragging: false), 294)
     }
 
     /// The keyboard's own show/hide and rotations run inside an animation:
     /// the notification has the answer.
     func test_layoutOverlap_usesTheNotificationInsideAnAnimation() {
-        XCTAssertEqual(ChatKeyboardAvoidance.layoutOverlap(guide: 0, guideMoved: true, notified: 294, animating: true), 294)
+        XCTAssertEqual(ChatKeyboardAvoidance.layoutOverlap(guide: 0, guideMoved: true, notified: 294, animating: true, dragging: true), 294)
     }
 
     /// Before the app has seen any keyboard notification, the guide is all
     /// there is.
     func test_layoutOverlap_fallsBackToTheGuideBeforeAnyNotification() {
-        XCTAssertEqual(ChatKeyboardAvoidance.layoutOverlap(guide: 120, guideMoved: false, notified: nil, animating: false), 120)
+        XCTAssertEqual(ChatKeyboardAvoidance.layoutOverlap(guide: 120, guideMoved: false, notified: nil, animating: false, dragging: true), 120)
     }
 
     /// Source pin: the chat opts out of SwiftUI's keyboard safe area and

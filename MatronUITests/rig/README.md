@@ -91,6 +91,11 @@ xcodebuild test-without-building -project Matron.xcodeproj -scheme Matron \
   -only-testing:MatronUITests/ItemThreadUITests
 ```
 
+`ComposerKeyboardUITests` drives the same item: its
+`test_itemReply_staysAboveTheKeyboardWhenACommentArrives` posts comments as
+the rig's agent, so pass `TEST_RUNNER_RIG_AGENT_TOKEN` as for the timeline
+rig. `TEST_RUNNER_RIG_PORT` points that suite at a rig on another port.
+
 `test_captureBothThreads` writes pictures of the same steps in the native
 thread and the SwiftUI one to `SCREENSHOT_DIR` (default
 `/tmp/matron-item-thread`), to compare by eye.
