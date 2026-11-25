@@ -184,21 +184,39 @@ struct DeviceRow: View {
                 .font(.title3)
                 .foregroundStyle(.secondary)
                 .frame(width: 24)
-            // The buttons sit under the details, not beside them: five of
-            // them on one line took most of the row and crushed the name,
-            // badges and usage lines into a column a word wide. Here the
-            // details get the full width and the buttons wrap when the
-            // row is too narrow for one line of them.
-            VStack(alignment: .leading, spacing: 6) {
-                details
-                PillFlowLayout(spacing: 6) {
-                    buttons
+            // Wide enough: the details, then the buttons stacked in a
+            // column of their own on the right. Too narrow for that: the
+            // buttons go under the details and wrap. Either way the name,
+            // badges and usage lines keep a usable width; five buttons on
+            // one line beside them used to crush them into a column a word
+            // wide.
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 12) {
+                    // A fixed ideal width, not the text's own, so every row
+                    // switches at the same width whatever its caption says.
+                    details
+                        .frame(minWidth: Self.detailsMinWidth, idealWidth: Self.detailsMinWidth,
+                               maxWidth: .infinity, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 6) {
+                        buttons(fill: true)
+                    }
+                    .fixedSize()
                 }
+                VStack(alignment: .leading, spacing: 6) {
+                    details
+                    PillFlowLayout(spacing: 6) {
+                        buttons(fill: false)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.vertical, 4)
     }
+
+    /// The narrowest the details may get before the buttons leave their
+    /// column and wrap under them instead.
+    static let detailsMinWidth: CGFloat = 240
 
     private var details: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -236,23 +254,27 @@ struct DeviceRow: View {
         }
     }
 
-    @ViewBuilder private var buttons: some View {
+    /// `fill` stretches each button to the column's width, so a column of
+    /// them lines up; in the wrapping layout each keeps its own width.
+    @ViewBuilder private func buttons(fill: Bool) -> some View {
         if newSessions != nil {
-            Button("New Sessions…", action: onEditDefaults)
-                .controlSize(.small)
+            button("New Sessions…", fill: fill, action: onEditDefaults)
                 .help("Choose the agent, model and effort new sessions on this box start with")
         }
         if device.kind == "agent" {
-            Button("Tag…", action: onSetLetter)
-                .controlSize(.small)
+            button("Tag…", fill: fill, action: onSetLetter)
                 .help("Choose the character shown before this machine's chat titles")
-            Button(device.isProtected ? "Unprotect…" : "Protect…", action: onToggleProtected)
-                .controlSize(.small)
+            button(device.isProtected ? "Unprotect…" : "Protect…", fill: fill, action: onToggleProtected)
                 .help("A protected box only takes work you approve yourself, signed with an approval key")
         }
-        Button("Rename…", action: onRename)
-            .controlSize(.small)
-        Button(device.isSelf ? "Sign Out…" : "Revoke…", action: onRevoke)
-            .controlSize(.small)
+        button("Rename…", fill: fill, action: onRename)
+        button(device.isSelf ? "Sign Out…" : "Revoke…", fill: fill, action: onRevoke)
+    }
+
+    private func button(_ title: String, fill: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title).frame(maxWidth: fill ? .infinity : nil)
+        }
+        .controlSize(.small)
     }
 }
