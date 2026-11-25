@@ -40,10 +40,11 @@ public enum StepUpTap {
     ///
     /// The subject names the work by a hash, which nobody can read. So the
     /// app signs only when it holds the very text that hash is of and has
-    /// shown it: `verifiedText` is the spawn's task as its card carries it.
-    /// A spawn with no card to hand, and a chat invite (whose message this
-    /// path never has), are sent to their cards instead. A file transfer's
-    /// subject is the file's own hash and size, shown as they are.
+    /// shown it: `verifiedText` is the spawn's task as its card carries it,
+    /// or a chat ask's message as the journal's pending list carries it
+    /// (the list Settings ▸ Agent Chats shows). Without it the ask is sent
+    /// to its card instead. A file transfer's subject is the file's own
+    /// hash and size, shown as they are.
     static func consentRequest(item: TrackerItem, label: String, verifiedText: String?) throws -> ApprovalRequest? {
         guard let kind = item.consentKind, item.stepUp, TrackerItem.isAffirmativeAnswer(label) else { return nil }
         let subject = item.subject ?? [:]
@@ -60,6 +61,16 @@ public enum StepUpTap {
                 throw ApprovalError.subjectMismatch("The task on this request is not the task that would be approved. Reload the request and read it again.")
             }
             detail = task
+        case "chat":
+            guard let message = verifiedText else {
+                throw ApprovalError.subjectMismatch("Approve this request from its card in the conversation, or in Settings ▸ Agent Chats, where its message is shown in full.")
+            }
+            guard subject["message_sha256"] == ApprovalSubjects.sha256(message) else {
+                throw ApprovalError.subjectMismatch("The message on this request is not the one that would be approved. Reload the request and read it again.")
+            }
+            // As the conversation card: an ask with no message shows the
+            // item's own words, which say who asks whom.
+            detail = message.isEmpty ? item.body : message
         case "transfer":
             detail = item.body
         default:
@@ -67,6 +78,21 @@ public enum StepUpTap {
         }
         return ApprovalRequest(kind: .consent, subject: subject, headline: item.title, reference: "#\(item.num)",
                                button: label, detail: detail)
+    }
+
+    /// The message of the chat ask `item` mirrors, as the journal's list of
+    /// waiting asks carries it: `""` when the ask carried none. Throws when
+    /// the ask is no longer waiting (answered elsewhere, or expired).
+    static func chatMessage(for item: TrackerItem, from chatAsks: any AgentChatPendingReading) async throws -> String {
+        guard case .chat(let roomID, let deviceID) = item.consentLink else {
+            throw ApprovalError.subjectMismatch("This request's details don't match what would be approved. Reload it and read it again.")
+        }
+        guard let ask = try await chatAsks.agentChatPending().first(where: {
+            $0.roomID == roomID && $0.targetDeviceID == deviceID
+        }) else {
+            throw ApprovalError.subjectMismatch("This request is no longer waiting: it was answered on another device, or it expired.")
+        }
+        return ask.justification ?? ""
     }
 
     public enum Outcome: Equatable, Sendable {
@@ -87,8 +113,14 @@ public enum StepUpTap {
     /// journal's current text. A `mismatch` (the question was edited while
     /// the user was signing) refetches it once more, so the next tap signs
     /// the new words.
+    ///
+    /// `chatAsks` reads the chat asks still waiting on the user. With it, an
+    /// Approve on a chat ask's item finds the ask's message there, shows it
+    /// in full on the confirm sheet and signs over it, exactly as the
+    /// ask's card in the conversation does.
     @MainActor
     public static func send(item: TrackerItem, comment: TrackerComment?, label: String, verifiedText: String? = nil,
+                            chatAsks: (any AgentChatPendingReading)? = nil,
                             api: any ItemsProviding, sync: any ItemsSyncing, signer: ApprovalSigner?) async -> Outcome {
         guard mayNeedSignature(item: item, comment: comment, label: label) else { return .unsigned }
         guard let signer else {
@@ -100,7 +132,12 @@ public enum StepUpTap {
             let fresh = try await api.item(id: item.id)
             let request: ApprovalRequest?
             if fresh.item.consentKind != nil {
-                request = comment == nil ? try consentRequest(item: fresh.item, label: label, verifiedText: verifiedText) : nil
+                var text = verifiedText
+                if comment == nil, text == nil, fresh.item.consentKind == "chat", fresh.item.stepUp,
+                   TrackerItem.isAffirmativeAnswer(label), let chatAsks {
+                    text = try await chatMessage(for: fresh.item, from: chatAsks)
+                }
+                request = comment == nil ? try consentRequest(item: fresh.item, label: label, verifiedText: text) : nil
             } else if let comment {
                 request = fresh.comments.first { $0.id == comment.id }
                     .flatMap { Self.request(item: fresh.item, comment: $0, label: label) }
@@ -165,6 +202,13 @@ public struct ChatAsk: Equatable, Sendable {
         self.justification = justification; self.headline = headline
     }
 }
+
+/// Reads the chat asks still waiting on the user (`GET /agent-chat/pending`).
+public protocol AgentChatPendingReading: Sendable {
+    func agentChatPending() async throws -> [AgentChatPendingDTO]
+}
+
+extension JournalAPI: AgentChatPendingReading {}
 
 /// What the consent service needs from the journal.
 public protocol ConsentSigningAPI: Sendable {

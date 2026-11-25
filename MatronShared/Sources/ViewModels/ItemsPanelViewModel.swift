@@ -312,6 +312,10 @@ public final class ItemsPanelViewModel {
     private let api: any ItemsProviding
     /// Signs the taps that need an approval key. Set by the app.
     public var approvalSigner: ApprovalSigner?
+    /// The chat asks still waiting on the user, where Approve on a chat
+    /// ask aimed at a protected box finds the message it signs over. Set
+    /// by the app; without it such an Approve sends the user to the card.
+    public var chatAsks: (any AgentChatPendingReading)?
     private let sync: any ItemsSyncing
     private var itemsTask: Task<Void, Never>?
     private var pendingCreatesTask: Task<Void, Never>?
@@ -608,7 +612,7 @@ public final class ItemsPanelViewModel {
         // A tap that needs a signature (Approve on an ask aimed at a
         // protected box) is confirmed and sent at once; the row stays on
         // screen behind the confirm sheet until the journal has taken it.
-        switch await StepUpTap.send(item: item, comment: nil, label: label, api: api, sync: sync, signer: approvalSigner) {
+        switch await StepUpTap.send(item: item, comment: nil, label: label, chatAsks: chatAsks, api: api, sync: sync, signer: approvalSigner) {
         case .unsigned: break
         case .sent, .cancelled:
             endTap(item.id)

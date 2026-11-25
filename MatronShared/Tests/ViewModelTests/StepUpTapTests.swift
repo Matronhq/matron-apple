@@ -35,6 +35,13 @@ private final class TapAPI: ItemsProviding, @unchecked Sendable {
     func rankItem(id: String, _ change: ItemRankChange) async throws -> TrackerItem { fatalError() }
 }
 
+private actor PendingAsks: AgentChatPendingReading {
+    let asks: [AgentChatPendingDTO]
+    var reads = 0
+    init(_ asks: [AgentChatPendingDTO]) { self.asks = asks }
+    func agentChatPending() async throws -> [AgentChatPendingDTO] { reads += 1; return asks }
+}
+
 private actor Requests {
     var seen: [ApprovalRequest] = []
     func add(_ r: ApprovalRequest) { seen.append(r) }
@@ -139,10 +146,28 @@ final class StepUpTapTests: XCTestCase {
         XCTAssertEqual(request.subject, subject)
     }
 
-    func test_chatConsent_isSentToItsCard() {
+    func test_chatConsent_withNoMessageToHand_isSentToItsCard() {
         let subject = ApprovalSubjects.chat(roomID: "r1", targetDeviceID: 5, box: "box-a", justification: "Need the logs")
         let consent = item(subject: subject, labels: ["consent"], consent: "chat")
         XCTAssertThrowsError(try StepUpTap.consentRequest(item: consent, label: "Approve", verifiedText: nil))
+    }
+
+    func test_chatConsent_isSignedOnlyOverTheMessageTheUserWasShown() throws {
+        let subject = ApprovalSubjects.chat(roomID: "r1", targetDeviceID: 5, box: "box-a", justification: "Need the logs")
+        let consent = item(subject: subject, labels: ["consent"], consent: "chat")
+        let request = try XCTUnwrap(StepUpTap.consentRequest(item: consent, label: "Approve", verifiedText: "Need the logs"))
+        XCTAssertEqual(request.kind, .consent)
+        XCTAssertEqual(request.subject, subject)
+        XCTAssertEqual(request.detail, "Need the logs", "the message is shown in full")
+        XCTAssertThrowsError(try StepUpTap.consentRequest(item: consent, label: "Approve", verifiedText: "Something else"))
+        XCTAssertNil(try StepUpTap.consentRequest(item: consent, label: "Decline", verifiedText: "Need the logs"))
+    }
+
+    func test_chatConsent_withNoMessage_showsTheItemsWords() throws {
+        let subject = ApprovalSubjects.chat(roomID: "r1", targetDeviceID: 5, box: "box-a", justification: "")
+        let consent = item(subject: subject, labels: ["consent"], body: "box-b wants to start a chat with box-a.", consent: "chat")
+        let request = try XCTUnwrap(StepUpTap.consentRequest(item: consent, label: "Approve", verifiedText: ""))
+        XCTAssertEqual(request.detail, "box-b wants to start a chat with box-a.")
     }
 
     func test_anItemAnAgentLabelledConsent_isAnOrdinaryStepUpTap() {
@@ -225,6 +250,80 @@ final class StepUpTapTests: XCTestCase {
         let outcome = await StepUpTap.send(item: item(), comment: nil, label: "Approve", api: api, sync: sync) { _ in approval }
         XCTAssertEqual(outcome, .failed("The question changed while you were approving it. Read it again, then approve."))
         XCTAssertEqual(sync.refetched, ["it_abc123"])
+    }
+
+    private func chatConsentItem(message: String = "Need the logs") -> TrackerItem {
+        TrackerItem(id: "it_abc123", num: 7, kind: .question, awaiting: .user, title: "box-b wants to start a chat with box-a",
+                    body: "Approve it to let them talk.", labels: ["consent"],
+                    links: [TrackerLink(json: ["url": "matron://consent/chat/r1/5"])!], originConvoID: "c1",
+                    actions: ["Approve", "Decline"], stepUp: true,
+                    subject: ApprovalSubjects.chat(roomID: "r1", targetDeviceID: 5, box: "box-a", justification: message),
+                    consentKind: "chat")
+    }
+
+    private func pending(room: String = "r1", device: Int64 = 5, message: String?) -> AgentChatPendingDTO {
+        AgentChatPendingDTO(roomID: room, targetDeviceID: device, initiatorDeviceID: 9, initiatorName: "box-b",
+                            targetName: "box-a", topic: nil, justification: message, roomTitle: "Logs", createdAt: 0)
+    }
+
+    func test_send_chatConsent_fromForYou_showsTheMessage_andSignsWhatTheCardWould() async throws {
+        let consent = chatConsentItem()
+        let api = TapAPI(consent)
+        let requests = Requests()
+        let approval = self.approval
+        let asks = PendingAsks([pending(room: "r2", message: "Another ask"), pending(message: "Need the logs")])
+        let outcome = await StepUpTap.send(item: consent, comment: nil, label: "Approve", chatAsks: asks,
+                                           api: api, sync: TapSync()) { request in
+            await requests.add(request)
+            return approval
+        }
+        XCTAssertEqual(outcome, .sent)
+        let seen = await requests.seen
+        let request = try XCTUnwrap(seen.first)
+        XCTAssertEqual(request.kind, .consent)
+        XCTAssertEqual(request.detail, "Need the logs", "the confirm sheet shows the message in full")
+        // The conversation card signs the subject the journal published on
+        // the item, after checking the message against it: the same one.
+        XCTAssertEqual(request.subject, consent.subject)
+        XCTAssertEqual(api.taps.first?.action, "Approve")
+        XCTAssertEqual(api.taps.first?.approval, approval)
+    }
+
+    func test_send_chatConsent_whoseMessageChanged_signsNothing() async {
+        let consent = chatConsentItem(message: "Need the logs")
+        let api = TapAPI(consent)
+        let outcome = await StepUpTap.send(item: consent, comment: nil, label: "Approve",
+                                           chatAsks: PendingAsks([pending(message: "Something else")]),
+                                           api: api, sync: TapSync()) { _ in
+            XCTFail("nothing may be offered for signing"); return nil
+        }
+        guard case .failed(let message) = outcome else { return XCTFail("expected a refusal") }
+        XCTAssertTrue(message.contains("not the one that would be approved"))
+        XCTAssertTrue(api.taps.isEmpty)
+    }
+
+    func test_send_chatConsent_noLongerWaiting_signsNothing() async {
+        let api = TapAPI(chatConsentItem())
+        let outcome = await StepUpTap.send(item: chatConsentItem(), comment: nil, label: "Approve",
+                                           chatAsks: PendingAsks([pending(device: 6, message: "Need the logs")]),
+                                           api: api, sync: TapSync()) { _ in
+            XCTFail("nothing may be offered for signing"); return nil
+        }
+        guard case .failed(let message) = outcome else { return XCTFail("expected a refusal") }
+        XCTAssertTrue(message.contains("no longer waiting"))
+        XCTAssertTrue(api.taps.isEmpty)
+    }
+
+    func test_send_chatConsent_decline_needsNoMessage() async {
+        let api = TapAPI(chatConsentItem())
+        let asks = PendingAsks([])
+        let outcome = await StepUpTap.send(item: chatConsentItem(), comment: nil, label: "Decline", chatAsks: asks,
+                                           api: api, sync: TapSync()) { _ in
+            XCTFail("a decline is never signed"); return nil
+        }
+        XCTAssertEqual(outcome, .unsigned)
+        let reads = await asks.reads
+        XCTAssertEqual(reads, 0, "a decline does not read the pending asks")
     }
 
     func test_send_spawnConsent_withItsTask_signsAConsentStatement() async {
