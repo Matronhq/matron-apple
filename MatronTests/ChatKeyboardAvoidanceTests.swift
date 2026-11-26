@@ -85,6 +85,16 @@ final class ChatKeyboardAvoidanceTests: XCTestCase {
                                                            animating: false, dragging: false), 294)
     }
 
+    /// During an interactive dismissal the keyboard's top sits at the
+    /// finger; a guide far below a finger scrolling the thread is not one.
+    func test_fingerDragsTheKeyboard_onlyWhenAtOrBelowItsTop() {
+        XCTAssertTrue(ChatKeyboardAvoidance.fingerDragsTheKeyboard(fingerY: 717, keyboardTop: 717))
+        XCTAssertTrue(ChatKeyboardAvoidance.fingerDragsTheKeyboard(fingerY: 700, keyboardTop: 717))
+        XCTAssertTrue(ChatKeyboardAvoidance.fingerDragsTheKeyboard(fingerY: 860, keyboardTop: 840))
+        XCTAssertFalse(ChatKeyboardAvoidance.fingerDragsTheKeyboard(fingerY: 400, keyboardTop: 840),
+                       "scrolling the thread while the guide jumps to the bottom edge")
+    }
+
     /// The keyboard's own show/hide and rotations run inside an animation:
     /// the notification has the answer.
     func test_layoutOverlap_usesTheNotificationInsideAnAnimation() {

@@ -113,7 +113,7 @@ final class ComposerKeyboardUITests: XCTestCase {
 
     /// Opens the rig's seeded item (rig/README.md "Item thread rig") and
     /// types a draft into its reply field.
-    private func itemReplyWithDraft() throws -> XCUIElement {
+    private func itemReplyWithDraft(atTheTail: Bool = false) throws -> XCUIElement {
         let tab = app.tabBars.buttons["For you"]
         XCTAssertTrue(tab.waitForExistence(timeout: 15))
         tab.tap()
@@ -121,7 +121,15 @@ final class ComposerKeyboardUITests: XCTestCase {
         let row = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", title)).firstMatch
         guard row.waitForExistence(timeout: 10) else { throw XCTSkip("item thread rig not seeded") }
         row.tap()
-        XCTAssertTrue(app.collectionViews["item.thread"].waitForExistence(timeout: 10))
+        let thread = app.collectionViews["item.thread"]
+        XCTAssertTrue(thread.waitForExistence(timeout: 10))
+        if atTheTail {
+            // New comments land at the tail, where a reader there sees them.
+            let jump = app.buttons["chat.jumpToBottom"]
+            XCTAssertTrue(jump.waitForExistence(timeout: 5), "no Jump to latest")
+            jump.tap()
+            Thread.sleep(forTimeInterval: 1.5)
+        }
         let field = app.textFields["item.reply.field"]
         XCTAssertTrue(field.waitForExistence(timeout: 5), "no reply field")
         field.tap()
@@ -161,12 +169,16 @@ final class ComposerKeyboardUITests: XCTestCase {
         guard let token = ProcessInfo.processInfo.environment["RIG_AGENT_TOKEN"], !token.isEmpty else {
             throw XCTSkip("RIG_AGENT_TOKEN not set")
         }
-        let field = try itemReplyWithDraft()
+        let field = try itemReplyWithDraft(atTheTail: true)
         assertJustAboveTheKeyboard(field, "before the comment")
         for n in 1...2 {
-            try postAgentComment("A new comment, number \(n), while you type.", token: token)
-            // Let the comment reach the app and the thread take it in.
-            Thread.sleep(forTimeInterval: 2.5)
+            let body = "Comment \(UUID().uuidString.prefix(6)) lands while you type."
+            try postAgentComment(body, token: token)
+            let landed = app.collectionViews["item.thread"].textViews
+                .matching(NSPredicate(format: "label CONTAINS %@", body)).firstMatch
+            XCTAssertTrue(landed.waitForExistence(timeout: 10), "comment \(n) never showed in the thread")
+            // Let the thread finish taking it in.
+            Thread.sleep(forTimeInterval: 1)
             attach("after comment \(n)")
             XCTAssertTrue(keyboard.exists, "the keyboard went away")
             assertJustAboveTheKeyboard(field, "after comment \(n)")

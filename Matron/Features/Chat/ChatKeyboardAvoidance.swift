@@ -82,8 +82,8 @@ enum ChatKeyboardAvoidance {
     /// whether it changed since the last pass. Inside a UIKit animation
     /// (`animating`) the keyboard's own show/hide or a rotation is running,
     /// and the notification has the answer. Outside one, a guide that moves
-    /// while a finger drags a scroll view that dismisses the keyboard
-    /// interactively (`dragging`) is following that dismissal, and it is
+    /// while a finger drags the keyboard down through a scroll view that
+    /// dismisses it interactively (`dragging`) is following that dismissal, and it is
     /// believed up to the notified overlap. A guide that moves with no such
     /// drag is wrong (a layout pass for new content can drop it to the
     /// bottom edge under a keyboard that stays up), and a guide that has
@@ -97,6 +97,14 @@ enum ChatKeyboardAvoidance {
         guard let notified else { return guide }
         if guideMoved, !animating, dragging, trustsGuide { return min(guide, notified) }
         return notified
+    }
+
+    /// Whether a finger at `fingerY` is dragging a keyboard whose top is
+    /// at `keyboardTop` (both in the window): during an interactive
+    /// dismissal the keyboard's top sits at the finger, so the finger is at
+    /// or below it, give or take a fingertip.
+    static func fingerDragsTheKeyboard(fingerY: CGFloat, keyboardTop: CGFloat) -> Bool {
+        fingerY >= keyboardTop - 44
     }
 }
 
@@ -271,7 +279,7 @@ private final class KeyboardGuideView: UIView {
         let guideMoved = guide != lastGuideOverlap
         // Only looked for when it can matter: a guide that moved outside
         // an animation.
-        let dragging = guideMoved && inherited == 0 && isDraggingToDismiss
+        let dragging = guideMoved && inherited == 0 && isDraggingToDismiss && guideFollowsTheFinger()
         let overlap = ChatKeyboardAvoidance.layoutOverlap(guide: guide,
                                                           guideMoved: guideMoved,
                                                           notified: notified,
@@ -291,13 +299,28 @@ private final class KeyboardGuideView: UIView {
     /// dismisses the keyboard interactively: the only time the guide moves
     /// for a real reason without the keyboard's notifications.
     private var isDraggingToDismiss: Bool {
-        func tracking(_ views: [WeakScrollView]) -> Bool {
-            views.contains { $0.view.map { $0.isTracking && $0.window === window } ?? false }
+        func dragging(_ views: [WeakScrollView]) -> Bool {
+            views.contains { $0.view.map { $0.isDragging && $0.window === window } ?? false }
         }
-        if tracking(dismissingScrollViews) { return true }
+        if dragging(dismissingScrollViews) { return true }
         guard let window else { return false }
         dismissingScrollViews = Self.scrollViewsDismissingInteractively(in: window).map(WeakScrollView.init)
-        return tracking(dismissingScrollViews)
+        return dragging(dismissingScrollViews)
+    }
+
+    /// Whether the guide's top is where a finger dragging the keyboard
+    /// down would put it: the keyboard's top follows the finger, so the
+    /// finger is at or below it. A guide that jumps away from the finger
+    /// (to the bottom edge while you scroll the thread, as new content
+    /// lands) is not following a dismissal.
+    private func guideFollowsTheFinger() -> Bool {
+        guard let window else { return false }
+        let guideTop = convert(CGPoint(x: 0, y: keyboardLayoutGuide.layoutFrame.minY), to: window).y
+        return dismissingScrollViews.contains { entry in
+            guard let scroll = entry.view, scroll.isDragging, scroll.window === window else { return false }
+            return ChatKeyboardAvoidance.fingerDragsTheKeyboard(fingerY: scroll.panGestureRecognizer.location(in: window).y,
+                                                                keyboardTop: guideTop)
+        }
     }
 
     private static func scrollViewsDismissingInteractively(in view: UIView) -> [UIScrollView] {
