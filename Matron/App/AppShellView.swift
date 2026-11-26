@@ -419,7 +419,6 @@ struct AppShellView: View {
                 // (CodeRabbit, PR #197).
                 ownsViewModel: false,
                 vmCache: vmCache,
-                onSignOut: onSignOut,
                 // A search result / new chat navigates via the path the
                 // shell owns (same mechanism as a notification tap).
                 onOpenChat: { roomID in nav.openChat(roomID) }
@@ -525,8 +524,8 @@ struct AppShellView: View {
 
     /// Settings, under More (it used to be a sheet from the Conversations
     /// list's menu, then the last tab). Its pages push with their own
-    /// `NavigationLink`s. `onSignOut` is what Manage Devices calls when
-    /// this device is revoked; Sign Out itself stays in the list's menu.
+    /// `NavigationLink`s. The account's Sign Out row and Manage Devices
+    /// both use the same host callback to end this device's session.
     private var settingsTab: some View {
         NavigationStack(path: settingsPath) {
             DeviceSettingsView(session: session,

@@ -10,15 +10,98 @@ struct SignInView: View {
     @State var rendezvousViewModel: RendezvousSignInViewModel
     var onSignedIn: (UserSession) -> Void
 
+    enum Method: Hashable { case login, device }
+    enum QRTab: String, CaseIterable { case scan = "Scan", show = "Show", code = "Code" }
+    @State private var path: [Method] = []
     @State private var showingScanner = false
-    @State private var showingManualCode = false
-    private enum QRTab: String, CaseIterable { case scan = "Scan", show = "Show" }
     @State private var qrTab: QRTab = .scan
+    @State private var rendezvousAttempt = 0
+    @State private var finishingSignIn = false
+
+    private var showingRendezvous: Bool { !finishingSignIn && path.last == .device && qrTab == .show }
+    private var rendezvousTaskID: Int? { showingRendezvous ? rendezvousAttempt : nil }
+    private var passwordMustStayVisible: Bool { viewModel.state == .busy || viewModel.step != .password }
+    private var methodPath: Binding<[Method]> {
+        Binding(get: { path }, set: { next in
+            // Guard navigation itself as well as hiding Back. Recovery codes
+            // must stay visible until the user acknowledges saving them.
+            if path.last == .login, next.last != .login, passwordMustStayVisible { return }
+            path = next
+        })
+    }
+    private var linkMethodSelection: Binding<QRTab> {
+        Binding(get: { qrTab }, set: { next in
+            guard next != qrTab else { return }
+            // Invalidate the old method before a new Show task can start.
+            rendezvousViewModel.stop()
+            linkViewModel.cancel()
+            qrTab = next
+        })
+    }
 
     var body: some View {
-        NavigationStack {
-            Form {
-                MatronGroupedRows {
+        Group {
+            if finishingSignIn {
+                SignInProgressView()
+            } else {
+                NavigationStack(path: methodPath) {
+                    methodPicker
+                        .navigationTitle("Sign in to Matron")
+                        .navigationDestination(for: Method.self) { method in
+                            switch method {
+                            case .login: passwordSignIn
+                            case .device: deviceSignIn
+                            }
+                        }
+                }
+            }
+        }
+        .sheet(isPresented: $viewModel.isShowingForgotPassword,
+               onDismiss: { viewModel.closeForgotPassword() }) {
+            ForgotPasswordSheet(viewModel: viewModel)
+        }
+        .onChange(of: viewModel.state) { _, new in
+            if case .signedIn(let session) = new { finishSignIn(session) }
+        }
+        .onChange(of: linkViewModel.phase) { _, new in
+            if case .signedIn(let session) = new { finishSignIn(session) }
+        }
+        .onChange(of: path) { old, new in
+            if old.last == .device, new.last != .device {
+                rendezvousViewModel.stop()
+                linkViewModel.cancel()
+                qrTab = .scan
+            }
+        }
+        .task(id: rendezvousTaskID) {
+            guard showingRendezvous, !Task.isCancelled else { return }
+            await rendezvousViewModel.start()
+        }
+        .onDisappear {
+            rendezvousViewModel.stop()
+            linkViewModel.cancel()
+        }
+        .fullScreenCover(isPresented: $showingScanner) {
+            QRScannerView { payload in
+                Task { await linkViewModel.handleScanned(payload) }
+            }
+        }
+    }
+
+    private func finishSignIn(_ session: UserSession) {
+        guard !finishingSignIn else { return }
+        // The host waits for the old account's teardown and prepares the
+        // local store before replacing this screen. Keep that wait visible,
+        // and prevent a second sign-in while it finishes.
+        finishingSignIn = true
+        showingScanner = false
+        rendezvousViewModel.stop()
+        onSignedIn(session)
+    }
+
+    private var methodPicker: some View {
+        Form {
+            MatronGroupedRows {
                 Section {
                     Image("app-logo")
                         .resizable()
@@ -28,30 +111,50 @@ struct SignInView: View {
                         .accessibilityHidden(true)
                 }
                 .listRowBackground(Color.clear)
-                if let notice = viewModel.notice, viewModel.step == .password {
-                    Section {
-                        Label(notice, systemImage: "exclamationmark.circle")
-                            .accessibilityIdentifier("signin.notice")
+                signOutNotice
+                Section {
+                    NavigationLink(value: Method.login) {
+                        methodLabel("Sign in with a login", detail: "Use your server, username and password.", icon: "person.crop.circle")
                     }
+                    .accessibilityIdentifier("signin.chooseLogin")
+                    NavigationLink(value: Method.device) {
+                        methodLabel("Sign in from another device", detail: "Use a QR code or a link code.", icon: "qrcode")
+                    }
+                    .accessibilityIdentifier("signin.chooseDevice")
                 }
+            }
+        }
+    }
+
+    private func methodLabel(_ title: String, detail: String, icon: String) -> some View {
+        Label {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                Text(detail).font(.footnote).foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 4)
+        } icon: {
+            Image(systemName: icon)
+        }
+    }
+
+    @ViewBuilder private var signOutNotice: some View {
+        if let notice = viewModel.notice, viewModel.step == .password {
+            Section {
+                Label(notice, systemImage: "exclamationmark.circle")
+                    .accessibilityIdentifier("signin.notice")
+            }
+        }
+    }
+
+    private var passwordSignIn: some View {
+        Form {
+            MatronGroupedRows {
                 if viewModel.step != .password {
-                    // The password was right and the server wants a second
-                    // step: a code, or setting up an authenticator.
                     TwoFactorSignInSections(viewModel: viewModel)
-                } else if case .waitingForApproval = linkViewModel.phase {
-                    linkWaiting
                 } else {
-                    Section("Server") {
-                        // Placeholder kept URL-shape-free because iOS Form's
-                        // data detection styles `https://…` placeholders as
-                        // tappable blue link text — looks like an error /
-                        // link, not a hint.
-                        TextField("Server URL", text: $viewModel.serverURL)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .keyboardType(.URL)
-                            .accessibilityIdentifier("signin.server")
-                    }
+                    signOutNotice
+                    serverField
                     Section("Credentials") {
                         TextField("Username", text: $viewModel.username)
                             .textInputAutocapitalization(.never)
@@ -59,151 +162,120 @@ struct SignInView: View {
                             .accessibilityIdentifier("signin.username")
                         SecureField("Password", text: $viewModel.password)
                             .accessibilityIdentifier("signin.password")
-                        // Only once the typed server has said it mails
-                        // reset links.
                         if viewModel.forgotPasswordAvailable {
                             Button(SignInViewModel.forgotLinkTitle) { viewModel.openForgotPassword() }
                                 .accessibilityIdentifier("signin.forgotPassword")
                         }
                     }
                     if case .error(let message) = viewModel.state {
-                        Section {
-                            Text(message).foregroundStyle(.red)
-                        }
+                        Section { Text(message).foregroundStyle(.red) }
                     }
                     Section {
                         Button {
                             Task { await viewModel.submit() }
                         } label: {
-                            if case .busy = viewModel.state {
-                                ProgressView()
-                            } else {
-                                Text("Sign in")
-                            }
+                            if case .busy = viewModel.state { ProgressView() }
+                            else { Text("Sign in") }
                         }
-                        .disabled({
-                            if case .busy = viewModel.state { return true }
-                            return viewModel.serverURL.isEmpty || viewModel.username.isEmpty || viewModel.password.isEmpty
-                        }())
+                        .disabled(viewModel.state == .busy || viewModel.serverURL.isEmpty
+                                  || viewModel.username.isEmpty || viewModel.password.isEmpty)
                         .accessibilityIdentifier("signin.submit")
                     }
-                    linkSignIn
-                }
-                }
-            }
-            .navigationTitle("Sign in to Matron")
-            // Re-asked, after a pause in typing, whenever the server
-            // changes; editing it hides the link until the answer is in.
-            .task(id: viewModel.serverURL) {
-                guard (try? await Task.sleep(for: .milliseconds(600))) != nil else { return }
-                await viewModel.checkPasswordReset()
-            }
-            .sheet(isPresented: $viewModel.isShowingForgotPassword,
-                   onDismiss: { viewModel.closeForgotPassword() }) {
-                ForgotPasswordSheet(viewModel: viewModel)
-            }
-            .onChange(of: viewModel.state) { _, new in
-                if case .signedIn(let session) = new {
-                    onSignedIn(session)
-                }
-            }
-            .onChange(of: linkViewModel.phase) { _, new in
-                if case .signedIn(let session) = new {
-                    onSignedIn(session)
-                }
-            }
-            // Cancel any in-flight link claim/poll when this view goes away
-            // (e.g. password sign-in navigated on): otherwise a later Approve
-            // on the show device could persist a different session over the
-            // active one. The .signedIn forwarding above runs first — the
-            // phase mutation (and its onChange) happens while this view is
-            // still mounted; disappearance is a downstream effect of
-            // onSignedIn swapping the root, so cancel() here only ever fires
-            // after the session was already forwarded. A presented scanner
-            // covers (does not remove) this view, so opening it won't cancel.
-            .onChange(of: qrTab) { _, tab in
-                if tab == .show { Task { await rendezvousViewModel.start() } }
-                else { rendezvousViewModel.stop() }
-            }
-            .onDisappear {
-                rendezvousViewModel.stop()
-                linkViewModel.cancel() // existing line — keep
-            }
-            .fullScreenCover(isPresented: $showingScanner) {
-                QRScannerView { payload in
-                    Task { await linkViewModel.handleScanned(payload) }
                 }
             }
         }
+        .navigationTitle("Sign in with a login")
+        .navigationBarTitleDisplayMode(.inline)
+        // Keep an in-flight password response on its own screen. Two-factor
+        // screens already provide their own safe return to the password step.
+        .navigationBarBackButtonHidden(passwordMustStayVisible)
+        .scrollDismissesKeyboard(.interactively)
+        .task(id: viewModel.serverURL) {
+            guard (try? await Task.sleep(for: .milliseconds(600))) != nil else { return }
+            await viewModel.checkPasswordReset()
+        }
     }
 
-    /// "Or sign in from another device": camera scan / show-QR tabs + manual
-    /// code entry.
-    @ViewBuilder private var linkSignIn: some View {
-        Section {
-            Picker("QR mode", selection: $qrTab) {
-                ForEach(QRTab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .accessibilityIdentifier("signin.qrtab")
+    private var serverField: some View {
+        Section("Server") {
+            // URL-shaped placeholders are styled as links by iOS Forms.
+            TextField("Server URL", text: $viewModel.serverURL)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .keyboardType(.URL)
+                .accessibilityIdentifier("signin.server")
+        }
+    }
 
+    private var deviceSignIn: some View {
+        Form {
+            MatronGroupedRows {
+                if case .waitingForApproval = linkViewModel.phase {
+                    linkWaiting
+                } else {
+                    Section {
+                        Picker("Link method", selection: linkMethodSelection) {
+                            ForEach(QRTab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                        }
+                        .pickerStyle(.segmented)
+                        .accessibilityIdentifier("signin.qrtab")
+                        .disabled(linkViewModel.phase == .claiming)
+                    }
+                    linkSignIn
+                }
+            }
+        }
+        .navigationTitle("From another device")
+        .navigationBarTitleDisplayMode(.inline)
+        .scrollDismissesKeyboard(.interactively)
+    }
+
+    @ViewBuilder private var linkSignIn: some View {
+        if qrTab == .code, !linkViewModel.codeInputIsFullLink {
+            serverField
+        }
+        Section {
             switch qrTab {
             case .scan:
-                Button {
-                    showingScanner = true
-                } label: {
+                Button { showingScanner = true } label: {
                     Label("Scan QR code", systemImage: "qrcode.viewfinder")
                 }
                 .accessibilityIdentifier("signin.scan")
+                .disabled(linkViewModel.phase == .claiming)
             case .show:
                 rendezvousShow
-            }
-
-            Button(showingManualCode ? "Hide link code" : "Have a link code?") {
-                showingManualCode.toggle()
-            }
-            .font(.callout)
-            if showingManualCode {
+            case .code:
                 TextField("XXXX-XXXX or matron:// link", text: $linkViewModel.codeInput)
                     .font(.system(.title3, design: .monospaced))
                     .textInputAutocapitalization(.characters)
                     .autocorrectionDisabled()
                     .accessibilityIdentifier("signin.linkcode")
-                Button("Sign in with code") {
-                    // The manual path shares the form's server field.
+                Button {
                     linkViewModel.serverURL = viewModel.serverURL
                     Task { await linkViewModel.submitManual() }
+                } label: {
+                    if case .claiming = linkViewModel.phase { ProgressView() }
+                    else { Text("Sign in with code") }
                 }
-                // A pasted matron:// link names its own server, so it
-                // doesn't need the form's server field.
-                .disabled(!linkViewModel.codeInputIsFullLink
-                          && (viewModel.serverURL.isEmpty || linkViewModel.codeInput.count < 9))
+                .disabled(linkViewModel.phase == .claiming || (!linkViewModel.codeInputIsFullLink
+                          && (viewModel.serverURL.isEmpty || linkViewModel.codeInput.count < 9)))
+                .accessibilityIdentifier("signin.linkSubmit")
             }
-        } header: {
-            Text("From another device")
         } footer: {
             if case .error(let message) = linkViewModel.phase {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(message).foregroundStyle(.red)
-                    // The rendezvous VM parks in .connecting once it hands
-                    // off to linkViewModel; a link-side error while Show is
-                    // selected still needs a way back to a fresh QR. Reset
-                    // linkViewModel to .idle first: rendezvousShow suppresses
-                    // itself while linkViewModel.phase is .error, so
-                    // restarting the rendezvous VM alone would mint a new QR
-                    // that stays hidden behind the stale error phase — a
-                    // dead-end button that appears to do nothing.
                     if qrTab == .show {
                         Button("Show a new code") {
                             linkViewModel.cancel()
-                            Task { await rendezvousViewModel.start() }
+                            rendezvousAttempt += 1
                         }
                     }
                 }
-            } else if showingManualCode {
-                Text("On your signed-in device: Settings → Link a Device. Enter the server URL above and the code shown under the QR.")
-            } else {
-                Text("Signed in on another device? Show its QR under Settings → Link a Device and scan it here.")
+            } else if qrTab == .code {
+                Text("In your signed-in browser or app, open Settings → Devices → Link a Device. Enter its server URL and link code here, or paste the full sign-in link.")
+            } else if qrTab == .scan {
+                Text("On your signed-in device, open Settings → Devices → Link a Device, then scan its QR code here.")
             }
         }
     }
@@ -242,7 +314,7 @@ struct SignInView: View {
             case .error(let message):
                 VStack(spacing: 8) {
                     Text(message).font(.footnote).foregroundStyle(.secondary)
-                    Button("Retry") { Task { await rendezvousViewModel.start() } }
+                    Button("Retry") { rendezvousAttempt += 1 }
                 }
             }
         }
@@ -282,11 +354,26 @@ struct SignInView: View {
                 // tab, so a Scan-tab cancel never spuriously starts polling.
                 if case .connecting = rendezvousViewModel.phase {
                     rendezvousViewModel.stop()
-                    if qrTab == .show { Task { await rendezvousViewModel.start() } }
+                    if qrTab == .show { rendezvousAttempt += 1 }
                 }
             }
         } footer: {
             Text("Approve the request on your signed-in device to finish.")
         }
+    }
+}
+
+/// Shown after authentication succeeds, until the host opens the chats.
+struct SignInProgressView: View {
+    var body: some View {
+        VStack(spacing: 16) {
+            ProgressView("Signing in…")
+                .accessibilityIdentifier("signin.finishing")
+            Text("Getting your chats ready.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(uiColor: .systemGroupedBackground))
     }
 }

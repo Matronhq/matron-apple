@@ -19,10 +19,43 @@ async function acceptPrompts(device: Device): Promise<void> {
 }
 
 describe('smoke', () => {
+  test('chooses a sign-in method before showing fields', async ({ app, device, screen }) => {
+    removeSession();
+    await app.restart();
+    await acceptPrompts(device);
+    await expect(screen.getByTestId('signin.chooseLogin')).toBeVisible();
+    await expect(screen.getByTestId('signin.chooseDevice')).toBeVisible();
+    await expect(screen.getByTestId('signin.server')).toHaveCount(0);
+    await expect(screen.getByTestId('signin.username')).toHaveCount(0);
+    await expect(screen.getByTestId('signin.password')).toHaveCount(0);
+
+    await screen.getByTestId('signin.chooseDevice').tap();
+    await expect(screen.getByTestId('signin.scan')).toBeVisible();
+    await expect(screen.getByTestId('signin.server')).toHaveCount(0);
+    await screen.getByText('Code').tap();
+    await expect(screen.getByTestId('signin.server')).toBeVisible();
+    await expect(screen.getByTestId('signin.linkcode')).toBeVisible();
+    await expect(screen.getByTestId('signin.linkSubmit')).toBeVisible();
+    await expect(screen.getByTestId('signin.username')).toHaveCount(0);
+    await expect(screen.getByTestId('signin.password')).toHaveCount(0);
+
+    // Exercise typed code entry without calling a live journal. A full
+    // sign-in link is pasted in one edit, not typed through code formatting.
+    await screen.getByTestId('signin.server').fill('https://invalid host');
+    await screen.getByTestId('signin.linkcode').fill('ABCD-EFGH');
+    await screen.getByTestId('signin.linkcode').press('Enter');
+    await screen.getByTestId('signin.linkSubmit').tap();
+    await expect(screen.getByText("That doesn't look like a valid server URL.")).toBeVisible();
+    injectSession();
+    await app.restart();
+  });
+
   test('signs in with server, username and password', async ({ app, device, screen }) => {
     removeSession();
     await app.restart();
     await acceptPrompts(device);
+    await screen.getByTestId('signin.chooseLogin').tap();
+    await expect(screen.getByTestId('signin.scan')).toHaveCount(0);
     await screen.getByTestId('signin.server').fill(BASE);
     await screen.getByTestId('signin.username').fill(USERNAME);
     await screen.getByTestId('signin.password').fill(PASSWORD);
