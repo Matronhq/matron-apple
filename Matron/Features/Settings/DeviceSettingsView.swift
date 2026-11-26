@@ -5,9 +5,9 @@ import MatronViewModels
 import MatronJournal
 import MatronVoice
 
-/// Settings → Device surface: a read-only account summary (userID,
-/// deviceID, and server host). The Devices row pushes the roster +
-/// pairing screen; `devicesAPI`, `linkAPI`, and `onSignOut` are all optional
+/// Settings account summary (userID, deviceID, and server host).
+/// Account and Devices both offer the same pairing screen;
+/// `devicesAPI`, `linkAPI`, and `onSignOut` are all optional
 /// so previews / tests keep rendering the summary without a live API or
 /// sign-out wiring.
 struct DeviceSettingsView: View {
@@ -18,6 +18,7 @@ struct DeviceSettingsView: View {
     /// tests render the summary without a live API.
     let agentChatAPI: (any AgentChatProviding)?
     let onSignOut: (() -> Void)?
+    let onGetStarted: (() -> Void)?
     /// App shell (spec §5b): the Coordinator row needs the chat service
     /// (chooser) and the store (title). Optional so previews/tests render
     /// without it.
@@ -37,12 +38,13 @@ struct DeviceSettingsView: View {
 
     init(session: UserSession, devicesAPI: (any DevicesProviding)? = nil, linkAPI: (any DeviceLinking)? = nil,
          agentChatAPI: (any AgentChatProviding)? = nil, onSignOut: (() -> Void)? = nil,
-         deps: AppDependencies? = nil) {
+         deps: AppDependencies? = nil, onGetStarted: (() -> Void)? = nil) {
         self.session = session
         self.devicesAPI = devicesAPI
         self.linkAPI = linkAPI
         self.agentChatAPI = agentChatAPI
         self.onSignOut = onSignOut
+        self.onGetStarted = onGetStarted
         self.deps = deps
         _security = State(initialValue: deps.map {
             SecuritySettingsModel(twoFactorAPI: $0.twoFactorSettingsService(for: session),
@@ -55,6 +57,13 @@ struct DeviceSettingsView: View {
     var body: some View {
         Form {
             MatronGroupedRows {
+            if let onGetStarted {
+                Section {
+                    Button(action: onGetStarted) {
+                        Label("Get started", systemImage: "sparkles")
+                    }.accessibilityIdentifier("settings.getStarted")
+                }
+            }
             Section("Account") {
                 LabeledContent("User ID", value: session.userID)
                 LabeledContent("Device ID", value: session.deviceID)
@@ -62,6 +71,14 @@ struct DeviceSettingsView: View {
                     "Server",
                     value: session.homeserverURL.host ?? session.homeserverURL.absoluteString
                 )
+                if let linkAPI {
+                    linkDeviceRow(api: linkAPI)
+                        .accessibilityIdentifier("settings.account.linkDevice")
+                }
+                if let onSignOut {
+                    Button("Sign Out", role: .destructive, action: onSignOut)
+                        .accessibilityIdentifier("settings.signOut")
+                }
             }
             if let security {
                 TwoFactorSettingsSection(security: security)
@@ -88,11 +105,8 @@ struct DeviceSettingsView: View {
                         }
                     }
                     if let linkAPI {
-                        NavigationLink {
-                            DeviceLinkView(api: linkAPI, serverURL: session.homeserverURL, relay: RelayClient())
-                        } label: {
-                            Label("Link a Device", systemImage: "qrcode")
-                        }
+                        linkDeviceRow(api: linkAPI)
+                            .accessibilityIdentifier("settings.devices.linkDevice")
                     }
                     if let agentChatAPI {
                         NavigationLink {
@@ -202,6 +216,14 @@ struct DeviceSettingsView: View {
                 launchText: LaunchTimeline.summary(LaunchTimeline.currentLaunch()),
                 maintenanceText: StoreDiagnostics.lastMaintenanceText(
                     sizes.lastMaintenance, now: Date()))
+        }
+    }
+
+    private func linkDeviceRow(api: any DeviceLinking) -> some View {
+        NavigationLink {
+            DeviceLinkView(api: api, serverURL: session.homeserverURL, relay: RelayClient())
+        } label: {
+            Label("Link a Device", systemImage: "qrcode")
         }
     }
 }

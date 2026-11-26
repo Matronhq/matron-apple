@@ -20,6 +20,7 @@ struct AppShellView: View {
     let onSignOut: () -> Void
 
     @State var nav: AppShellNavigation
+    @State var showingFirstProject = false
     /// The list rows whose swipe-to-archive owns a leftward drag, for
     /// `rootSwipe`.
     @State private var rowSwipeZones = RowSwipeZones()
@@ -124,6 +125,14 @@ struct AppShellView: View {
         .environment(\.goToNumber, GoToNumberActions(open: { await openNumber($0) }))
         .fullScreenCover(item: $nav.voiceMode, content: voiceModeCover)
         .modifier(CarPlayMicrophoneRule(voiceNotes: voiceNotes, nav: nav))
+        .sheet(isPresented: $showingFirstProject) {
+            FirstProjectSheet(deps: deps, session: session, nav: nav)
+        }
+        .task(id: session.userID) {
+            if await deps.shouldOfferFirstProject(for: session), nav.isAtRoot, !Task.isCancelled {
+                showingFirstProject = true
+            }
+        }
     }
 
     /// The iPad's split view at regular width (`SplitShellRule`), else the
@@ -419,7 +428,6 @@ struct AppShellView: View {
                 // (CodeRabbit, PR #197).
                 ownsViewModel: false,
                 vmCache: vmCache,
-                onSignOut: onSignOut,
                 // A search result / new chat navigates via the path the
                 // shell owns (same mechanism as a notification tap).
                 onOpenChat: { roomID in nav.openChat(roomID) }
@@ -525,8 +533,8 @@ struct AppShellView: View {
 
     /// Settings, under More (it used to be a sheet from the Conversations
     /// list's menu, then the last tab). Its pages push with their own
-    /// `NavigationLink`s. `onSignOut` is what Manage Devices calls when
-    /// this device is revoked; Sign Out itself stays in the list's menu.
+    /// `NavigationLink`s. The account's Sign Out row and Manage Devices
+    /// both use the same host callback to end this device's session.
     private var settingsTab: some View {
         NavigationStack(path: settingsPath) {
             DeviceSettingsView(session: session,
@@ -534,7 +542,7 @@ struct AppShellView: View {
                                linkAPI: deps.deviceLinkService(for: session),
                                agentChatAPI: deps.agentChatService(for: session),
                                onSignOut: onSignOut,
-                               deps: deps)
+                               deps: deps, onGetStarted: { showingFirstProject = true })
                 .modifier(rootSwipe)
                 .toolbar { backToMore }
         }

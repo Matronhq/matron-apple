@@ -61,13 +61,6 @@ struct ChatListView: View {
     @Environment(\.goToNumber) private var goToNumber
     /// Why a search row's number did not open, said over the search sheet.
     @State private var searchNumberError: String?
-    /// Sign-out callback owned by `MatronApp` (drops the in-memory session
-    /// + clears persistent state). Optional so previews / tests that
-    /// don't wire the full app can still construct the view. Phase-7
-    /// spec lands a Settings → Account → Sign Out flow; this Phase-2
-    /// hook keeps the user from being stranded once Sign Out is exposed
-    /// from the menu (QA finding #7).
-    var onSignOut: (() -> Void)? = nil
     /// Phase 6 (Search): opens a room by ID. Owned by `MatronApp` (it holds the
     /// `NavigationStack` path); wired so a search result can navigate to its
     /// chat after the search sheet dismisses. Optional so previews / tests
@@ -166,22 +159,12 @@ struct ChatListView: View {
             }
             // Voice mode on what needs you (spec 2026-10-03 §6).
             VoiceModeQueueButton()
-            // Sign-out lives in an overflow menu next to the New-Chat
-            // button. Without this hook the only way to swap accounts on
-            // iOS was deleting the app's Application Support directory (QA
-            // finding #7). The menu only renders when the host wired
-            // an `onSignOut` callback so previews / tests stay clean.
-            if onSignOut != nil || chatNavigationPath != nil {
+            // Archived conversations stay in the list's overflow menu.
+            if let path = chatNavigationPath {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
-                        if let path = chatNavigationPath {
-                            Button { path.wrappedValue.append(ArchivedRoute.list) } label: {
-                                Label("Archived", systemImage: "archivebox")
-                            }
-                        }
-                        // Settings is its own tab now (`AppShellView`).
-                        if let onSignOut {
-                            Button("Sign Out", role: .destructive, action: onSignOut)
+                        Button { path.wrappedValue.append(ArchivedRoute.list) } label: {
+                            Label("Archived", systemImage: "archivebox")
                         }
                     } label: {
                         Image(systemName: "ellipsis.circle")
@@ -381,7 +364,7 @@ struct ChatListView: View {
             ContentUnavailableView {
                 Label("No chats yet", systemImage: "bubble.left.and.bubble.right")
             } description: {
-                Text("Provision a bot via dev-boxer to get started.")
+                Text("Open Settings → Get started to connect Claude and make your first project.")
             } actions: {
                 // Everything may be archived: Archived stays reachable.
                 if isInSplitShell {
